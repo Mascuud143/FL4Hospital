@@ -2,7 +2,7 @@ import asyncio
 from bleak import BleakScanner, BleakClient
 
 
-TARGET_NAME = "Thingy"  # your BLE device name
+TARGET_NAME = "Thingy"  
 
 
 TEMP_CHAR_UUID = "ef680201-9b35-4933-9b10-52ffa9740042"

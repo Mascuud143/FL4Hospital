@@ -1,7 +1,10 @@
 import asyncio
 from bleak import BleakClient
 
-ADDRESS = "F8:CA:DA:A2:B6:AE"
+# ADDRESS = "F8:CA:DA:A2:B6:AE"
+ADDRESS = "FE:14:B2:D8:FD:AB"
+
+
 
 TEMP_CHAR_UUID = "ef680201-9b35-4933-9b10-52ffa9740042"
 PRESSURE_CHAR_UUID = "ef680202-9b35-4933-9b10-52ffa9740042"
