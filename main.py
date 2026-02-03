@@ -10,6 +10,7 @@ async def on_event(event: dict):
 
 
 devices = [
+           
     Device(mac_address="F8:CA:DA:A2:B6:AE", label="Device 1"),
     Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 2"),
     Device(mac_address="D8:48:7F:68:79:D0", label="Device 3"),
@@ -23,6 +24,7 @@ for d in devices:
 async def main():
     mgr = BLEManager(devices, on_event=on_event)
     await mgr.start()
+    print(mgr.get_status())
 
     # Run forever (or until Ctrl+C)
     try:
