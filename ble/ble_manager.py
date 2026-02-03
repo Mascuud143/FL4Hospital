@@ -90,7 +90,9 @@ class BLEManager:
         self._stop_event.clear()
         for mac in self.devices.keys():
             if mac not in self._tasks or self._tasks[mac].done():
+                print(f"Starting BLEManager loop for device {mac}")
                 self._tasks[mac] = asyncio.create_task(self._device_loop(mac))
+                print(f"Started BLEManager loop for device {mac}")  
 
     async def stop(self) -> None:
         """
@@ -165,43 +167,60 @@ class BLEManager:
         # Final cleanup
         await self._safe_disconnect(mac, state)
 
-    async def _connect_and_subscribe(
-        self, mac: str, device: Device, state: ConnectionState
-    ) -> None:
-        """
-        Connect and start notifications for all sensors on the device.
-        """
-        # Build client
-        client = BleakClient(mac, timeout=self.connect_timeout)
-        state.client = client
-        state.last_error = None
 
-        def _on_disconnect(_: BleakClient) -> None:
-            # Called from bleak thread/callback context
-            state.connected = False
 
-        client.set_disconnected_callback(_on_disconnect)
+    async def _device_loop(self, mac: str) -> None:
+        state = self._states[mac]
+        device = self.devices[mac]
+        backoff = self.initial_backoff_s
 
-        try:
-            await client.connect()
-            state.connected = True
-            state.reconnect_attempts = 0
-            state.last_seen = datetime.now(timezone.utc)
+        while not self._stop_event.is_set():
+            try:
+                state.connecting = True
+                print(f"[{mac}] connecting...")
 
-            # Subscribe to each sensor characteristic
-            for sensor in device.sensors:
-                await client.start_notify(
-                    sensor.uuid,
-                    lambda _uuid, data, s=sensor: asyncio.create_task(
-                        self._handle_notification(device, s, _uuid, data)
-                    ),
-                )
+                async with BleakClient(mac, timeout=self.connect_timeout) as client:
+                    state.client = client
+                    state.connected = True
+                    state.connecting = False
+                    state.reconnect_attempts = 0
+                    state.last_error = None
+                    state.last_seen = datetime.now(timezone.utc)
+                    print(f"[{mac}] connected={client.is_connected}")
 
-        except BleakError as e:
-            state.last_error = f"BleakError: {e}"
-            state.connected = False
-            await self._safe_disconnect(mac, state)
-            raise
+                    # --- device setup writes (like SOUND_CFG_UUID) ---
+                    for (uuid, payload, response) in getattr(device, "setup_writes", []):
+                        await client.write_gatt_char(uuid, payload, response=response)
+
+                    # --- subscribe ---
+                    for sensor in device.sensors:
+                        await client.start_notify(
+                            sensor.uuid,
+                            lambda _uuid, data, s=sensor: asyncio.create_task(
+                                self._handle_notification(device, s, _uuid, data)
+                            ),
+                        )
+
+                    print(f"[{mac}] subscribed")
+
+                    # keep alive until stop
+                    while not self._stop_event.is_set():
+                        await asyncio.sleep(1)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                state.connected = False
+                state.connecting = False
+                state.last_error = f"{type(e).__name__}: {e}"
+                print(f"[{mac}] disconnected/error: {state.last_error} -> retry in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, self.max_reconnect_backoff_s)
+
+        state.connected = False
+        state.connecting = False
+
+
 
     async def _safe_disconnect(self, mac: str, state: ConnectionState) -> None:
         client = state.client
