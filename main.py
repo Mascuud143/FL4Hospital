@@ -6,6 +6,8 @@ from ble.sensor import parse_temp_thingy, parse_humidity_thingy
 
 from data_collection import DataCollector
 
+from persistence import init_db
+
 
 # ---- Sinks (what to do with clean events) ----
 async def print_sink(event: dict):
@@ -26,6 +28,9 @@ for d in devices:
 
 
 async def main():
+    # 0) Initialize SQLite DB + tables
+    init_db(db_url="sqlite:///fl4hospital.db", echo=False)
+
     # 1) Start DataCollector (receives events from BLEManager)
     collector = DataCollector(sinks=[print_sink])
     await collector.start()
