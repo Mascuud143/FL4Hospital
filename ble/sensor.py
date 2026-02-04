@@ -44,7 +44,7 @@ def parse_humidity_thingy(raw: bytes) -> float:
     return float(raw[0])
 
 
-def parse_pressure_thingy(raw: bytes) -> float:
+#def parse_pressure_thingy(raw: bytes) -> float:
     """
     Thingy:52 pressure: 4 bytes little-endian:
     - uint32 Pascal * 10? (varies by firmware)
