@@ -27,7 +27,6 @@ class CollectorConfig:
 
 class DataCollector:
     """
-    Buffer-free DataCollector:
     BLEManager -> DataCollector.ingest(event) -> DataProcessor -> sinks
 
     Uses an internal queue to keep BLE callback fast and non-blocking.

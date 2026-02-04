@@ -1,16 +1,19 @@
 import asyncio
+
 from ble import BLEManager, Device, Sensor
 from ble.characteristics import TEMP_CHAR_UUID, HUMIDITY_CHAR_UUID
 from ble.sensor import parse_temp_thingy, parse_humidity_thingy
 
-
-async def on_event(event: dict):
-    # Later: forward to DataCollector / DB / CSV
-    print(event)
+from data_collection import DataCollector
 
 
+# ---- Sinks (what to do with clean events) ----
+async def print_sink(event: dict):
+    print("CLEAN:", event)
+
+
+# ---- Devices ----
 devices = [
-           
     Device(mac_address="F8:CA:DA:A2:B6:AE", label="Device 1"),
     Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 2"),
     Device(mac_address="D8:48:7F:68:79:D0", label="Device 3"),
@@ -23,16 +26,26 @@ for d in devices:
 
 
 async def main():
-    mgr = BLEManager(devices, on_event=on_event)
-    await mgr.start()
-    print(mgr.get_status())
+    # 1) Start DataCollector (receives events from BLEManager)
+    collector = DataCollector(sinks=[print_sink])
+    await collector.start()
 
-    # Run forever (or until Ctrl+C)
+    # 2) Start BLEManager and route events to collector.ingest
+    mgr = BLEManager(devices, on_event=collector.ingest)
+    await mgr.start()
+
+    # Give it a moment to attempt connections before printing
+    await asyncio.sleep(2)
+    print("BLE Status:", mgr.get_status())
+
     try:
         while True:
             await asyncio.sleep(2)
+            print("Collector Stats:", collector.get_stats())
     finally:
         await mgr.stop()
+        await collector.stop()
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
