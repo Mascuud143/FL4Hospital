@@ -15,14 +15,63 @@ from simulation_batch.generators.patients import generate_patients
 from simulation_batch.generators.comfort import generate_comfort
 from simulation_batch.generators.environment import generate_environment_for_day
 
+from simulation_batch.generators.name_gen import generate_name 
+from simulation_batch.generators.age_height_weight_gen import age_height_weight_generator
 
 def run():
     random.seed(42)
 
     init_db()
+    # config user input values  
+    # how many rooms, patients, simulation date range, readings per day
+    ROOM_COUNT = int(input("Enter number of rooms to simulate: "))
+    PATIENT_COUNT = int(input("Enter number of patients to simulate: "))
+    DAYS = int(input("Enter number of days to simulate: "))
+    READINGS_PER_DAY = int(input("Enter number of readings per day: "))
+
+
+
 
     with session_scope() as session:
+
+          # 2. Patients + comfort
+        patients = []
+        patient_stay_days = []
+        for p in generate_patients(PATIENT_COUNT):
+            age_height_weight = age_height_weight_generator()
+            patient = Patient(
+                age=age_height_weight["age"],
+                name=generate_name(),
+                current_diagnosis=p["diagnosis"],
+                ethnicity=p["ethnicity"],
+                gender = random.choice(["Male", "Female"]),
+
+                height=age_height_weight["height"],
+                weight=age_height_weight["weight"]
+            
+            )
+            stay_days = random.randint(5, 20)
+            patient.stay_days = stay_days
+            patient_stay_days.append(stay_days)
+            session.add(patient)
+            patients.append(patient)
+
+           
+
+        session.flush()
+
+
         # 1. Rooms
+        day_num = 0
+
+        for s in patient_stay_days:
+            day_num += patient_stay_days[]
+            if day_num > DAYS:
+                day_num= 0
+
+            
+        
+
         rooms = []
         for r in generate_rooms(ROOM_COUNT):
             room = Room(room_number=r["room_number"])
@@ -31,48 +80,12 @@ def run():
 
         session.flush()
 
-        # 2. Patients + comfort
-        patients = []
-        for p in generate_patients(PATIENT_COUNT):
-            patient = Patient(
-                name=p["name"],
-                current_diagnosis=p["diagnosis"],
-                height=random.randint(150, 190),
-                weight=random.randint(50, 100)
+      
 
-            )
-            session.add(patient)
-            patients.append(patient)
 
-            comfort = generate_comfort()
-            session.add(ComfortPreference(
-                patient=patient,
-                temperature=comfort["temperature"],
-            ))
+        #room assignments
 
-        session.flush()
 
-        # 3. Assign patients to rooms
-        # first add release and admission dates for patients
-        # make and save RoomAssignment
-        # make sure no room has more than 1 patient at a time
-        # and give them random admission and release dates within the simulation period
-        assigned_rooms = random.sample(rooms, k=len(patients))
-        for patient, room in zip(patients, assigned_rooms):
-            admission_offset = random.randint(0, DAYS - 5)
-            admission_date = START_DATE + timedelta(days=admission_offset)
-            release_date = admission_date + timedelta(days=random.randint(1, 5))
-
-            patient.admission_date = admission_date
-            patient.release_date = release_date
-
-            assignment = RoomAssignment(
-                patient=patient,
-                room=room,
-                start_time=admission_date,
-                end_time=release_date
-            )
-            session.add(assignment)
 
         # devices nordic, generate 3 per room
         devices = []
@@ -114,34 +127,6 @@ def run():
         sensors = session.query(Sensor).all()
 
 
-
-
-        
-
-
-        # 5. Generate environment data
-        current_date = START_DATE
-
-        for _ in range(DAYS):
-            for room in rooms:
-                day_readings = generate_environment_for_day(
-                    room.room_id,
-                    current_date,
-                    temp_range= TEMP_RANGE,
-                    readings_per_day= READINGS_PER_DAY,
-                    humidity_range = HUMIDITY_RANGE
-                )
-
-                for r in day_readings:
-                    data_entry = Data(
-                        sensor_id=random.choice([s.sensor_id for s in sensors if s.device.room_id == room.room_id and s.sensor_type == "temperature"]),
-                        timestamp=r["timestamp"],
-                        value=r["temperature"],
-
-                    )
-                    session.add(data_entry)
-
-            current_date += timedelta(days=1)
 
     print("✅ Simulation complete. Data saved.")
 

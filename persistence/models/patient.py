@@ -20,7 +20,7 @@ class Patient(Base):
 
     ethnicity = Column(String, nullable=True)
     current_diagnosis = Column(String, nullable=True)
-
+    stay_days = Column(Integer, nullable=True)
     admission_date = Column(Date, nullable=True)
     release_date = Column(Date, nullable=True)
 
