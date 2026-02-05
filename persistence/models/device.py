@@ -11,7 +11,7 @@ class Device(Base):
 
     device_id = Column(Integer, primary_key=True, autoincrement=True)
     mac_address = Column(String, nullable=False, unique=True, index=True)
-
+    device_type = Column(String, nullable=False)
     room_id = Column(Integer, ForeignKey("rooms.room_id"), nullable=True)
 
     # Relationships
