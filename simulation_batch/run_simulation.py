@@ -1,5 +1,5 @@
 import random
-from datetime import timedelta
+from datetime import timedelta, datetime, date
 
 from persistence.database import init_db, session_scope
 from persistence.models.data import Data
@@ -8,6 +8,7 @@ from persistence.models.patient import Patient
 from persistence.models.sensor import Sensor
 from persistence.models.device import Device
 from persistence.models.comfort_preference import ComfortPreference
+from persistence.models.room_assignment import RoomAssignment
 
 from simulation_batch.config import *
 from simulation_batch.generators.rooms import generate_rooms
@@ -24,10 +25,10 @@ def run():
     init_db()
     # config user input values  
     # how many rooms, patients, simulation date range, readings per day
-    ROOM_COUNT = int(input("Enter number of rooms to simulate: "))
-    PATIENT_COUNT = int(input("Enter number of patients to simulate: "))
-    DAYS = int(input("Enter number of days to simulate: "))
-    READINGS_PER_DAY = int(input("Enter number of readings per day: "))
+    # ROOM_COUNT = int(input("Enter number of rooms to simulate: "))
+    # PATIENT_COUNT = int(input("Enter number of patients to simulate: "))
+    # DAYS = int(input("Enter number of days to simulate: "))
+    # READINGS_PER_DAY = int(input("Enter number of readings per day: "))
 
 
 
@@ -60,30 +61,101 @@ def run():
 
         session.flush()
 
-
         # 1. Rooms
-        day_num = 0
-
-        for s in patient_stay_days:
-            day_num += patient_stay_days[]
-            if day_num > DAYS:
-                day_num= 0
-
-            
-        
-
         rooms = []
-        for r in generate_rooms(ROOM_COUNT):
-            room = Room(room_number=r["room_number"])
-            session.add(room)
-            rooms.append(room)
+        current_room_stay_sum=0
+        current_room = 1
+        COMFORT_HOURS = [0, 6, 12, 18]
 
+        room= Room(room_number=100)
+        session.add(room)
+        rooms.append(room)
         session.flush()
 
-      
+
+        print("Assigning patients to rooms...")
+        print("Patient stay days:", patient_stay_days)
+
+        for i, s in enumerate(patient_stay_days):
+            patient = patients[i]
+
+            print(
+                f"Processing patient {patient.patient_id} "
+                f"with stay of {s} days. "
+                f"Current room stay sum: {current_room_stay_sum}, "
+                f"current room: {current_room}"
+            )
+
+            # create new room if needed
+            if current_room_stay_sum + s > DAYS:
+                current_room += 1
+                current_room_stay_sum = 0
+
+                room = Room(room_number=100 + current_room)
+                session.add(room)
+                session.flush()
+                rooms.append(room)
+
+            # admission & release dates
+            patient.admission_date = START_DATE + timedelta(days=current_room_stay_sum)
+            patient.release_date = patient.admission_date + timedelta(days=s)
+
+            # room assignment
+            assignment = RoomAssignment(
+                patient_id=patient.patient_id,
+                room_id=room.room_id,
+                start_time=patient.admission_date,
+                end_time=patient.release_date,
+            )
+            session.add(assignment)
+
+            # ---- EXACTLY 4 comfort preferences (one-day profile) ----
+            base_date = patient.admission_date
+            
+            # Convert to datetime and zero out time components
+            if isinstance(base_date, date) and not isinstance(base_date, datetime):
+                base_date = datetime.combine(base_date, datetime.min.time())
+            else:
+                base_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-        #room assignments
+            for hour in COMFORT_HOURS:
+                comfort_pref = generate_comfort()
+
+                # check the hour and adjust the temperature range accordingly
+                if hour == 0:  # midnight
+                    comfort_pref["temperature"] = round(random.uniform(20.0, 22.0), 2)
+                    # light intensity should be off at night
+                    comfort_pref["light_intensity"] = 0.0
+                    # sound level should be low at night
+                    comfort_pref["sound_level"] = round(random.uniform(0, 20), 2)
+                elif hour == 6:  # morning
+                    comfort_pref["temperature"] = round(random.uniform(21.0, 23.0), 2)
+                elif hour == 12:  # afternoon
+                    comfort_pref["temperature"] = round(random.uniform(22.0, 24.0), 2)
+                    comfort_pref["light_intensity"] = round(random.uniform(20, 50), 2)
+                elif hour == 18:  # evening
+                    comfort_pref["temperature"] = round(random.uniform(20.0, 21.0), 2)
+                    # light intensity should be lower in the evening
+                    comfort_pref["sound_level"] = round(random.uniform(0, 20), 2)
+                    comfort_pref["light_intensity"] = round(random.uniform(20, 50), 2)
+
+                comfort = ComfortPreference(
+                    patient_id=patient.patient_id,
+                    room_id=room.room_id,
+                    timestamp=base_date + timedelta(hours=hour),
+                    temperature=comfort_pref["temperature"],
+                    light_intensity=comfort_pref["light_intensity"],
+                    sound_level=comfort_pref["sound_level"],
+                    ventilation=comfort_pref["ventilation"],
+                    source=comfort_pref["source"],
+                )
+                session.add(comfort)
+
+            # advance room timeline
+            current_room_stay_sum += s
+
+        session.flush()
 
 
 
