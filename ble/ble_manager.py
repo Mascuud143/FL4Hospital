@@ -11,7 +11,7 @@ from bleak.exc import BleakError
 from .device import Device
 
 
-EventCallback = Callable[[dict], Awaitable[None]]  # async callback receiving events
+EventCallback = Callable[[dict], Awaitable[None]] 
 
 
 @dataclass
