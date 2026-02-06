@@ -65,6 +65,8 @@ def run():
         rooms = []
         current_room_stay_sum=0
         current_room = 1
+
+        
         COMFORT_HOURS = [0, 6, 12, 18]
 
         room= Room(room_number=100)
@@ -117,7 +119,6 @@ def run():
                 base_date = datetime.combine(base_date, datetime.min.time())
             else:
                 base_date = base_date.replace(hour=0, minute=0, second=0, microsecond=0)
-
 
             for hour in COMFORT_HOURS:
                 comfort_pref = generate_comfort()
@@ -176,6 +177,7 @@ def run():
 
 
                 # 4. Sensors for each device
+                 
                 for sensor_type in ["temperature"]:
                     sensor = Sensor(
                         device=sensor_device,
@@ -205,3 +207,24 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+
+#mian questions
+# is the simulation created for traning the data and only that 
+# or 
+# for traning and also simulating real world model 
+
+
+
+# tables that need to be fixed:
+# device, speaker, ventilation, data
+# 
+# others things to consider:
+# also include light in the sensors table with unit or as a device?
+# since the powerconsumtion and the waterconsumtion will not be used in traning do we need to generate this in the simulation?
+# change comfort hours logic to include reading_per_day input 
+# room assigment should be done at a appropiate time?
+#
+
+
