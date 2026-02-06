@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Patient name: {{ patient.name }}</h2>
+
+<table>
+<tr><th>Age</th><td>{{ patient.age }}</td></tr>
+<tr><th>Gender</th><td>{{ patient.gender }}</td></tr>
+<tr><th>Height</th><td>{{ patient.height }} cm</td></tr>
+<tr><th>Weight</th><td>{{ patient.weight }} kg</td></tr>
+<tr><th>Ethnicity</th><td>{{ patient.ethnicity }}</td></tr>
+<tr><th>Diagnosis</th><td>{{ patient.current_diagnosis }}</td></tr>
+<tr><th>Admission Date</th><td>{{ patient.admission_date }}</td></tr>
+<tr><th>Release Date</th><td>{{ patient.release_date }}</td></tr>
+</table>
+
+<h3>Comfort Preferences for ideal day for this patient (Labels)</h3>
+{% if comforts %}
+<table>
+<tr>
+  <th>Time</th>
+  <th>Temp (°C)</th>
+  <th>Light</th>
+  <th>Sound</th>
+  <th>Ventilation</th>
+</tr>
+{% for c in comforts %}
+<tr>
+  <td>{{ c.timestamp.strftime("%Y-%m-%d %H:%M") }}</td>
+  <td>{{ c.temperature }}</td>
+  <td>{{ c.light_intensity }}</td>
+  <td>{{ c.sound_level }}</td>
+  <td>{{ c.ventilation }}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No comfort preferences recorded yet.</p>
+{% endif %}
+
+<p><a href="/">Back to Rooms</a></p>
+{% endblock %}
