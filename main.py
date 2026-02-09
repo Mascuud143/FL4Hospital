@@ -14,7 +14,7 @@ from simulation.simulation_runner import run_simulation
 # =============================
 # CONFIG
 # =============================
-MODE = "SIMULATION"   # "REAL" or "SIMULATION"
+MODE = "REAL"   # "REAL" or "SIMULATION"
 
 
 # ---- Debug sink ----
@@ -24,7 +24,11 @@ async def print_sink(event: dict):
 
 # ---- BLE Devices (REAL MODE) ----
 devices = [
-    Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 2"),
+    Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 1"),
+    Device(mac_address="F4:D4:A3:BE:01:9F", label="Device 2"),
+    Device(mac_address="F8:CA:DA:A2:B6:AE", label="Device 3"),
+    Device(mac_address="D8:48:7F:68:79:D0", label="Device 4"),
+
 ]
 
 for d in devices:
