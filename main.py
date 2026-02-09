@@ -8,73 +8,47 @@ from data_collection import DataCollector
 from data_collection.db_sink import db_sink
 
 from persistence import init_db
-from simulation.simulation_runner import run_simulation
+from persistence.seed_devices import seed_devices_and_sensors  
 
 
-# =============================
-# CONFIG
-# =============================
-MODE = "REAL"   # "REAL" or "SIMULATION"
+MODE = "REAL"
 
 
-# ---- Debug sink ----
 async def print_sink(event: dict):
     print("CLEAN EVENT:", event)
 
 
-# ---- BLE Devices (REAL MODE) ----
 devices = [
     Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 1"),
     Device(mac_address="F4:D4:A3:BE:01:9F", label="Device 2"),
     Device(mac_address="F8:CA:DA:A2:B6:AE", label="Device 3"),
     Device(mac_address="D8:48:7F:68:79:D0", label="Device 4"),
-
 ]
 
 for d in devices:
-    d.add_sensor(Sensor(
-        uuid=TEMP_CHAR_UUID,
-        sensor_type="temperature",
-        unit="°C",
-        parser=parse_temp_thingy
-    ))
-    d.add_sensor(Sensor(
-        uuid=HUMIDITY_CHAR_UUID,
-        sensor_type="humidity",
-        unit="%",
-        parser=parse_humidity_thingy
-    ))
+    d.add_sensor(Sensor(uuid=TEMP_CHAR_UUID, sensor_type="temperature", unit="°C", parser=parse_temp_thingy))
+    d.add_sensor(Sensor(uuid=HUMIDITY_CHAR_UUID, sensor_type="humidity", unit="%", parser=parse_humidity_thingy))
 
 
 async def main():
-    # 0) Init DB
     init_db(db_url="sqlite:///fl4hospital.db", echo=False)
 
-    # 1) Start DataCollector
-    collector = DataCollector(
-        sinks=[
-            print_sink,  # optional
-            db_sink      # REQUIRED for saving
-        ]
-    )
+    #Seed the known devices + their sensors right away
+    seed_devices_and_sensors(devices)
+
+    collector = DataCollector(sinks=[print_sink, db_sink])
     await collector.start()
 
-    # 2) Choose data source
     if MODE == "REAL":
-        print("🔵 Running in REAL (BLE) mode")
         mgr = BLEManager(devices, on_event=collector.ingest)
         await mgr.start()
-
         try:
             while True:
                 await asyncio.sleep(5)
                 print("Collector Stats:", collector.get_stats())
         finally:
             await mgr.stop()
-
-    else:
-        print("🟣 Running in SIMULATION mode")
-        await run_simulation(collector)
+            await collector.stop()
 
 
 if __name__ == "__main__":
