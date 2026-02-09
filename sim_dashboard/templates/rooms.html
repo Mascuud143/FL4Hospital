@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+
+
+
+
+<!-- simulation info -->
+<p>Total Rooms: {{ simulation_info.total_rooms }}</p>
+<p>Total Patients: {{ simulation_info.total_patients }}</p>
+<p>Simulation Period: {{ simulation_info.simulation_period }}</p>
+
+
+
+<h2>Rooms</h2>
+
+<table>
+<tr>
+  <th>Room</th>
+  <th>Details</th>
+</tr>
+{% for room in rooms %}
+<tr>
+  <td>{{ room.room_number }}</td>
+  <td>
+    <a href="/rooms/{{ room.room_id }}">View</a>
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}
