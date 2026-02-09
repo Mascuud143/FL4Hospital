@@ -44,27 +44,64 @@ def parse_humidity_thingy(raw: bytes) -> float:
     return float(raw[0])
 
 
-#def parse_pressure_thingy(raw: bytes) -> float:
+
+def parse_air_quality_thingy(raw: bytes) -> int:
     """
-    Thingy:52 pressure: 4 bytes little-endian:
-    - uint32 Pascal * 10? (varies by firmware)
-    Many implementations interpret it as:
-    pressure_hpa = (uint32 / 10.0)
+    Thingy:52 Air Quality characteristic
+
+    Format (little-endian):
+      Bytes 0–1: eCO2 (uint16) in ppm
+      Bytes 2–3: TVOC (uint16) in ppb (ignored)
     """
-    if len(raw) < 4:
-        raise ValueError(f"Pressure raw too short: {len(raw)}")
-    v = struct.unpack("<I", raw[0:4])[0]
-    return float(v) / 10.0
+    import struct
+
+    if len(raw) < 2:
+        raise ValueError(f"Air quality raw too short: {len(raw)} bytes")
+
+    (eco2,) = struct.unpack("<H", raw[:2])
+    return int(eco2)
 
 
-def parse_air_quality_thingy(raw: bytes) -> dict:
+
+
+import math
+
+DB_OFFSET = 75.0  # empirical calibration
+
+def parse_sound_thingy(raw: bytes) -> float:
     """
-    Thingy:52 air quality often has 2 bytes:
-    - eCO2 (ppm) uint16
-    - TVOC (ppb) uint16  (sometimes separate)
-    Here we assume 4 bytes total.
+    Convert Thingy:52 microphone audio frame to approximate dB (SPL-like).
     """
-    if len(raw) < 4:
-        raise ValueError(f"Air quality raw too short: {len(raw)}")
-    eco2, tvoc = struct.unpack("<HH", raw[0:4])
-    return {"eco2_ppm": int(eco2), "tvoc_ppb": int(tvoc)}
+
+    if not raw:
+        return 0.0
+
+    # Center unsigned 8-bit samples
+    samples = [(b - 128) for b in raw]
+
+    # RMS amplitude
+    rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+
+    if rms <= 0:
+        return 0.0
+
+    # Digital full-scale reference
+    A_ref = 128.0
+
+    # Convert to dBFS
+    dbfs = 20.0 * math.log10(rms / A_ref)
+
+    # Convert to dB (approx SPL)
+    db = dbfs + DB_OFFSET
+
+    return float(db)
+
+
+
+
+def parse_light_thingy(raw: bytes) -> float:
+    import struct
+    if len(raw) < 2:
+        raise ValueError(f"Light raw too short: {len(raw)}")
+    lux_raw = struct.unpack("<H", raw[:2])[0]
+    return float(lux_raw)  # change to lux_raw / 100.0 if needed

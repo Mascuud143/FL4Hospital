@@ -13,7 +13,7 @@ class Device:
     mac_address: str
     name: Optional[str] = None
     room_id: Optional[int] = None
-    label: Optional[str] = None  # e.g. "Device 1" for CSV/dashboard
+    label: Optional[str] = None  
     sensors: List[Sensor] = field(default_factory=list)
 
     def add_sensor(self, sensor: Sensor) -> None:

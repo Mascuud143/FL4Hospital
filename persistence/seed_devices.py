@@ -13,13 +13,13 @@ def seed_devices_and_sensors(devices: Iterable, *, room_id_default=None) -> None
 
     Expects your runtime 'devices' objects to have:
       - mac_address
-      - label
       - sensors: list of Sensor objects with uuid, sensor_type, unit
     """
     with session_scope() as session:
         for d in devices:
             mac = d.mac_address
-            label = getattr(d, "label", None)
+            room_id = getattr(d, "room_id", room_id_default)
+            device_type = getattr(d, "device_type", "nordic")
 
             db_device = (
                 session.query(DeviceModel)
@@ -28,16 +28,13 @@ def seed_devices_and_sensors(devices: Iterable, *, room_id_default=None) -> None
             )
 
             if db_device is None:
-                kwargs = {"mac_address": mac}
-                # only set fields if the ORM model actually has them
-                if hasattr(DeviceModel, "label"):
-                    kwargs["label"] = label
-                if room_id_default is not None and hasattr(DeviceModel, "room_id"):
-                    kwargs["room_id"] = room_id_default
-
-                db_device = DeviceModel(**kwargs)
+                db_device = DeviceModel(
+                    mac_address=mac,
+                    device_type=device_type,
+                    room_id=room_id,
+                )
                 session.add(db_device)
-                session.flush()  # assigns device_id
+                session.flush()  # To get device_id for FK
 
             # Ensure sensors for this device exist
             for s in getattr(d, "sensors", []):

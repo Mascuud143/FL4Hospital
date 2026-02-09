@@ -1,22 +1,19 @@
 import asyncio
 
 from ble import BLEManager, Device, Sensor
-from ble.characteristics import TEMP_CHAR_UUID, HUMIDITY_CHAR_UUID
-from ble.sensor import parse_temp_thingy, parse_humidity_thingy
+from ble.characteristics import TEMP_CHAR_UUID, HUMIDITY_CHAR_UUID, AIR_QUALITY_CHAR_UUID, PRESSURE_CHAR_UUID, SOUUND_CHAR_UUID, LIGHT_CHAR_UUID
+from ble.sensor import parse_temp_thingy, parse_humidity_thingy, parse_air_quality_thingy, parse_sound_thingy, parse_light_thingy
 
 from data_collection import DataCollector
 from data_collection.db_sink import db_sink
 
 from persistence import init_db
-from persistence.seed_devices import seed_devices_and_sensors  
-
+from persistence.seed_devices import seed_devices_and_sensors
 
 MODE = "REAL"
 
-
 async def print_sink(event: dict):
     print("CLEAN EVENT:", event)
-
 
 devices = [
     Device(mac_address="FE:14:B2:D8:FD:AB", label="Device 1"),
@@ -28,13 +25,17 @@ devices = [
 for d in devices:
     d.add_sensor(Sensor(uuid=TEMP_CHAR_UUID, sensor_type="temperature", unit="°C", parser=parse_temp_thingy))
     d.add_sensor(Sensor(uuid=HUMIDITY_CHAR_UUID, sensor_type="humidity", unit="%", parser=parse_humidity_thingy))
-
+    # light, co2, sound
+    d.add_sensor(Sensor(uuid=AIR_QUALITY_CHAR_UUID, sensor_type="co2", unit="ppm", parser=parse_air_quality_thingy))
+    d.add_sensor(Sensor(uuid=LIGHT_CHAR_UUID, sensor_type="light", unit="lux", parser=parse_light_thingy))
+    d.add_sensor(Sensor(uuid=SOUUND_CHAR_UUID, sensor_type="sound", unit="dB", parser=parse_sound_thingy))
+    d.room_id = 1  # attach room_id for seeding
 
 async def main():
     init_db(db_url="sqlite:///fl4hospital.db", echo=False)
 
-    #Seed the known devices + their sensors right away
-    seed_devices_and_sensors(devices)
+    # Seed devices + sensors using the SAME objects that contain sensors
+    seed_devices_and_sensors(devices, room_id_default=1)
 
     collector = DataCollector(sinks=[print_sink, db_sink])
     await collector.start()
@@ -49,7 +50,6 @@ async def main():
         finally:
             await mgr.stop()
             await collector.stop()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
