@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Room {{ room.room_number }}</h2>
+<h3>Devices in Room {{ room.room_number }}</h3>
+<ul>
+{% for device in room.devices %}
+  <li>{{ device.device_type }} (ID: {{ device.device_id }})</li>
+{% endfor %}
+</ul>
+
+<h3>Patient Assignments</h3>
+<table>
+<tr>
+  <th>Patient</th>
+  <th>Admission</th>
+  <th>Release</th>
+  <th>Profile</th>
+</tr>
+
+
+
+{% for a in assignments %}
+<tr>
+  <td>{{ a.patient.name }}</td>
+  <td>{{ a.start_time.date() }}</td>
+  <td>{{ a.end_time.date() }}</td>
+  <td>
+    <a href="/patients/{{ a.patient.patient_id }}">View</a>
+  </td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}
