@@ -51,7 +51,7 @@ async def main():
     else:
         devices = seed_simulated_world()
         seed_devices_and_sensors(devices, room_id_default=1)
-        mgr = SimulatedBLEManager(devices, on_event=collector.ingest, readings_per_day=48)
+        mgr = SimulatedBLEManager(devices, on_event=collector.ingest)
 
     await mgr.start()
     try:
