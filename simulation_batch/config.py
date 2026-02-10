@@ -5,14 +5,14 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 365  # total simulated days
+DAYS = 30  # total simulated days
 
 
 # -------------------------
 # Population
 # -------------------------
 
-PATIENT_COUNT = 100
+PATIENT_COUNT = 6000
 
 
 # -------------------------

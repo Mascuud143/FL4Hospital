@@ -1,122 +1,121 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-from persistence.database import session_scope
-from persistence.models.device import Device as DeviceModel
-from persistence.models.sensor import Sensor as SensorModel
-
-from .room_engine import RoomEngine
+from typing import Callable, List
 
 
-@dataclass
-class SensorEmitRow:
-    device_id: int
-    room_id: int
-    location: str           # "main" | "toilet"
-    device_type: str        # should be "sensor"
-    sensor_type: str        # temperature/humidity/co2/light/sound
-    uuid: Optional[str]
-    unit: str
+class SensorRuntime:
+    """
+    Plain runtime sensor object (NO ORM).
+    """
+    def __init__(
+        self,
+        *,
+        sensor_id: int,
+        device_id: int,
+        room_id: int,
+        mac: str,
+        location: str,
+        sensor_type: str,
+        uuid: str,
+    ):
+        self.sensor_id = sensor_id
+        self.device_id = device_id
+        self.room_id = room_id
+        self.mac = mac
+        self.location = location
+        self.sensor_type = sensor_type
+        self.uuid = uuid
 
 
 class SensorSampler:
-    """
-    Discovers sensor devices & sensors from DB, then emits readings from RoomEngine state.
-    """
-
-    def __init__(self, *, seed: int = 999):
+    def __init__(self, seed: int = 42):
         self.rng = random.Random(seed)
-        self.emit_map: List[SensorEmitRow] = []
+        self.sensors: List[SensorRuntime] = []
 
-    def build_emit_map_from_db(self) -> None:
-        self.emit_map.clear()
+        # ✅ Load everything ONCE, flattening relationships
+        from persistence.database import session_scope
+        from persistence.models.sensor import Sensor as SensorModel
+        from persistence.models.device import Device as DeviceModel
+
         with session_scope() as session:
-            sensor_devices = (
-                session.query(DeviceModel)
-                .filter(DeviceModel.device_type == "sensor")
+            rows = (
+                session.query(
+                    SensorModel.sensor_id,
+                    SensorModel.sensor_type,
+                    SensorModel.uuid,
+                    DeviceModel.device_id,
+                    DeviceModel.room_id,
+                    DeviceModel.mac_address,
+                    DeviceModel.location,
+                )
+                .join(DeviceModel, SensorModel.device_id == DeviceModel.device_id)
                 .all()
             )
 
-            for dev in sensor_devices:
-                if dev.room_id is None:
-                    continue
-
-                loc = (dev.location or "main").lower()
-
-                sensors = (
-                    session.query(SensorModel)
-                    .filter(SensorModel.device_id == dev.device_id)
-                    .all()
+            for r in rows:
+                self.sensors.append(
+                    SensorRuntime(
+                        sensor_id=r.sensor_id,
+                        device_id=r.device_id,
+                        room_id=r.room_id,
+                        mac=r.mac_address,
+                        location=r.location,
+                        sensor_type=r.sensor_type,
+                        uuid=r.uuid,
+                    )
                 )
 
-                for s in sensors:
-                    st = (getattr(s, "sensor_type", "") or "").lower()
-                    if not st:
-                        continue
+        print(f"[SensorSampler] Loaded {len(self.sensors)} sensors")
 
-                    # enforce your rule set
-                    if loc == "main":
-                        if st not in {"temperature", "humidity", "co2", "light", "sound"}:
-                            continue
-                    elif loc == "toilet":
-                        if st != "temperature":
-                            continue
-                    else:
-                        continue
-
-                    self.emit_map.append(
-                        SensorEmitRow(
-                            device_id=dev.device_id,
-                            room_id=dev.room_id,
-                            location=loc,
-                            device_type=dev.device_type,
-                            sensor_type=st,
-                            uuid=getattr(s, "uuid", None),
-                            unit=getattr(s, "unit", "") or "",
-                        )
-                    )
-
-    async def emit(self, now: datetime, *, room_engine: RoomEngine, on_event) -> None:
-        ts = now.isoformat()
-
-        for row in self.emit_map:
-            rs = room_engine.rooms.get(row.room_id)
-            if rs is None:
+    async def emit(
+        self,
+        now: datetime,
+        *,
+        room_engine,
+        on_event: Callable[[dict], None],
+    ) -> None:
+        for sensor in self.sensors:
+            room = room_engine.rooms.get(sensor.room_id)
+            if not room:
                 continue
 
-            if row.location == "toilet":
-                # toilet: temperature only
-                value = round(rs.toilet.temperature + self.rng.gauss(0.0, 0.05), 2)
-            else:
-                if row.sensor_type == "temperature":
-                    value = round(rs.main.temperature + self.rng.gauss(0.0, 0.05), 2)
-                elif row.sensor_type == "humidity":
-                    value = round(rs.main.humidity + self.rng.gauss(0.0, 0.25), 1)
-                elif row.sensor_type == "co2":
-                    value = round(rs.main.co2 + self.rng.gauss(0.0, 8.0), 0)
-                elif row.sensor_type == "light":
-                    value = round(rs.main.light + self.rng.gauss(0.0, 2.0), 1)
-                elif row.sensor_type == "sound":
-                    value = round(rs.main.sound + self.rng.gauss(0.0, 0.6), 1)
-                else:
-                    continue
+            value = self._sample(sensor.sensor_type, room)
 
-            event: Dict[str, Any] = {
-                "timestamp": ts,
-                "device_id": row.device_id,
-                "room_id": row.room_id,
-                "location": row.location,
-                "device_type": row.device_type,
-                "sensor_type": row.sensor_type,
-                "unit": row.unit,
-                "uuid": row.uuid,
+            event = {
+                "timestamp": now,
+                "room_id": sensor.room_id,
+                "device_id": sensor.device_id,
+                "mac": sensor.mac,
+                "device_type": "sensor",
+                "location": sensor.location,
+                "sensor_type": sensor.sensor_type,
+                "uuid": sensor.uuid,
+                "unit": self._unit(sensor.sensor_type),
                 "value": value,
-                "raw_hex": None,
-                "error": None,
             }
 
             await on_event(event)
+
+    def _sample(self, sensor_type: str, room) -> float:
+        if sensor_type == "temperature":
+            return room.temperature + self.rng.gauss(0, 0.05)
+        if sensor_type == "humidity":
+            return room.humidity + self.rng.gauss(0, 0.2)
+        if sensor_type == "co2":
+            return max(400.0, room.co2 + self.rng.gauss(0, 20))
+        if sensor_type == "light":
+            return max(0.0, room.light + self.rng.gauss(0, 2))
+        if sensor_type == "sound":
+            return max(0.0, room.sound + self.rng.gauss(0, 1))
+        return 0.0
+
+    def _unit(self, sensor_type: str) -> str:
+        return {
+            "temperature": "°C",
+            "humidity": "%",
+            "co2": "ppm",
+            "light": "lux",
+            "sound": "dB",
+        }.get(sensor_type, "")
