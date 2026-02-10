@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 import asyncio
 import math
 import random
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, List, Any
 
 from persistence.database import session_scope
 from persistence.models.room_assignment import RoomAssignment
 from persistence.models.comfort_preference import ComfortPreference
+from persistence.models.device import Device as DeviceModel
+from persistence.models.sensor import Sensor as SensorModel
 
 
 # -------------------------
@@ -20,69 +25,120 @@ def _alpha(dt_s: float, tau_s: float) -> float:
     return 1.0 - math.exp(-dt_s / tau_s)
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
 # -------------------------
-# Environment state
+# Environment state (hidden truth)
 # -------------------------
 
 @dataclass
-class RoomEnvState:
-    # current measured values
-    temperature: float = 22.0
+class MainZoneState:
+    temperature: float = 21.5
     humidity: float = 45.0
     co2: float = 600.0
-    light: float = 100.0
+    light: float = 120.0
     sound: float = 30.0
 
-    # targets
     target_temperature: float = 22.0
-    target_light: float = 100.0
+    target_light: float = 120.0
     target_sound: float = 30.0
+
+    airflow_requested: bool = False  # from ComfortPreference.airflow
+
+
+@dataclass
+class ToiletZoneState:
+    temperature: float = 20.0
+    target_temperature: float = 21.0
+
+
+@dataclass
+class RoomState:
+    main: MainZoneState = field(default_factory=MainZoneState)
+    toilet: ToiletZoneState = field(default_factory=ToiletZoneState)
 
 
 # -------------------------
-# Simulated BLE Manager
+# Simulator
 # -------------------------
 
 class SimulatedBLEManager:
     """
-    Simulates BLE notifications.
-    Sensor values drift slowly toward comfort targets.
-    Emits events compatible with db_sink.
+    Fast, bounded simulation that emits sensor events compatible with db_sink.
+
+    Sensor set:
+      - Main zone: temperature, humidity, co2, light, sound
+      - Toilet zone: temperature only
+
+    Device resolution:
+      - Emits device_id (so MAC is not required)
+      - Includes uuid + sensor_type for exact sensor matching
     """
 
     def __init__(
         self,
-        devices,
-        on_event,
         *,
-        tick_s: float = 1.0,
-        emit_every_s: float = 5.0,
+        on_event,
+        start_time: datetime,
+        end_time: datetime,
+        step_s: int = 60,            # simulated seconds per tick
+        wall_sleep_s: float = 0.0,   # 0 = run as fast as possible
 
-        # time constants
-        tau_temp_s: float = 15 * 60,
-        tau_humidity_s: float = 20 * 60,
-        tau_co2_s: float = 10 * 60,
+        # --- Dynamics time constants ---
+        tau_temp_main_s: float = 20 * 60,
+        tau_temp_toilet_s: float = 45 * 60,   # slower toilet heating
+
         tau_light_s: float = 2 * 60,
         tau_sound_s: float = 60,
+        tau_humidity_s: float = 25 * 60,
+        tau_co2_s: float = 15 * 60,
 
-        # noise
-        noise_temp: float = 0.03,
-        noise_humidity: float = 0.2,
-        noise_co2: float = 5.0,
-        noise_light: float = 1.5,
-        noise_sound: float = 0.4,
+        # --- Outside / loss terms ---
+        outside_temp_c: float = 15.0,
+        loss_main: float = 0.002,    # heat loss strength (main)
+        loss_toilet: float = 0.007,  # stronger loss (toilet cold airflow)
+
+        # --- Occupancy / air quality ---
+        co2_gen_ppm_per_min: float = 3.0,      # occupancy CO2 source (per min)
+        co2_decay_ppm_per_min: float = 6.0,    # baseline decay when unoccupied
+        airflow_extra_decay_ppm_per_min: float = 14.0,  # extra decay when airflow requested
+
+        humidity_drift_per_min: float = 0.02,  # tiny drift
+        airflow_humidity_pull: float = 0.08,   # airflow nudges humidity toward baseline
+
+        # --- Noise ---
+        noise_temp: float = 0.05,
+        noise_humidity: float = 0.25,
+        noise_co2: float = 8.0,
+        noise_light: float = 2.0,
+        noise_sound: float = 0.6,
     ):
-        self.devices = devices
         self.on_event = on_event
 
-        self.tick_s = tick_s
-        self.emit_every_s = emit_every_s
+        self.start_time = start_time.astimezone(timezone.utc)
+        self.end_time = end_time.astimezone(timezone.utc)
+        self.step_s = int(step_s)
+        self.wall_sleep_s = float(wall_sleep_s)
 
-        self.tau_temp_s = tau_temp_s
-        self.tau_humidity_s = tau_humidity_s
-        self.tau_co2_s = tau_co2_s
+        self.tau_temp_main_s = tau_temp_main_s
+        self.tau_temp_toilet_s = tau_temp_toilet_s
         self.tau_light_s = tau_light_s
         self.tau_sound_s = tau_sound_s
+        self.tau_humidity_s = tau_humidity_s
+        self.tau_co2_s = tau_co2_s
+
+        self.outside_temp_c = outside_temp_c
+        self.loss_main = loss_main
+        self.loss_toilet = loss_toilet
+
+        self.co2_gen_ppm_per_min = co2_gen_ppm_per_min
+        self.co2_decay_ppm_per_min = co2_decay_ppm_per_min
+        self.airflow_extra_decay_ppm_per_min = airflow_extra_decay_ppm_per_min
+
+        self.humidity_drift_per_min = humidity_drift_per_min
+        self.airflow_humidity_pull = airflow_humidity_pull
 
         self.noise_temp = noise_temp
         self.noise_humidity = noise_humidity
@@ -91,12 +147,14 @@ class SimulatedBLEManager:
         self.noise_sound = noise_sound
 
         self._stop = asyncio.Event()
-        self._task = None
+        self._task: Optional[asyncio.Task] = None
 
-        # room_id -> RoomEnvState
-        self._rooms: dict[int, RoomEnvState] = {}
+        # room_id -> RoomState
+        self._rooms: Dict[int, RoomState] = {}
 
-        self._emit_accum = 0.0
+        # Sensor emit map built from DB:
+        # each item: {device_id, room_id, location, device_type, sensor_type, uuid, unit}
+        self._sensor_emit: List[Dict[str, Any]] = []
 
     # -------------------------
     # Lifecycle
@@ -104,6 +162,8 @@ class SimulatedBLEManager:
 
     async def start(self):
         self._stop.clear()
+        self._build_emit_map_from_db()
+        self._init_room_states()
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self):
@@ -113,34 +173,117 @@ class SimulatedBLEManager:
             await asyncio.gather(self._task, return_exceptions=True)
 
     # -------------------------
-    # Main loop
+    # DB discovery
+    # -------------------------
+
+    def _build_emit_map_from_db(self) -> None:
+        """
+        Pull sensor devices + sensors from DB so the simulator matches what was seeded.
+
+        Assumptions:
+          - Sensor devices have Device.device_type == "sensor"
+          - Device.location is "main" or "toilet"
+          - Sensor.sensor_type is one of: temperature, humidity, co2, light, sound
+        """
+        self._sensor_emit.clear()
+        self._rooms.clear()
+
+        with session_scope() as session:
+            sensor_devices = (
+                session.query(DeviceModel)
+                .filter(DeviceModel.device_type == "sensor")
+                .all()
+            )
+
+            for dev in sensor_devices:
+                if dev.room_id is None:
+                    continue
+
+                self._rooms.setdefault(dev.room_id, RoomState())
+
+                sensors = (
+                    session.query(SensorModel)
+                    .filter(SensorModel.device_id == dev.device_id)
+                    .all()
+                )
+
+                for s in sensors:
+                    st = getattr(s, "sensor_type", None)
+                    if not st:
+                        continue
+
+                    loc = (dev.location or "main").lower()
+                    st = st.lower()
+
+                    # Enforce your rule set:
+                    if loc == "main":
+                        if st not in {"temperature", "humidity", "co2", "light", "sound"}:
+                            continue
+                    elif loc == "toilet":
+                        if st != "temperature":
+                            continue
+                    else:
+                        # unknown location, skip
+                        continue
+
+                    self._sensor_emit.append(
+                        {
+                            "device_id": dev.device_id,
+                            "room_id": dev.room_id,
+                            "location": loc,
+                            "device_type": dev.device_type,
+                            "sensor_type": st,
+                            "uuid": getattr(s, "uuid", None),
+                            "unit": getattr(s, "unit", None) or "",
+                        }
+                    )
+
+    def _init_room_states(self) -> None:
+        for room_id, rs in self._rooms.items():
+            rs.main.temperature = 21.5 + random.uniform(-0.7, 0.7)
+            rs.main.humidity = 45.0 + random.uniform(-5.0, 5.0)
+            rs.main.co2 = 600.0 + random.uniform(-80.0, 80.0)
+            rs.main.light = 120.0 + random.uniform(-25.0, 25.0)
+            rs.main.sound = 30.0 + random.uniform(-5.0, 5.0)
+
+            rs.toilet.temperature = 20.0 + random.uniform(-1.0, 1.0)
+
+            rs.main.target_temperature = 22.0
+            rs.toilet.target_temperature = 21.0
+            rs.main.target_light = 120.0
+            rs.main.target_sound = 30.0
+            rs.main.airflow_requested = False
+
+    # -------------------------
+    # Main loop (sim clock)
     # -------------------------
 
     async def _loop(self):
-        # initialize room states
-        for d in self.devices:
-            if getattr(d, "room_id", None) is not None:
-                self._rooms.setdefault(d.room_id, RoomEnvState())
+        sim_time = self.start_time
 
-        while not self._stop.is_set():
-            now = datetime.now(timezone.utc)
+        while not self._stop.is_set() and sim_time <= self.end_time:
+            targets = self._get_current_targets(sim_time)
+            self._apply_targets(targets)
 
-            room_targets = self._get_current_targets(now)
-            self._step_rooms(room_targets)
+            self._step_physics()
 
-            self._emit_accum += self.tick_s
-            if self._emit_accum >= self.emit_every_s:
-                self._emit_accum = 0.0
-                await self._emit_events(now)
+            await self._emit_events(sim_time)
 
-            await asyncio.sleep(self.tick_s)
+            sim_time = sim_time + timedelta(seconds=self.step_s)
+
+            if self.wall_sleep_s > 0:
+                await asyncio.sleep(self.wall_sleep_s)
 
     # -------------------------
-    # Comfort targets
+    # Targets from comfort preferences
     # -------------------------
 
-    def _get_current_targets(self, now: datetime) -> dict[int, dict]:
-        targets = {}
+    def _get_current_targets(self, now: datetime) -> Dict[int, Dict[str, Any]]:
+        """
+        Returns per-room targets based on active patient assignments and latest comfort preference.
+        { room_id: {t_main, t_toilet?, light?, sound?, airflow_bool} }
+        """
+        out: Dict[int, Dict[str, Any]] = {}
 
         with session_scope() as session:
             active = (
@@ -160,98 +303,157 @@ class SimulatedBLEManager:
                     .first()
                 )
 
-                if pref:
-                    targets[a.room_id] = {
-                        "temperature": float(pref.temperature),
-                        "light": float(pref.light_intensity),
-                        "sound": float(pref.sound_level),
-                    }
+                if not pref:
+                    continue
 
-        return targets
+                out[a.room_id] = {
+                    "t_main": float(pref.temperature_main),
+                    "t_toilet": float(pref.temperature_toilet) if pref.temperature_toilet is not None else None,
+                    "light": float(pref.light_intensity) if pref.light_intensity is not None else None,
+                    "sound": float(pref.sound_level) if pref.sound_level is not None else None,
+                    "airflow": bool(getattr(pref, "airflow", False)),
+                }
+
+        return out
+
+    def _apply_targets(self, targets: Dict[int, Dict[str, Any]]) -> None:
+        for room_id, rs in self._rooms.items():
+            t = targets.get(room_id)
+            if not t:
+                continue
+
+            rs.main.target_temperature = t["t_main"]
+
+            if t["t_toilet"] is not None:
+                rs.toilet.target_temperature = t["t_toilet"]
+
+            if t["light"] is not None:
+                rs.main.target_light = t["light"]
+
+            if t["sound"] is not None:
+                rs.main.target_sound = t["sound"]
+
+            rs.main.airflow_requested = t["airflow"]
 
     # -------------------------
     # Physics
     # -------------------------
 
-    def _step_rooms(self, room_targets: dict[int, dict]):
-        aT = _alpha(self.tick_s, self.tau_temp_s)
-        aH = _alpha(self.tick_s, self.tau_humidity_s)
-        aC = _alpha(self.tick_s, self.tau_co2_s)
-        aL = _alpha(self.tick_s, self.tau_light_s)
-        aS = _alpha(self.tick_s, self.tau_sound_s)
+    def _step_physics(self) -> None:
+        dt_s = float(self.step_s)
+        dt_min = dt_s / 60.0
 
-        for room_id, state in self._rooms.items():
-            if room_id in room_targets:
-                t = room_targets[room_id]
-                state.target_temperature = t["temperature"]
-                state.target_light = t["light"]
-                state.target_sound = t["sound"]
+        aT_main = _alpha(dt_s, self.tau_temp_main_s)
+        aT_toilet = _alpha(dt_s, self.tau_temp_toilet_s)
 
-            # temperature
-            state.temperature += aT * (state.target_temperature - state.temperature) + random.gauss(0, self.noise_temp)
+        aL = _alpha(dt_s, self.tau_light_s)
+        aS = _alpha(dt_s, self.tau_sound_s)
+        aH = _alpha(dt_s, self.tau_humidity_s)
+        aC = _alpha(dt_s, self.tau_co2_s)
 
-            # humidity (slow ambient drift)
-            state.humidity += random.gauss(0, self.noise_humidity)
+        for room_id, rs in self._rooms.items():
+            # ---------- MAIN temperature ----------
+            rs.main.temperature += aT_main * (rs.main.target_temperature - rs.main.temperature)
+            rs.main.temperature += -self.loss_main * (rs.main.temperature - self.outside_temp_c)
+            rs.main.temperature += random.gauss(0.0, self.noise_temp)
 
-            # CO2 (people present → slowly increases, otherwise decays)
-            occupancy_source = 5.0 if room_id in room_targets else -8.0
-            state.co2 += aC * occupancy_source + random.gauss(0, self.noise_co2)
+            # ---------- TOILET temperature (slower + more loss) ----------
+            rs.toilet.temperature += aT_toilet * (rs.toilet.target_temperature - rs.toilet.temperature)
+            rs.toilet.temperature += -self.loss_toilet * (rs.toilet.temperature - self.outside_temp_c)
+            rs.toilet.temperature += random.gauss(0.0, self.noise_temp)
 
-            # light
-            state.light += aL * (state.target_light - state.light) + random.gauss(0, self.noise_light)
+            # ---------- MAIN light ----------
+            rs.main.light += aL * (rs.main.target_light - rs.main.light)
+            rs.main.light += random.gauss(0.0, self.noise_light)
 
-            # sound
-            state.sound += aS * (state.target_sound - state.sound) + random.gauss(0, self.noise_sound)
+            # ---------- MAIN sound ----------
+            rs.main.sound += aS * (rs.main.target_sound - rs.main.sound)
+            rs.main.sound += random.gauss(0.0, self.noise_sound)
 
-            # clamps
-            state.temperature = max(15.0, min(30.0, state.temperature))
-            state.humidity = max(20.0, min(80.0, state.humidity))
-            state.co2 = max(350.0, min(2000.0, state.co2))
-            state.light = max(0.0, min(2000.0, state.light))
-            state.sound = max(0.0, min(120.0, state.sound))
+            # ---------- MAIN humidity ----------
+            # drift slowly + airflow pulls it toward baseline (45%)
+            baseline_h = 45.0
+            humidity_target = baseline_h
+            if rs.main.airflow_requested:
+                humidity_target = baseline_h  # airflow stabilizes humidity
+
+            rs.main.humidity += aH * (humidity_target - rs.main.humidity)
+            rs.main.humidity += (random.gauss(0.0, self.noise_humidity) + self.humidity_drift_per_min * dt_min)
+
+            # ---------- MAIN CO2 ----------
+            # Occupancy: assume occupied if assigned (targets exist) -> generate CO2.
+            # Airflow: accelerates CO2 decay (fresh air).
+            occupied = True  # if the room exists in simulation, assume occupied during assignment-driven targets
+            co2 = rs.main.co2
+
+            if occupied:
+                co2 += self.co2_gen_ppm_per_min * dt_min
+            else:
+                co2 -= self.co2_decay_ppm_per_min * dt_min
+
+            if rs.main.airflow_requested:
+                co2 -= self.airflow_extra_decay_ppm_per_min * dt_min
+
+            # Smooth with lag and noise
+            rs.main.co2 = rs.main.co2 + aC * (co2 - rs.main.co2) + random.gauss(0.0, self.noise_co2)
+
+            # ---------- clamps ----------
+            rs.main.temperature = _clamp(rs.main.temperature, 15.0, 30.0)
+            rs.toilet.temperature = _clamp(rs.toilet.temperature, 10.0, 30.0)
+
+            rs.main.light = _clamp(rs.main.light, 0.0, 2000.0)
+            rs.main.sound = _clamp(rs.main.sound, 0.0, 120.0)
+
+            rs.main.humidity = _clamp(rs.main.humidity, 20.0, 80.0)
+            rs.main.co2 = _clamp(rs.main.co2, 350.0, 2500.0)
 
     # -------------------------
-    # Emit BLE-style events
+    # Emit events
     # -------------------------
 
-    async def _emit_events(self, now: datetime):
+    async def _emit_events(self, now: datetime) -> None:
         ts = now.isoformat()
 
-        for device in self.devices:
-            room_id = getattr(device, "room_id", None)
+        for s in self._sensor_emit:
+            room_id = s["room_id"]
             if room_id not in self._rooms:
                 continue
 
-            env = self._rooms[room_id]
-            mac = device.mac_address.upper()
+            rs = self._rooms[room_id]
+            loc = s["location"]
+            st = s["sensor_type"]
 
-            for sensor in device.sensors:
-                st = sensor.sensor_type
-
+            # compute "true" value from the hidden room state
+            if loc == "toilet":
+                # toilet: temperature only (enforced in mapping)
+                value = round(rs.toilet.temperature + random.gauss(0.0, self.noise_temp), 2)
+            else:
+                # main room sensors
                 if st == "temperature":
-                    value = round(env.temperature, 2)
+                    value = round(rs.main.temperature + random.gauss(0.0, self.noise_temp), 2)
                 elif st == "humidity":
-                    value = round(env.humidity, 1)
+                    value = round(rs.main.humidity + random.gauss(0.0, self.noise_humidity), 1)
                 elif st == "co2":
-                    value = round(env.co2, 0)
+                    value = round(rs.main.co2 + random.gauss(0.0, self.noise_co2), 0)
                 elif st == "light":
-                    value = round(env.light, 1)
+                    value = round(rs.main.light + random.gauss(0.0, self.noise_light), 1)
                 elif st == "sound":
-                    value = round(env.sound, 1)
+                    value = round(rs.main.sound + random.gauss(0.0, self.noise_sound), 1)
                 else:
-                    print(f"[SIM] No generator for sensor type: {st}")
                     continue
 
-                event = {
-                    "timestamp": ts,
-                    "mac": mac,
-                    "device_label": device.label or device.name or mac,
-                    "sensor_type": st,
-                    "unit": sensor.unit,
-                    "uuid": str(sensor.uuid),
-                    "value": value,
-                    "raw_hex": None,
-                    "error": None,
-                }
+            event = {
+                "timestamp": ts,
+                "device_id": s["device_id"],     # ✅ db_sink can resolve by device_id
+                "room_id": room_id,
+                "location": loc,
+                "device_type": s["device_type"],
+                "sensor_type": st,
+                "unit": s["unit"],
+                "uuid": s["uuid"],
+                "value": value,
+                "raw_hex": None,
+                "error": None,
+            }
 
-                await self.on_event(event)
+            await self.on_event(event)
