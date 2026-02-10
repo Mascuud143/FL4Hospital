@@ -94,6 +94,7 @@ def _get_device_from_event(session, event: dict) -> Optional[DeviceModel]:
 
 
 async def db_sink(event: dict):
+    print(f"db_sink received event: {event}")
     """
     Resolves device and sensor, then inserts a row into Data.
 
