@@ -12,6 +12,8 @@ from .utility_usage import UtilityUsage
 
 from .ventilation import Ventilation
 from .speaker import Speaker
+from .toilet_light import ToiletLight
+from .toilet_heater import ToiletHeater
 
 __all__ = [
     "Room",
@@ -24,4 +26,6 @@ __all__ = [
     "UtilityUsage",
     "Ventilation",
     "Speaker",
+    "ToiletLight",
+    "ToiletHeater",
 ]
