@@ -110,16 +110,11 @@ class SimulationOrchestrator:
 
             # Emit sensors periodically
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
-                print(f"[orchestrator] Sim Time: {now} - Emitting sensor events...")
-
-                # ✅ IMPORTANT FIX:
-                # Must pass keyword arguments because SensorSampler.emit uses *
                 await self.sampler.emit(
                     now,
                     room_engine=self.engine,
                     on_event=self.on_event,
                 )
-
                 last_sample = now
 
             # Advance simulation time
