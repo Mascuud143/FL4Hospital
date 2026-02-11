@@ -5,7 +5,7 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 2  # total simulated days
+DAYS = 1  # total simulated days
 
 
 # -------------------------
@@ -13,7 +13,7 @@ DAYS = 2  # total simulated days
 # Population
 # -------------------------
 
-PATIENT_COUNT = 10
+PATIENT_COUNT = 3
 
 
 # -------------------------
