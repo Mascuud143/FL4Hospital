@@ -11,7 +11,7 @@ AsyncSink = Callable[[Dict[str, Any]], Awaitable[None]]
 
 @dataclass
 class CollectorConfig:
-    max_incoming_queue: int = 5000
+    #max_incoming_queue: int = 10000
     drop_on_full: bool = True
 
 
@@ -27,7 +27,7 @@ class DataCollector:
         self.processor = processor or DataProcessor()
         self.sinks = sinks or []
 
-        self._incoming = asyncio.Queue(maxsize=self.config.max_incoming_queue)
+        self._incoming = asyncio.Queue()
         self._task: asyncio.Task | None = None
 
         self.received = 0

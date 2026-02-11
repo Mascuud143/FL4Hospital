@@ -3,9 +3,14 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from .room_engine import RoomEngine, RoomState
 from .sensor_sampler import SensorSampler
+from .comfort_generator import ComfortGenerator, ComfortPolicy
+
+
+OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -22,41 +27,40 @@ class SimulationOrchestrator:
         *,
         start_time: datetime,
         end_time: datetime,
-        on_event,
-        config: OrchestratorConfig,
+        on_event: OnEvent,
+        config: Optional[OrchestratorConfig] = None,
         seed: int = 42,
     ):
         self.start_time = start_time
         self.end_time = end_time
         self.on_event = on_event
-        self.config = config
+        self.config = config or OrchestratorConfig()
+
+        self.comfort = ComfortGenerator(
+            seed=seed,
+            policy=ComfortPolicy(max_changes_per_day=self.config.comfort_max_changes_per_day),
+        )
 
         self.rooms = {i: RoomState(i) for i in range(1, 101)}
         self.engine = RoomEngine(self.rooms)
         self.sampler = SensorSampler(seed)
 
-        self._task: asyncio.Task | None = None
-
     async def start(self):
-        self._task = asyncio.create_task(self._run())
+        inserted = self.comfort.generate_for_horizon(self.start_time, self.end_time)
+        print("[orchestrator] comfort rows inserted:", inserted)
+
+        await self._run()
 
     async def _run(self):
         now = self.start_time
         last_sample = now
-
-        print("START SIM LOOP", now, self.end_time)
 
         while now < self.end_time:
             self.engine.apply_targets_from_db(now)
             self.engine.step()
 
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
-                print(f"Sim Time: {now} - Emitting sensor events...")
-                await self.sampler.emit(
-                    now,
-                    room_engine=self.engine,
-                    on_event=self.on_event,
-                )
+                await self.sampler.emit(now, self.engine, self.on_event)
                 last_sample = now
 
             now += timedelta(seconds=self.config.step_s)
