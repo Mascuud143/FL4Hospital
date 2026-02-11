@@ -60,7 +60,11 @@ class SimulationOrchestrator:
             self.engine.step()
 
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
-                await self.sampler.emit(now, self.engine, self.on_event)
+                await self.sampler.emit(
+                    now,
+                    room_engine=self.engine,
+                    on_event=self.on_event,
+                )
                 last_sample = now
 
             now += timedelta(seconds=self.config.step_s)
