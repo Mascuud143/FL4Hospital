@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 
 from persistence import init_db
 from persistence.seed_devices import seed_devices_and_sensors
+# imort db_sink and datacolletor 
+from data_collection.data_collector import DataCollector
+from data_collection.db_sink import db_sink
 
 # ---- SIMULATION ----
 from simulation_batch.orchestrator import SimulationOrchestrator, OrchestratorConfig
