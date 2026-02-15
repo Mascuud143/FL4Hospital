@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from .room_engine import RoomEngine, RoomState
+from .room_engine import RoomEngine, RoomState, _as_utc
 from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
-
+from .toilet_usage_generator import ToiletUsageGenerator
 
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -35,6 +35,7 @@ class SimulationOrchestrator:
         self.end_time = end_time
         self.on_event = on_event
         self.config = config or OrchestratorConfig()
+        self.seed = seed
 
         self.comfort = ComfortGenerator(
             seed=seed,
@@ -49,7 +50,15 @@ class SimulationOrchestrator:
         inserted = self.comfort.generate_for_horizon(self.start_time, self.end_time)
         print("[orchestrator] comfort rows inserted:", inserted)
 
+        toilet_gen = ToiletUsageGenerator(seed=self.seed)
+        inserted = toilet_gen.generate_for_horizon(self.start_time, self.end_time)
+        print("[orchestrator] toilet utility rows inserted:", inserted)
+
         await self._run()
+
+        # ✅ IMPORTANT: close any still-open utility sessions (especially airflow)
+        # so they appear in UtilityUsage even if they never turned off before sim end.
+        self.engine.close_all_sessions(self.end_time)
 
     async def _run(self):
         now = self.start_time
@@ -57,7 +66,7 @@ class SimulationOrchestrator:
 
         while now < self.end_time:
             self.engine.apply_targets_from_db(now)
-            self.engine.step()
+            self.engine.step(now, step_s=self.config.step_s)
 
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
                 await self.sampler.emit(
@@ -71,3 +80,5 @@ class SimulationOrchestrator:
 
             if self.config.wall_sleep_s > 0:
                 await asyncio.sleep(self.config.wall_sleep_s)
+
+
