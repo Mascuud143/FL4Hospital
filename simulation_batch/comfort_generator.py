@@ -105,19 +105,19 @@ def _pick_targets_for_time(rng: random.Random, t: datetime, policy: ComfortPolic
     if 0 <= hour < 6:       # night
         t_main_base = rng.uniform(20.0, 22.0)
         light = 0.0
-        sound = rng.uniform(0, 20)
+        sound = rng.randint(0, 20)
     elif 6 <= hour < 12:    # morning
         t_main_base = rng.uniform(21.0, 23.0)
-        light = rng.uniform(10, 40)
-        sound = rng.uniform(10, 35)
+        light = rng.randint(10, 40)
+        sound = rng.randint(10, 35)
     elif 12 <= hour < 18:   # afternoon
         t_main_base = rng.uniform(22.0, 24.0)
-        light = rng.uniform(20, 60)
-        sound = rng.uniform(15, 45)
+        light = rng.randint(20, 60)
+        sound = rng.randint(15, 45)
     else:                   # evening
         t_main_base = rng.uniform(20.0, 22.5)
-        light = rng.uniform(5, 35)
-        sound = rng.uniform(0, 25)
+        light = rng.randint(5, 35)
+        sound = rng.randint(0, 25)
 
     # --- Temperature feature: personal adjustment ---
     # add a small random "preference tweak" so it’s not purely bucketed

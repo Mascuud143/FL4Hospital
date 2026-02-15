@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from .room_engine import RoomEngine, RoomState
+from .room_engine import RoomEngine, RoomState, _as_utc
 from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
-
+from .toilet_usage_generator import ToiletUsageGenerator
 
 # Callback type used when emitting sensor events
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
@@ -46,6 +46,7 @@ class SimulationOrchestrator:
         self.end_time = end_time
         self.on_event = on_event
         self.config = config or OrchestratorConfig()
+        self.seed = seed
 
         # Comfort preference generator (writes to DB)
         self.comfort = ComfortGenerator(
@@ -81,13 +82,17 @@ class SimulationOrchestrator:
         )
         print(f"[orchestrator] comfort rows inserted: {inserted}")
 
+        toilet_gen = ToiletUsageGenerator(seed=self.seed)
+        inserted = toilet_gen.generate_for_horizon(self.start_time, self.end_time)
+        print("[orchestrator] toilet utility rows inserted:", inserted)
+
         await self._run()
 
-    async def stop(self) -> None:
-        """Graceful stop."""
-        self._stop.set()
+        # ✅ IMPORTANT: close any still-open utility sessions (especially airflow)
+        # so they appear in UtilityUsage even if they never turned off before sim end.
+        self.engine.close_all_sessions(self.end_time)
 
-    async def _run(self) -> None:
+    async def _run(self):
         now = self.start_time
         last_sample = now
 
@@ -104,9 +109,7 @@ class SimulationOrchestrator:
 
             # Apply latest comfort targets from DB
             self.engine.apply_targets_from_db(now)
-
-            # Step physics
-            self.engine.step()
+            self.engine.step(now, step_s=self.config.step_s)
 
             # Emit sensors periodically
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
@@ -123,3 +126,5 @@ class SimulationOrchestrator:
             # Optional wall-clock delay
             if self.config.wall_sleep_s > 0:
                 await asyncio.sleep(self.config.wall_sleep_s)
+
+

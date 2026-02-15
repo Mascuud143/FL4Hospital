@@ -11,7 +11,8 @@ class ToiletHeater(Base):
     __tablename__ = "toilet_heaters"
 
     toilet_heater_id = Column(Integer, primary_key=True, autoincrement=True)
-    device_id = Column(Integer, ForeignKey("devices.device_id"), nullable=False, unique=True)
+    device_id = Column(Integer, ForeignKey("devices.device_id"), nullable=False, index=True)
+
 
     state = Column(Boolean, nullable=False)  # True = ON, False = OFF
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
