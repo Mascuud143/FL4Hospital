@@ -36,7 +36,6 @@ class Ventilation(Base):
         Integer,
         ForeignKey("devices.device_id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
         index=True,
     )
 
@@ -54,6 +53,7 @@ class Ventilation(Base):
         back_populates="ventilation",
         uselist=False,
     )
+
 
     __table_args__ = (
         Index("ix_ventilation_device_time", "device_id", "timestamp"),

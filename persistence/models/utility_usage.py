@@ -20,7 +20,6 @@ class UtilityUsage(Base):
 
     usage_id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # What caused this usage session
     category = Column(
         String,
         nullable=False,
@@ -28,9 +27,8 @@ class UtilityUsage(Base):
         index=True,
     )
 
-    # Consumption accumulated over [start_time, end_time]
-    water_consumption = Column(Float, nullable=True)  # liters (or your chosen unit)
-    power_consumption = Column(Float, nullable=True)  # kWh (recommended)
+    water_consumption = Column(Float, nullable=True)  # liters
+    power_consumption = Column(Float, nullable=True)  # kWh
 
     start_time = Column(
         DateTime(timezone=True),
@@ -51,12 +49,21 @@ class UtilityUsage(Base):
         index=True,
     )
 
-    # Relationships
+    # ✅ NEW: which device caused this usage (nullable for water unless you have a meter device)
+    device_id = Column(
+        Integer,
+        ForeignKey("devices.device_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     room = relationship("Room", back_populates="utility_usages")
+    device = relationship("Device")
 
     __table_args__ = (
         Index("ix_utility_usage_room_category_time", "room_id", "category", "start_time"),
         Index("ix_utility_usage_room_time", "room_id", "start_time"),
+        Index("ix_utility_usage_device_time", "device_id", "start_time"),
     )
 
     def __repr__(self) -> str:
@@ -64,6 +71,7 @@ class UtilityUsage(Base):
             f"<UtilityUsage("
             f"id={self.usage_id}, "
             f"room_id={self.room_id}, "
+            f"device_id={self.device_id}, "
             f"category={self.category}, "
             f"power={self.power_consumption}, "
             f"water={self.water_consumption}, "
