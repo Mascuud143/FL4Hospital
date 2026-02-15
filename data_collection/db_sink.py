@@ -149,5 +149,13 @@ async def db_sink(event: dict):
         if ts is not None:
             row.timestamp = ts
 
+    
+        # before saving, we change if there is big change in temperarture, humifity etc
+        # check from data base if there big change and then we only save if we have +- number
+        # for this type of sensor type and sensor id
+
+
+        current_value = session.query
+
         session.add(row)
         # session_scope() handles commit/rollback

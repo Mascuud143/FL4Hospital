@@ -16,16 +16,16 @@ from .toilet_light import ToiletLight
 from .toilet_heater import ToiletHeater
 
 __all__ = [
-    "Room",
-    "Device",
-    "Sensor",
-    "Data",
-    "Patient",
-    "ComfortPreference",
-    "RoomAssignment",
-    "UtilityUsage",
-    "Ventilation",
-    "Speaker",
-    "ToiletLight",
-    "ToiletHeater",
+"Room",
+"Device",
+"Sensor",
+"Data",
+"Patient",
+"ComfortPreference",
+"RoomAssignment",
+"UtilityUsage",
+"Ventilation",
+"Speaker",
+"ToiletLight",
+"ToiletHeater",
 ]
