@@ -147,17 +147,8 @@ async def run_real_hybrid(db_url: str, echo: bool, reset_db: bool, runtime_s: in
     start = _to_utc_dt(START_DATE)
     end = start + timedelta(days=DAYS)
 
-    sim = SimulationOrchestrator(
-        start_time=start,
-        end_time=end,
-        on_event=collector.ingest,
-        config=OrchestratorConfig(
-            step_s=60,
-            sample_every_s=0,     # disable simulated sensors to avoid duplicates
-            wall_sleep_s=0.0,
-        ),
-        seed=42,
-    )
+    
+    
 
     try:
         await mgr.start()
