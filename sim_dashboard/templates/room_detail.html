@@ -1,33 +1,173 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Room {{ room.room_number }}</h2>
-<h3>Devices in Room {{ room.room_number }}</h3>
-<ul>
-{% for device in room.devices %}
-  <li>{{ device.device_type }} (ID: {{ device.device_id }})</li>
-{% endfor %}
-</ul>
+<style>
+  .room-page { display: grid; gap: 16px; }
+  .section { border: 1px solid #e2e2e2; padding: 12px; background: #fafafa; }
+  .section h3 { margin: 0 0 8px 0; }
+  .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .muted { color: #666; }
+  details { border: 1px solid #ddd; padding: 8px; background: #fff; margin-bottom: 8px; }
+  summary { cursor: pointer; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #ddd; padding: 6px; vertical-align: top; }
+  th { background: #f0f0f0; }
+  .sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sensor-box { border: 1px solid #eee; padding: 8px; background: #fcfcfc; }
+</style>
 
-<h3>Patient Assignments</h3>
-<table>
-<tr>
-  <th>Patient</th>
-  <th>Admission</th>
-  <th>Release</th>
-  <th>Profile</th>
-</tr>
+<div class="room-page">
+  <h2>Room {{ room.room_number }}</h2>
 
+  <div class="section">
+    <h3>Devices in Room {{ room.room_number }}</h3>
+    <ul>
+    {% for device in room.devices %}
+      <li>{{ device.device_type }} (ID: {{ device.device_id }})</li>
+    {% endfor %}
+    </ul>
+  </div>
 
+  <div class="section">
+    <h3>Patient Assignments</h3>
+    <table>
+      <tr>
+        <th>Patient</th>
+        <th>Admission</th>
+        <th>Release</th>
+        <th>Profile</th>
+      </tr>
+      {% for a in assignments %}
+      <tr>
+        <td>{{ a.patient.name }}</td>
+        <td>{{ a.start_time.date() }}</td>
+        <td>{{ a.end_time.date() }}</td>
+        <td><a href="/patients/{{ a.patient.patient_id }}">View</a></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
 
-{% for a in assignments %}
-<tr>
-  <td>{{ a.patient.name }}</td>
-  <td>{{ a.start_time.date() }}</td>
-  <td>{{ a.end_time.date() }}</td>
-  <td>
-    <a href="/patients/{{ a.patient.patient_id }}">View</a>
-  </td>
-</tr>
-{% endfor %}
-</table>
+  <div class="two-col">
+    <div class="section">
+      <h3>Comfort Preferences</h3>
+      {% if comfort_preferences %}
+        {% for c in comfort_preferences %}
+        <details>
+          <summary>
+            {{ c.timestamp.strftime("%Y-%m-%d %H:%M") }}
+            {% if c.patient_name %}- {{ c.patient_name }}{% endif %}
+          </summary>
+          <p>
+            Temp main: {{ c.temperature_main }}
+            | Temp toilet: {% if c.temperature_toilet is not none %}{{ c.temperature_toilet }}{% else %}--{% endif %}
+            | Light: {% if c.light_intensity is not none %}{{ c.light_intensity }}{% else %}--{% endif %}
+            | Sound: {% if c.sound_level is not none %}{{ c.sound_level }}{% else %}--{% endif %}
+            | Airflow: {{ c.airflow }}
+            | Source: {{ c.source }}
+          </p>
+
+          {% if c.sensor_windows %}
+            {% for s in c.sensor_windows %}
+            <details>
+              <summary>{{ s.sensor_type }} (Device {{ s.device_id }})</summary>
+              <div class="sensor-grid">
+                <div class="sensor-box">
+                  <strong>Before (last 10 within -1h)</strong>
+                  {% if s.before_rows %}
+                  <table>
+                    <tr><th>Value</th><th>Time</th><th>Unit</th></tr>
+                    {% for r in s.before_rows %}
+                    <tr>
+                      <td>{% if r.value is not none %}{{ r.value }}{% else %}--{% endif %}</td>
+                      <td>{% if r.timestamp %}{{ r.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+                      <td>{% if s.unit %}{{ s.unit }}{% else %}--{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                  </table>
+                  {% else %}
+                  <p class="muted">No readings in this window.</p>
+                  {% endif %}
+                </div>
+
+                <div class="sensor-box">
+                  <strong>After (first 10 within +1h)</strong>
+                  {% if s.after_rows %}
+                  <table>
+                    <tr><th>Value</th><th>Time</th><th>Unit</th></tr>
+                    {% for r in s.after_rows %}
+                    <tr>
+                      <td>{% if r.value is not none %}{{ r.value }}{% else %}--{% endif %}</td>
+                      <td>{% if r.timestamp %}{{ r.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+                      <td>{% if s.unit %}{{ s.unit }}{% else %}--{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                  </table>
+                  {% else %}
+                  <p class="muted">No readings in this window.</p>
+                  {% endif %}
+                </div>
+              </div>
+            </details>
+            {% endfor %}
+          {% else %}
+            <p class="muted">No sensors available for this room.</p>
+          {% endif %}
+        </details>
+        {% endfor %}
+      {% else %}
+        <p class="muted">No comfort preferences recorded.</p>
+      {% endif %}
+    </div>
+
+    <div class="section">
+      <h3>Utility Usage (Recent)</h3>
+      {% if utility_usages %}
+      <table>
+        <tr>
+          <th>Category</th>
+          <th>Power (kWh)</th>
+          <th>Water (L)</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Device</th>
+        </tr>
+        {% for u in utility_usages %}
+        <tr>
+          <td>{{ u.category }}</td>
+          <td>{% if u.power_consumption is not none %}{{ u.power_consumption }}{% else %}--{% endif %}</td>
+          <td>{% if u.water_consumption is not none %}{{ u.water_consumption }}{% else %}--{% endif %}</td>
+          <td>{% if u.start_time %}{{ u.start_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+          <td>{% if u.end_time %}{{ u.end_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+          <td>{% if u.device_id %}{{ u.device_id }}{% else %}--{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No utility usage data available.</p>
+      {% endif %}
+
+      <h3>Ventilation</h3>
+      {% if ventilation_data %}
+      <table>
+        <tr>
+          <th>Device</th>
+          <th>Mode</th>
+          <th>Level</th>
+          <th>Time</th>
+        </tr>
+        {% for v in ventilation_data %}
+        <tr>
+          <td>{{ v.device_id }}</td>
+          <td>{{ v.mode }}</td>
+          <td>{% if v.level is not none %}{{ v.level }}{% else %}--{% endif %}</td>
+          <td>{% if v.timestamp %}{{ v.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No ventilation data available.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
 {% endblock %}
