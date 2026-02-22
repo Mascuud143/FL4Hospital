@@ -1,3 +1,4 @@
+
 import random
 from datetime import timedelta, datetime, date
 
@@ -73,6 +74,7 @@ def run():
         session.add(room)
         rooms.append(room)
         session.flush()
+        room_occupancy = {}  # room_id -> list of (start_time, end_time)
 
 
         print("Assigning patients to rooms...")
@@ -110,6 +112,10 @@ def run():
                 end_time=patient.release_date,
             )
             session.add(assignment)
+
+            room_occupancy.setdefault(room.room_id, []).append(
+            (patient.admission_date, patient.release_date)
+            )
 
             # ---- EXACTLY 4 comfort preferences (one-day profile) ----
             base_date = patient.admission_date
@@ -157,6 +163,91 @@ def run():
             current_room_stay_sum += s
 
         session.flush()
+
+        # ============================================================
+        # EXTRA PHASE: ROOM CHANGE WHILE ADMITTED
+        # ============================================================
+
+        def overlaps(a_start, a_end, b_start, b_end):
+            return not (a_end <= b_start or a_start >= b_end)
+
+        original_last_room = max(rooms, key=lambda r: r.room_number)
+        transfer_rooms = [original_last_room]
+        max_room_number = original_last_room.room_number
+
+        print(f">>> TRANSFER PHASE START (prob={CHANGE_ROOM_PROB}) <<<")
+
+        for patient in patients:
+            if random.random() > CHANGE_ROOM_PROB:
+                continue
+
+            admit = patient.admission_date
+            discharge = patient.release_date
+            total_days = (discharge - admit).days
+
+            if total_days < MIN_DAYS_BEFORE_TRANSFER + MIN_DAYS_AFTER_TRANSFER + 1:
+                continue
+
+            transfer_day = random.randint(
+                MIN_DAYS_BEFORE_TRANSFER,
+                total_days - MIN_DAYS_AFTER_TRANSFER,
+            )
+            transfer_time = admit + timedelta(days=transfer_day)
+
+            orig = (
+            session.query(RoomAssignment)
+            .filter(RoomAssignment.patient_id == patient.patient_id)
+            .order_by(RoomAssignment.start_time.asc())
+            .first()
+            )
+            if not orig:
+                print(f"SKIP patient {patient.patient_id}: no orig assignment found")
+                continue
+            
+
+            orig_room_id = orig.room_id
+            orig.end_time = transfer_time
+
+            room_occupancy[orig_room_id] = [
+                (s, e)
+                for (s, e) in room_occupancy[orig_room_id]
+                if not (s == admit and e == discharge)
+            ]
+            room_occupancy[orig_room_id].append((admit, transfer_time))
+
+            destination = None
+            for r in transfer_rooms:
+                if r.room_id == orig_room_id:
+                    continue
+
+                if all(
+                    not overlaps(transfer_time, discharge, s, e)
+                    for (s, e) in room_occupancy.get(r.room_id, [])
+                ):
+                    destination = r
+                    break
+
+            if destination is None:
+                max_room_number += 1
+                destination = Room(room_number=max_room_number)
+                session.add(destination)
+                session.flush()
+
+                rooms.append(destination)
+                transfer_rooms.append(destination)
+                room_occupancy[destination.room_id] = []
+
+            session.add(
+                RoomAssignment(
+                    patient_id=patient.patient_id,
+                    room_id=destination.room_id,
+                    start_time=transfer_time,
+                    end_time=discharge,
+                )
+            )
+
+            room_occupancy[destination.room_id].append((transfer_time, discharge))
+            session.flush()
 
 
 

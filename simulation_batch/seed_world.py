@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+print(">>> RUN SCRIPT 1 <<<")
 import math
 import random
 from datetime import date, datetime, timedelta
@@ -55,6 +55,14 @@ def _unit_for(st: str) -> str:
 # -------------------------
 # Seeding
 # -------------------------
+from simulation_batch.config import (
+    PATIENT_COUNT,
+    DAYS,
+    START_DATE,
+    CHANGE_ROOM_PROB,
+    MIN_DAYS_BEFORE_TRANSFER,
+    MIN_DAYS_AFTER_TRANSFER,
+)
 
 def seed_simulated_world(
     *,
@@ -63,6 +71,7 @@ def seed_simulated_world(
     days: int = DAYS,
     start_date: date | datetime = START_DATE,
     include_speaker: bool = True,
+
 ) -> List[BLEDevice]:
     """
     Seeds DB:
@@ -92,6 +101,7 @@ def seed_simulated_world(
     # --------- Build patients ----------
     patients: list[Patient] = []
     stay_days_list: list[int] = []
+    
 
     for p in generate_patients(patient_count):
         age_hw = age_height_weight_generator()
@@ -127,6 +137,9 @@ def seed_simulated_world(
         current_room: Optional[Room] = None
         current_offset_days = 0
         room_index = 0
+        #room_occupancy: dict[int, list[tuple[datetime, datetime]]] = {}
+        room_occupancy = {}  # room_id -> list of (start_time, end_time)
+
 
         for patient, stay in zip(patients, stay_days_list):
             # If no room yet or patient doesn't fit in remaining horizon for this room, open new room
@@ -156,10 +169,106 @@ def seed_simulated_world(
                     end_time=release,
                 )
             )
+            room_occupancy.setdefault(current_room.room_id, []).append((admission, release))
+            #room_occupancy.setdefault(room.room_id, []).append((patient.admission, patient.release))
 
             current_offset_days += stay
 
         session.flush()
+
+        # ============================================================
+        # EXTRA PHASE: ROOM CHANGE WHILE ADMITTED
+        # ============================================================
+
+        def overlaps(a_start, a_end, b_start, b_end):
+            return not (a_end <= b_start or a_start >= b_end)
+
+        original_last_room = max(rooms, key=lambda r: r.room_number)
+        transfer_rooms = [original_last_room]
+        max_room_number = original_last_room.room_number
+
+        print(f">>> TRANSFER PHASE START (prob={CHANGE_ROOM_PROB}) <<<")
+
+        for patient in patients:
+            
+            if random.random() > CHANGE_ROOM_PROB:
+                continue
+            
+            admit = patient.admission_date
+            discharge = patient.release_date
+            total_days = (discharge - admit).days
+
+            if total_days < MIN_DAYS_BEFORE_TRANSFER + MIN_DAYS_AFTER_TRANSFER + 1:
+                continue
+
+            transfer_day = random.randint(
+                MIN_DAYS_BEFORE_TRANSFER,
+                total_days - MIN_DAYS_AFTER_TRANSFER,
+            )
+            transfer_time = admit + timedelta(days=transfer_day)
+
+            orig = (
+            session.query(RoomAssignment)
+            .filter(RoomAssignment.patient_id == patient.patient_id)
+            .order_by(RoomAssignment.start_time.asc())
+            .first()
+            )
+            if not orig:
+                print(f"SKIP patient {patient.patient_id}: no orig assignment found")
+                continue
+            
+
+            orig_room_id = orig.room_id
+            orig.end_time = transfer_time
+
+            room_occupancy[orig_room_id] = [
+                (s, e)
+                for (s, e) in room_occupancy[orig_room_id]
+                if not (s == admit and e == discharge)
+            ]
+            room_occupancy[orig_room_id].append((admit, transfer_time))
+
+            destination = None
+            for r in transfer_rooms:
+                if r.room_id == orig_room_id:
+                    continue
+
+                if all(
+                    not overlaps(transfer_time, discharge, s, e)
+                    for (s, e) in room_occupancy.get(r.room_id, [])
+                ):
+                    destination = r
+                    break
+
+            if destination is None:
+                max_room_number += 1
+                destination = Room(room_number=max_room_number)
+                session.add(destination)
+                session.flush()
+
+                rooms.append(destination)
+                transfer_rooms.append(destination)
+                room_occupancy[destination.room_id] = []
+
+            session.add(
+                RoomAssignment(
+                    patient_id=patient.patient_id,
+                    room_id=destination.room_id,
+                    start_time=transfer_time,
+                    end_time=discharge,
+                )
+            )
+            print(
+            f"Patient {patient.patient_id} moved "
+            f"to room {destination.room_number} "
+            f"[{transfer_time} → {discharge}]"
+            )
+
+
+            room_occupancy[destination.room_id].append((transfer_time, discharge))
+            
+            
+            session.flush()
 
         # --------- Create runtime devices per room ----------
         for room in rooms:

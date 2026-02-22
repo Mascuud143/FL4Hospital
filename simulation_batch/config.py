@@ -5,15 +5,29 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 30  # total simulated days
+DAYS = 10  # total simulated days
 
 
 # -------------------------
-
 # Population
 # -------------------------
 
 PATIENT_COUNT = 10
+
+
+# -------------------------
+# Room transfer behavior
+# -------------------------
+
+# Probability that a patient changes rooms once during their stay
+# 0.0 = never, 1.0 = always
+CHANGE_ROOM_PROB = 0.3
+
+# Minimum days after admission before a transfer is allowed
+MIN_DAYS_BEFORE_TRANSFER = 1
+
+# Minimum days before discharge after a transfer
+MIN_DAYS_AFTER_TRANSFER = 1
 
 
 # -------------------------

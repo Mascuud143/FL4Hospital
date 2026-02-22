@@ -68,8 +68,9 @@ def build_real_devices() -> list[Device]:
 # ---------- modes ----------
 async def run_sim(db_url: str, echo: bool, reset_db: bool):
     # Simulation mode: everything simulated
-    if reset_db and os.path.exists("fl4hospital_sim.db"):
-        os.remove("fl4hospital_sim.db")
+    db_path = os.getenv("FL4HOSPITAL_DB_PATH", "fl4hospital.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
 
     init_db(db_url, echo=echo)
 

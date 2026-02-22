@@ -88,7 +88,7 @@ class SimulationOrchestrator:
 
         await self._run()
 
-        # ✅ IMPORTANT: close any still-open utility sessions (especially airflow)
+        # IMPORTANT: close any still-open utility sessions (especially airflow)
         # so they appear in UtilityUsage even if they never turned off before sim end.
         self.engine.close_all_sessions(self.end_time)
 
