@@ -20,6 +20,7 @@ class Patient(Base):
     name = Column(String, nullable=True)
     gender = Column(String, nullable=True)
     ethnicity = Column(String, nullable=True)
+    height = Column(Integer, nullable=True)  # cm
 
     # ---- Relationships ----
     admissions = relationship(
@@ -38,7 +39,11 @@ class Patient(Base):
         "ComfortPreference",
         back_populates="patient",
         cascade="all, delete-orphan",
+
     )
+
+    visits = relationship("Visit", back_populates="patient", cascade="all, delete-orphan")
+    medications = relationship("Medication", back_populates="patient", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Patient(patient_id={self.patient_id}, name={self.name})>"

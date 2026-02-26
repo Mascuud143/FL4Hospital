@@ -25,7 +25,6 @@ class Admission(Base):
     # ---- per-admission changing attributes ----
     age = Column(Integer, nullable=True)
     weight = Column(Float, nullable=True)
-    height = Column(Float, nullable=True)
     current_diagnosis = Column(String, nullable=True)
 
     # relationships

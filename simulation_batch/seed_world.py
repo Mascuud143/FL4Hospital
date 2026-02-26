@@ -1,5 +1,4 @@
 from __future__ import annotations
-print(">>> RUN SCRIPT 1 <<<")
 
 import math
 import random
@@ -106,20 +105,26 @@ def seed_simulated_world(
     generated = generate_patients(patient_count)
     for idx, p in enumerate(generated):
         age_hw = age_height_weight_generator()
+    
 
         patient = Patient(
             name=generate_name(),
             ethnicity=p["ethnicity"],
             gender=rng.choice(["Male", "Female"]),
+            height=age_hw["height"],
+        
         )
 
         # Per-stay data -> Admission (store now so we can use it later)
         per_stay_attrs[idx] = {
             "age": age_hw["age"],
-            "height": age_hw["height"],
             "weight": age_hw["weight"],
+            "medications": p["medications"],
             "current_diagnosis": p["diagnosis"],
+            "symptoms": p["symptoms"],      
+
         }
+
 
         stay_days = rng.randint(5, 20)
         patients.append(patient)
@@ -169,7 +174,6 @@ def seed_simulated_world(
                 discharged_at=discharged_at,
                 age=attrs["age"],
                 weight=attrs["weight"],
-                height=attrs["height"],
                 current_diagnosis=attrs["current_diagnosis"],
             )
             session.add(adm)
