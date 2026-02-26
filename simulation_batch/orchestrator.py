@@ -10,6 +10,12 @@ from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
 from .toilet_usage_generator import ToiletUsageGenerator
 
+# NEW: clinical generators
+from simulation_batch.generators.medication_generator import MedicationGenerator
+from simulation_batch.generators.visit_generator import VisitGenerator
+from simulation_batch.generators.patients import DIAGNOSES
+
+
 # Callback type used when emitting sensor events
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
@@ -25,12 +31,11 @@ class OrchestratorConfig:
 class SimulationOrchestrator:
     """
     Runs:
-      - comfort pre-generation for horizon (writes ComfortPreference rows)
-      - loop over simulated time:
-          * apply targets from DB
-          * step physics
-          * emit sensor readings every sample cadence
-      - stops at end time
+      - comfort pre-generation
+      - medication generation
+      - visit generation
+      - toilet usage generation
+      - simulation loop (physics + sensors)
     """
 
     def __init__(
@@ -48,7 +53,7 @@ class SimulationOrchestrator:
         self.config = config or OrchestratorConfig()
         self.seed = seed
 
-        # Comfort preference generator (writes to DB)
+        # Comfort generator
         self.comfort = ComfortGenerator(
             seed=seed,
             policy=ComfortPolicy(
@@ -56,41 +61,88 @@ class SimulationOrchestrator:
             ),
         )
 
-        # Create room states (1–100)
+        # Room states (1–100)
         self.rooms = {i: RoomState(i) for i in range(1, 101)}
 
         # Simulation engine
         self.engine = RoomEngine(self.rooms)
 
-        # Sensor sampler (loads all sensors once at init)
+        # Sensor sampler
         self.sampler = SensorSampler(seed)
 
         self._stop = asyncio.Event()
 
+    # -------------------------------------------------------
+    # START
+    # -------------------------------------------------------
+
     async def start(self) -> None:
         """
         Start simulation:
-        1. Generate comfort preferences for the entire horizon
-        2. Run simulation loop
+          1. Generate all time-based events
+          2. Run simulation loop
         """
         self._stop.clear()
 
-        # Pre-generate comfort settings into DB
+        print("[orchestrator] PRE-GENERATION START")
+
+
+
+        # ---------------------------------------------------
+        # 2️⃣ Medication events
+        # ---------------------------------------------------
+        med_gen = MedicationGenerator(seed=self.seed, diagnoses=DIAGNOSES)
+        inserted = med_gen.generate_for_horizon(
+            self.start_time,
+            self.end_time,
+        )
+        print(f"[orchestrator] medication rows inserted: {inserted}")
+
+        # ---------------------------------------------------
+        # 3️⃣ Visit events
+        # ---------------------------------------------------
+        visit_gen = VisitGenerator(seed=self.seed)
+        inserted = visit_gen.generate_for_horizon(
+            self.start_time,
+            self.end_time,
+        )
+        print(f"[orchestrator] visit rows inserted: {inserted}")
+
+
+        # ---------------------------------------------------
+        # 1️⃣ Comfort preferences
+        # ---------------------------------------------------
         inserted = self.comfort.generate_for_horizon(
             self.start_time,
             self.end_time,
         )
         print(f"[orchestrator] comfort rows inserted: {inserted}")
 
+        # ---------------------------------------------------
+        # 4️⃣ Toilet usage
+        # ---------------------------------------------------
         toilet_gen = ToiletUsageGenerator(seed=self.seed)
-        inserted = toilet_gen.generate_for_horizon(self.start_time, self.end_time)
-        print("[orchestrator] toilet utility rows inserted:", inserted)
+        inserted = toilet_gen.generate_for_horizon(
+            self.start_time,
+            self.end_time,
+        )
+        print(f"[orchestrator] toilet utility rows inserted: {inserted}")
 
+        print("[orchestrator] PRE-GENERATION COMPLETE\n")
+
+        # ---------------------------------------------------
+        # 5️⃣ Run simulation loop
+        # ---------------------------------------------------
         await self._run()
 
-        # IMPORTANT: close any still-open utility sessions (especially airflow)
-        # so they appear in UtilityUsage even if they never turned off before sim end.
+        # Close open utility sessions (important)
         self.engine.close_all_sessions(self.end_time)
+
+        print("[orchestrator] SIMULATION COMPLETE")
+
+    # -------------------------------------------------------
+    # SIM LOOP
+    # -------------------------------------------------------
 
     async def _run(self):
         now = self.start_time
@@ -104,14 +156,17 @@ class SimulationOrchestrator:
         )
 
         while now < self.end_time:
+
             if self._stop.is_set():
                 break
 
-            # Apply latest comfort targets from DB
+            # Apply comfort targets
             self.engine.apply_targets_from_db(now)
+
+            # Step room physics
             self.engine.step(now, step_s=self.config.step_s)
 
-            # Emit sensors periodically
+            # Emit sensor readings
             if (now - last_sample).total_seconds() >= self.config.sample_every_s:
                 await self.sampler.emit(
                     now,
@@ -120,11 +175,16 @@ class SimulationOrchestrator:
                 )
                 last_sample = now
 
-            # Advance simulation time
+            # Advance simulated time
             now += timedelta(seconds=self.config.step_s)
 
-            # Optional wall-clock delay
+            # Optional wall delay
             if self.config.wall_sleep_s > 0:
                 await asyncio.sleep(self.config.wall_sleep_s)
 
+    # -------------------------------------------------------
+    # STOP
+    # -------------------------------------------------------
 
+    def stop(self) -> None:
+        self._stop.set()
