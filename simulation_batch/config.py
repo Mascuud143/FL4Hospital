@@ -5,7 +5,7 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 10  # total simulated days
+DAYS = 30  # total simulated days
 
 
 # -------------------------

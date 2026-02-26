@@ -6,6 +6,7 @@ from .sensor import Sensor
 from .data import Data
 
 from .patient import Patient
+from .admission import Admission
 from .comfort_preference import ComfortPreference
 from .room_assignment import RoomAssignment
 from .utility_usage import UtilityUsage
@@ -16,16 +17,17 @@ from .toilet_light import ToiletLight
 from .toilet_heater import ToiletHeater
 
 __all__ = [
-"Room",
-"Device",
-"Sensor",
-"Data",
-"Patient",
-"ComfortPreference",
-"RoomAssignment",
-"UtilityUsage",
-"Ventilation",
-"Speaker",
-"ToiletLight",
-"ToiletHeater",
+    "Room",
+    "Device",
+    "Sensor",
+    "Data",
+    "Patient",
+    "Admission",
+    "ComfortPreference",
+    "RoomAssignment",
+    "UtilityUsage",
+    "Ventilation",
+    "Speaker",
+    "ToiletLight",
+    "ToiletHeater",
 ]

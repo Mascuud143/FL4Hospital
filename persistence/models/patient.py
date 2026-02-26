@@ -1,32 +1,44 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, Date, Integer, String, Float
+from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
 
 from ..database import Base
 
 
 class Patient(Base):
+    """
+    Represents a person.
+    Stable identity only — all stay-specific data lives in Admission.
+    """
+
     __tablename__ = "patients"
 
     patient_id = Column(Integer, primary_key=True, autoincrement=True)
 
-    age = Column(Integer, nullable=True)
+    # ---- Identity / mostly stable attributes ----
     name = Column(String, nullable=True)
-
-    weight = Column(Float, nullable=True)
     gender = Column(String, nullable=True)
-    height = Column(Float, nullable=True)
-
     ethnicity = Column(String, nullable=True)
-    current_diagnosis = Column(String, nullable=True)
-    stay_days = Column(Integer, nullable=True)
-    admission_date = Column(Date, nullable=True)
-    release_date = Column(Date, nullable=True)
 
-    # Relationships
-    assignments = relationship("RoomAssignment", back_populates="patient", cascade="all, delete-orphan")
-    comfort_preferences = relationship("ComfortPreference", back_populates="patient", cascade="all, delete-orphan")
+    # ---- Relationships ----
+    admissions = relationship(
+        "Admission",
+        back_populates="patient",
+        cascade="all, delete-orphan",
+    )
+
+    assignments = relationship(
+        "RoomAssignment",
+        back_populates="patient",
+        cascade="all, delete-orphan",
+    )
+
+    comfort_preferences = relationship(
+        "ComfortPreference",
+        back_populates="patient",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<Patient(patient_id={self.patient_id}, name={self.name})>"
