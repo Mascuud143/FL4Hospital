@@ -10,8 +10,10 @@ from persistence.models.admission import Admission
 from persistence.models.medication import Medication
 from persistence.models.visit import Visit
 
-# ✅ reuse UTC helper
+#reuse UTC helper
 from simulation_batch.room_engine import _as_utc
+
+from .patients import DIAGNOSES
 
 
 class VisitGenerator:
@@ -92,22 +94,48 @@ class VisitGenerator:
                     visit_times = sorted(set(visit_times))
 
                     def generate_a_symptom_or_none(diagnosis: str) -> str:
-                        symptoms = diagnosis.split(", ")
+                        symptoms = DIAGNOSES.get(diagnosis, {}).get("symptoms", [])
                         if symptoms and self.rng.random() < 0.5:
                             return self.rng.choice(symptoms)
                         return ""
+                
 
+                    def generate_blood_pressure_based_on_symptom(symptom: str) -> str:
+                        symptom = symptom.lower()
+
+                        if symptom == "fever":
+                            systolic = random.randint(100, 120)
+                            diastolic = random.randint(60, 80)
+
+                        elif symptom == "cough":
+                            systolic = random.randint(110, 130)
+                            diastolic = random.randint(70, 85)
+
+                        else:
+                            systolic = random.randint(110, 140)
+                            diastolic = random.randint(70, 90)
+
+                        return f"{systolic}/{diastolic}"
+
+
+                    def generate_body_temperature_based_on_symptom(symptom: str) -> float:
+                        if symptom == "fever":
+                            return round(self.rng.uniform(38.0, 40.0), 1)
+                        elif symptom == "cough":
+                            return round(self.rng.uniform(36.5, 37.5), 1)
+                        else:
+                            return round(self.rng.uniform(36.0, 38.5), 1)
+                        
                     for ts in visit_times:
                         session.add(
                             Visit(
                                 patient_id=adm.patient_id,
                                 visit_time=ts,
-                                body_temperature=round(
-                                    self.rng.uniform(36.0, 38.5), 1
-                                ),
-                                blood_pressure=f"{self.rng.randint(110,140)}/{self.rng.randint(70,90)}",
+                                body_temperature=generate_body_temperature_based_on_symptom(generate_a_symptom_or_none(adm.current_diagnosis)),
+                                blood_pressure=generate_blood_pressure_based_on_symptom(generate_a_symptom_or_none(adm.current_diagnosis)),
                                 # get random symptoms from diagnosis, some times empty, some times one sytom only no multiple symptoms for simplicity
                                 symptoms=generate_a_symptom_or_none(adm.current_diagnosis),
+                               
                             )
                         )
                         inserted += 1

@@ -12,7 +12,7 @@ DAYS = 365 * 1  # total simulated days
 # Population
 # -------------------------
 
-PATIENT_COUNT = 10000
+PATIENT_COUNT = 100
 
 
 # -------------------------

@@ -28,7 +28,7 @@ class Speaker(Base):
         Integer,
         ForeignKey("devices.device_id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
+        unique=False,  # allow multiple speaker records for the same device over time
         index=True,
     )
 
