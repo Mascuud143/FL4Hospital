@@ -10,6 +10,7 @@ from persistence.models.room import Room
 from persistence.models.patient import Patient
 from persistence.models.admission import Admission
 from persistence.models.room_assignment import RoomAssignment
+from simulation_batch.csv_filestorage import write_model_row
 
 from simulation_batch.config import (
     PATIENT_COUNT,
@@ -19,7 +20,7 @@ from simulation_batch.config import (
 
 from simulation_batch.generators.patients import generate_patients
 from simulation_batch.generators.name_gen import generate_name
-from simulation_batch.generators.age_height_weight_gen import age_height_weight_generator
+from simulation_batch.generators.age_height_weight_gender_gen import age_height_weight__gender_generator
 
 # Runtime (not DB) device/sensor objects
 from ble import Device as BLEDevice, Sensor as BLESensor
@@ -104,21 +105,21 @@ def seed_simulated_world(
 
     generated = generate_patients(patient_count)
     for idx, p in enumerate(generated):
-        age_hw = age_height_weight_generator()
+        age_hw_gender = age_height_weight__gender_generator()
     
 
         patient = Patient(
             name=generate_name(),
             ethnicity=p["ethnicity"],
-            gender=rng.choice(["Male", "Female"]),
-            height=age_hw["height"],
+            gender=age_hw_gender["gender"],
+            height=age_hw_gender["height"],
         
         )
 
         # Per-stay data -> Admission (store now so we can use it later)
         per_stay_attrs[idx] = {
-            "age": age_hw["age"],
-            "weight": age_hw["weight"],
+            "age": age_hw_gender["age"],
+            "weight": age_hw_gender["weight"],
             "medications": p["medications"],
             "current_diagnosis": p["diagnosis"],
             "symptoms": p["symptoms"],      
@@ -135,6 +136,7 @@ def seed_simulated_world(
     with session_scope() as session:
         # insert patients first so they get IDs
         for patient in patients:
+            write_model_row(patient)
             session.add(patient)
         session.flush()
 
@@ -157,6 +159,7 @@ def seed_simulated_world(
                 current_offset_days = 0
 
                 current_room = Room(room_number=100 + room_index)
+                write_model_row(current_room)
                 session.add(current_room)
                 session.flush()
                 rooms.append(current_room)
@@ -176,21 +179,22 @@ def seed_simulated_world(
                 weight=attrs["weight"],
                 current_diagnosis=attrs["current_diagnosis"],
             )
+            write_model_row(adm)
             session.add(adm)
             session.flush()  # ensures adm.admission_id
 
             patient_stay[patient.patient_id] = (admitted_at, discharged_at, adm.admission_id)
 
             # ---- Create initial RoomAssignment linked to Admission ----
-            session.add(
-                RoomAssignment(
-                    admission_id=adm.admission_id,
-                    patient_id=patient.patient_id,
-                    room_id=current_room.room_id,
-                    start_time=admitted_at,
-                    end_time=discharged_at,
-                )
+            row = RoomAssignment(
+                admission_id=adm.admission_id,
+                patient_id=patient.patient_id,
+                room_id=current_room.room_id,
+                start_time=admitted_at,
+                end_time=discharged_at,
             )
+            write_model_row(row)
+            session.add(row)
 
             room_occupancy.setdefault(current_room.room_id, []).append((admitted_at, discharged_at))
             current_offset_days += stay
@@ -268,6 +272,7 @@ def seed_simulated_world(
             if destination is None:
                 max_room_number += 1
                 destination = Room(room_number=max_room_number)
+                write_model_row(destination)
                 session.add(destination)
                 session.flush()
 
@@ -276,15 +281,15 @@ def seed_simulated_world(
                 room_occupancy[destination.room_id] = []
 
             # Create second assignment segment (same admission_id)
-            session.add(
-                RoomAssignment(
-                    admission_id=admission_id,
-                    patient_id=patient.patient_id,
-                    room_id=destination.room_id,
-                    start_time=transfer_time,
-                    end_time=discharge,
-                )
+            row = RoomAssignment(
+                admission_id=admission_id,
+                patient_id=patient.patient_id,
+                room_id=destination.room_id,
+                start_time=transfer_time,
+                end_time=discharge,
             )
+            write_model_row(row)
+            session.add(row)
 
             print(
                 f"Patient {patient.patient_id} moved "

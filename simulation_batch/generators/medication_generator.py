@@ -12,6 +12,7 @@ from persistence.models.medication import Medication
 
 # ✅ reuse same UTC normalizer as engine
 from simulation_batch.room_engine import _as_utc
+from simulation_batch.csv_filestorage import write_model_row
 
 
 class MedicationGenerator:
@@ -80,16 +81,16 @@ class MedicationGenerator:
                             if ts < stay_start or ts >= stay_end:
                                 continue
 
-                            session.add(
-                                Medication(
-                                    patient_id=adm.patient_id,
-                                    medication_time=ts,
-                                    drug_name=drug_name,
-                                    route="oral",
-                                    dose="1 dose",
-                                    status="taken",
-                                )
+                            row = Medication(
+                                patient_id=adm.patient_id,
+                                medication_time=ts,
+                                drug_name=drug_name,
+                                route="oral",
+                                dose="1 dose",
+                                status="taken",
                             )
+                            write_model_row(row)
+                            session.add(row)
                             inserted += 1
 
                     day_cursor += timedelta(days=1)

@@ -11,6 +11,7 @@ from persistence.models.comfort_preference import ComfortPreference
 from persistence.models.medication import Medication
 
 from simulation_batch.room_engine import _as_utc
+from simulation_batch.csv_filestorage import write_model_row
 
 
 # ==========================================================
@@ -248,6 +249,7 @@ class ComfortGenerator:
                             source="simulation",
                         )
 
+                        write_model_row(row)
                         session.add(row)
                         inserted += 1
 

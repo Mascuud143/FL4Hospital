@@ -4,7 +4,6 @@ import random
 from datetime import datetime
 from typing import Callable, List
 
-
 class SensorRuntime:
     """
     Plain runtime sensor object (NO ORM).
@@ -34,7 +33,7 @@ class SensorSampler:
         self.rng = random.Random(seed)
         self.sensors: List[SensorRuntime] = []
 
-        # ✅ Load everything ONCE, flattening relationships
+        #  Load everything ONCE, flattening relationships
         from persistence.database import session_scope
         from persistence.models.sensor import Sensor as SensorModel
         from persistence.models.device import Device as DeviceModel
@@ -85,6 +84,7 @@ class SensorSampler:
 
             event = {
                 "timestamp": now,
+                "sensor_id": sensor.sensor_id,
                 "room_id": sensor.room_id,
                 "device_id": sensor.device_id,
                 "mac": sensor.mac,
@@ -119,3 +119,4 @@ class SensorSampler:
             "light": "lux",
             "sound": "dB",
         }.get(sensor_type, "")
+

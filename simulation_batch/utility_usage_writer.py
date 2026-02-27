@@ -5,6 +5,7 @@ from typing import Optional
 
 from persistence.database import session_scope
 from persistence.models.utility_usage import UtilityUsage
+from simulation_batch.csv_filestorage import write_model_row
 
 
 def insert_utility_usage(
@@ -47,4 +48,6 @@ def insert_utility_usage(
         kwargs["device_id"] = int(device_id)
 
     with session_scope() as session:
-        session.add(UtilityUsage(**kwargs))
+        row = UtilityUsage(**kwargs)
+        write_model_row(row)
+        session.add(row)

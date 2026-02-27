@@ -9,6 +9,8 @@ from .room_engine import RoomEngine, RoomState, _as_utc
 from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
 from .toilet_usage_generator import ToiletUsageGenerator
+from persistence.models.data import Data
+from simulation_batch.csv_filestorage import write_model_row
 
 # NEW: clinical generators
 from simulation_batch.generators.medication_generator import MedicationGenerator
@@ -49,7 +51,8 @@ class SimulationOrchestrator:
     ):
         self.start_time = start_time
         self.end_time = end_time
-        self.on_event = on_event
+        self._on_event_user = on_event
+        self.on_event = self._wrap_on_event(on_event)
         self.config = config or OrchestratorConfig()
         self.seed = seed
 
@@ -71,6 +74,20 @@ class SimulationOrchestrator:
         self.sampler = SensorSampler(seed)
 
         self._stop = asyncio.Event()
+
+    def _wrap_on_event(self, handler: OnEvent) -> OnEvent:
+        async def _wrapped(event: Dict[str, Any]) -> None:
+            # Save to data table CSV before any downstream sink
+            write_model_row(
+                Data(
+                    sensor_id=event["sensor_id"],
+                    value=event["value"],
+                    timestamp=event["timestamp"],
+                )
+            )
+            await handler(event)
+
+        return _wrapped
 
     # -------------------------------------------------------
     # START
@@ -188,3 +205,4 @@ class SimulationOrchestrator:
 
     def stop(self) -> None:
         self._stop.set()
+    

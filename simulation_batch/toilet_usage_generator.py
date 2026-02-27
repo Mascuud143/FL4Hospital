@@ -11,6 +11,7 @@ from persistence.models.utility_usage import UtilityUsage
 
 from persistence.models.device import Device as DeviceModel
 from persistence.models.toilet_light import ToiletLight
+from simulation_batch.csv_filestorage import write_model_row
 
 
 @dataclass
@@ -147,16 +148,16 @@ class ToiletUsageGenerator:
                             lpm = self.rng.uniform(*self.policy.shower_flow_l_per_min_range)
                             liters = float(minutes * lpm)
 
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="water",
-                                    start_time=t_shower,
-                                    end_time=t_shower_end,
-                                    power_consumption=None,
-                                    water_consumption=liters,
-                                )
+                            row = UtilityUsage(
+                                room_id=a.room_id,
+                                category="water",
+                                start_time=t_shower,
+                                end_time=t_shower_end,
+                                power_consumption=None,
+                                water_consumption=liters,
                             )
+                            write_model_row(row)
+                            session.add(row)
                             inserted += 1
 
                     # -------------------------
@@ -186,25 +187,29 @@ class ToiletUsageGenerator:
                             hours = max(0.0, (t_end - t).total_seconds() / 3600.0)
                             power_kwh = (self.policy.toilet_light_power_w * hours) / 1000.0
 
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="toilet_light",
-                                    start_time=t,
-                                    end_time=t_end,
-                                    power_consumption=power_kwh,
-                                    water_consumption=None,
-                                )
+                            row = UtilityUsage(
+                                room_id=a.room_id,
+                                category="toilet_light",
+                                start_time=t,
+                                end_time=t_end,
+                                power_consumption=power_kwh,
+                                water_consumption=None,
                             )
+                            write_model_row(row)
+                            session.add(row)
                             inserted += 1
 
                             # Mirror light ON/OFF in toilet_lights table
                             if toilet_light_device_id is not None:
-                                session.add(ToiletLight(device_id=toilet_light_device_id, state=True, timestamp=t))
-                                session.add(ToiletLight(device_id=toilet_light_device_id, state=False, timestamp=t_end))
+                                row_on = ToiletLight(device_id=toilet_light_device_id, state=True, timestamp=t)
+                                row_off = ToiletLight(device_id=toilet_light_device_id, state=False, timestamp=t_end)
+                                write_model_row(row_on)
+                                write_model_row(row_off)
+                                session.add(row_on)
+                                session.add(row_off)
 
                             # ---- Water usage for the visit ----
-                            # ✅ same [t, t_end] as the light session
+                            # same [t, t_end] as the light session
                             flush_l = self.rng.uniform(*self.policy.flush_l_range)
                             sink_l = self.rng.uniform(*self.policy.sink_l_range)
                             if part_name == "night":
@@ -212,16 +217,16 @@ class ToiletUsageGenerator:
 
                             liters = float(flush_l + sink_l)
 
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="water",
-                                    start_time=t,
-                                    end_time=t_end,  # ✅ MATCH LIGHT DURATION
-                                    power_consumption=None,
-                                    water_consumption=liters,
-                                )
+                            row = UtilityUsage(
+                                room_id=a.room_id,
+                                category="water",
+                                start_time=t,
+                                end_time=t_end,  # MATCH LIGHT DURATION
+                                power_consumption=None,
+                                water_consumption=liters,
                             )
+                            write_model_row(row)
+                            session.add(row)
                             inserted += 1
 
                     day_cursor += timedelta(days=1)
