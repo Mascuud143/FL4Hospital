@@ -1,4 +1,14 @@
+import math
 import random
+
+
+def _trunc_norm(mu: float, sigma: float, lo: float, hi: float) -> float:
+    # Simple rejection sampling for a truncated normal
+    while True:
+        x = random.gauss(mu, sigma)
+        if lo <= x <= hi:
+            return x
+
 
 def age_height_weight__gender_generator(min_age=10, max_age=90):
     # Bias toward older ages
@@ -6,42 +16,45 @@ def age_height_weight__gender_generator(min_age=10, max_age=90):
     r = random.random() ** (1 / bias)
     age = int(min_age + r * (max_age - min_age))
 
+    # Gender independent of height/weight (more realistic)
+    gender = "Male" if random.random() < 0.5 else "Female"
+
+    # Height distribution by age group + gender (cm)
     if age < 14:
-        # Children (10–13)
-        height = random.randint(135, 165)
-        weight = random.randint(30, 55)
-
+        mu_h = 155 if gender == "Male" else 152
+        sd_h = 9
+        lo, hi = 130, 175
     elif age < 18:
-        # Teens (14–17)
-        height = random.randint(150, 180)
-        weight = random.randint(45, 75)
-
+        mu_h = 172 if gender == "Male" else 165
+        sd_h = 7
+        lo, hi = 145, 190
     elif age < 50:
-        # Adults
-        height = random.randint(155, 195)
-        weight = random.randint(55, 110)
-
+        mu_h = 178 if gender == "Male" else 165
+        sd_h = 7
+        lo, hi = 150, 200
     else:
         # Older adults (50+), slight height loss
-        height = random.randint(150, 185) - max(0, (age - 50) // 10)
-        weight = random.randint(50, 100)
-    
+        loss = 0.2 * (age - 50)  # ~2 cm per decade
+        mu_h = (177 if gender == "Male" else 164) - loss
+        sd_h = 7
+        lo, hi = 145, 195
 
-    # decide gender based on height and weight (not perfect, but adds some correlation)
-    # lets have probability of being male increase with height and weight
-    p_male = 0.5
-    if height > 180:
-        p_male += 0.2
-    if weight > 80:
-        p_male += 0.1
-    p_male = min(0.9, p_male)  # cap at 90%
+    height = int(_trunc_norm(mu_h, sd_h, lo, hi))
 
-    gender = "Male" if random.random() < p_male else "Female"
-    
+    # Weight via BMI distribution (kg) -> weight = BMI * height^2
+    if age < 18:
+        mu_bmi, sd_bmi = (20, 3)
+    elif age < 50:
+        mu_bmi, sd_bmi = (24.5, 3.5)
+    else:
+        mu_bmi, sd_bmi = (26.5, 4)
+
+    bmi = _trunc_norm(mu_bmi, sd_bmi, 16, 40)
+    weight = int(bmi * (height / 100) ** 2)
 
     return {
         "age": age,
         "height": height,  # cm
         "weight": weight,  # kg
-        "gender": gender
+        "gender": gender,
     }

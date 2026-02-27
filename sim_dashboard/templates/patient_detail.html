@@ -11,25 +11,125 @@
 <tr><th>Diagnosis</th><td>{{ patient.current_diagnosis }}</td></tr>
 <tr><th>Admission Date</th><td>{{ patient.admission_date }}</td></tr>
 <tr><th>Release Date</th><td>{{ patient.release_date }}</td></tr>
+
 </table>
+
+<h3>Room Assignments (Re-assignments Included)</h3>
+{% if room_assignments %}
+<table>
+<tr>
+  <th>Assignment ID</th>
+  <th>Admission ID</th>
+  <th>Room ID</th>
+  <th>Start</th>
+  <th>End</th>
+</tr>
+{% for ra in room_assignments %}
+<tr>
+  <td>{{ ra.assignment_id }}</td>
+  <td>{{ ra.admission_id }}</td>
+  <td>{{ ra.room_id }}</td>
+  <td>{% if ra.start_time %}{{ ra.start_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{% if ra.end_time %}{{ ra.end_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No room assignments found.</p>
+{% endif %}
+
+<h3>Admissions (Re-admissions Included)</h3>
+
+{% if admissions %}
+<table>
+<tr>
+  <th>Admission ID</th>
+  <th>Admitted</th>
+  <th>Discharged</th>
+  <th>Age</th>
+  <th>Weight</th>
+  <th>Diagnosis</th>
+</tr>
+{% for a in admissions %}
+<tr>
+  <td>{{ a.admission_id }}</td>
+  <td>{% if a.admitted_at %}{{ a.admitted_at.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{% if a.discharged_at %}{{ a.discharged_at.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{% if a.age is not none %}{{ a.age }}{% else %}--{% endif %}</td>
+  <td>{% if a.weight is not none %}{{ a.weight }}{% else %}--{% endif %}</td>
+  <td>{% if a.current_diagnosis %}{{ a.current_diagnosis }}{% else %}--{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No admissions found.</p>
+{% endif %}
+
+<h3>Medications</h3>
+{% if medications %}
+<table>
+<tr>
+  <th>Time</th>
+  <th>Drug</th>
+  <th>Dose</th>
+  <th>Route</th>
+  <th>Status</th>
+</tr>
+{% for m in medications %}
+<tr>
+  <td>{% if m.medication_time %}{{ m.medication_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{{ m.drug_name }}</td>
+  <td>{% if m.dose %}{{ m.dose }}{% else %}--{% endif %}</td>
+  <td>{% if m.route %}{{ m.route }}{% else %}--{% endif %}</td>
+  <td>{% if m.status %}{{ m.status }}{% else %}--{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No medications recorded.</p>
+{% endif %}
+
+<h3>Visits</h3>
+{% if visits %}
+<table>
+<tr>
+  <th>Time</th>
+  <th>Body Temp (??C)</th>
+  <th>Blood Pressure</th>
+  <th>Symptoms</th>
+</tr>
+{% for v in visits %}
+<tr>
+  <td>{% if v.visit_time %}{{ v.visit_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{% if v.body_temperature is not none %}{{ v.body_temperature }}{% else %}--{% endif %}</td>
+  <td>{% if v.blood_pressure %}{{ v.blood_pressure }}{% else %}--{% endif %}</td>
+  <td>{% if v.symptoms %}{{ v.symptoms }}{% else %}--{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No visits recorded.</p>
+{% endif %}
 
 <h3>Comfort Preferences for ideal day for this patient (Labels)</h3>
 {% if comforts %}
 <table>
 <tr>
   <th>Time</th>
-  <th>Temp (°C)</th>
+  <th>Temp Main (??C)</th>
+  <th>Temp Toilet (??C)</th>
   <th>Light</th>
   <th>Sound</th>
-  <th>Ventilation</th>
+  <th>Airflow</th>
 </tr>
 {% for c in comforts %}
 <tr>
   <td>{{ c.timestamp.strftime("%Y-%m-%d %H:%M") }}</td>
-  <td>{{ c.temperature }}</td>
+  <td>{{ c.temperature_main }}</td>
+  <td>{% if c.temperature_toilet is not none %}{{ c.temperature_toilet }}{% else %}--{% endif %}</td>
   <td>{{ c.light_intensity }}</td>
   <td>{{ c.sound_level }}</td>
-  <td>{{ c.ventilation }}</td>
+  <td>{{ c.airflow }}</td>
 </tr>
 {% endfor %}
 </table>
