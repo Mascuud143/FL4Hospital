@@ -2,21 +2,150 @@
 <html>
 <head>
     <title>Simulation Data Explorer</title>
-           
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
-        body { font-family: Arial; margin: 40px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-        th, td { border: 1px solid #ddd; padding: 8px; }
-        th { background: #f4f4f4; }
-        a { color: #0066cc; text-decoration: none; }
+        :root {
+            --bg: #f3f6fb;
+            --surface: #ffffff;
+            --surface-alt: #f9fbff;
+            --text: #0f172a;
+            --muted: #5b6473;
+            --line: #d7e1ef;
+            --primary: #0b6aa2;
+            --primary-soft: #e4f2fb;
+            --success-soft: #e8f8ef;
+            --warning-soft: #fff6dd;
+            --info-soft: #e8f3ff;
+            --danger-soft: #fdeced;
+            --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background:
+                radial-gradient(circle at 0% 0%, #dbe8f7 0, transparent 45%),
+                radial-gradient(circle at 100% 0%, #e8f4ff 0, transparent 45%),
+                var(--bg);
+            color: var(--text);
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            line-height: 1.45;
+        }
+
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
+        }
+
+        .topbar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+            padding: 16px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: linear-gradient(120deg, #f8fcff, #ffffff);
+            box-shadow: var(--shadow);
+        }
+
+        .topbar h1 {
+            margin: 0;
+            font-size: 1.4rem;
+            letter-spacing: 0.02em;
+        }
+
+        .nav-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .nav-links a {
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: var(--surface);
+            color: var(--text);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.92rem;
+        }
+
+        .nav-links a:hover {
+            border-color: #acc8e2;
+            background: var(--surface-alt);
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: var(--surface);
+            box-shadow: var(--shadow);
+            padding: 16px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 8px;
+            background: #fff;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        th, td {
+            border: 1px solid var(--line);
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+            font-size: 0.92rem;
+        }
+
+        th {
+            background: var(--surface-alt);
+        }
+
+        a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .muted { color: var(--muted); }
+
+        .chip {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1px solid var(--line);
+            background: var(--surface-alt);
+        }
     </style>
 </head>
 <body>
-    <h1>Simulation Data Explorer</h1>
-    <div>
-        <a href="/">Home</a> 
+    <div class="page">
+        <div class="topbar">
+            <h1>Simulation Data Explorer</h1>
+            <div class="nav-links">
+                <a href="/">Dashboard</a>
+                <a href="/patients">Patients</a>
+                <a href="/ai-suggestion">AI I/O Demo</a>
+            </div>
+        </div>
+        <div>
+            {% block content %}{% endblock %}
+        </div>
     </div>
-    <hr>
-    {% block content %}{% endblock %}
 </body>
 </html>

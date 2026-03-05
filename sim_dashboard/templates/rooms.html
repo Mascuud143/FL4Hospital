@@ -1,58 +1,153 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+  .hero {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
 
+  .hero h2 {
+    margin: 0 0 6px;
+  }
 
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+  }
 
+  .stat {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-alt);
+    padding: 10px;
+  }
 
-<!-- simulation info -->
-<p>Total Rooms: {{ simulation_info.total_rooms }}</p>
-<p>Total Patients: {{ simulation_info.total_patients }}</p>
-<p>Total Admissions: {{ simulation_info.total_admissions }}</p>
-<p>Readmissions (patients with >1 admission): {{ simulation_info.readmissions }}</p>
-<p>Total Medications: {{ simulation_info.total_medications }}</p>
-<p>Total Visits: {{ simulation_info.total_visits }}</p>
-<p>Simulation Period: {{ simulation_info.simulation_period }}</p>
+  .stat .label {
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .stat .value {
+    font-size: 1.25rem;
+    font-weight: 700;
+  }
+
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .chart-box {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 8px;
+    overflow: auto;
+  }
+
+  .room-list {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<section class="hero">
+  <div class="card">
+    <h2>Hospital Simulation Overview</h2>
+    <p class="muted">
+      Period: <span class="chip">{{ simulation_info.simulation_period }}</span>
+    </p>
+    <p class="muted">
+      Browse room and patient trajectories, including re-admissions and day-level activity.
+    </p>
+  </div>
+
+  <div class="card">
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="label">Rooms</div>
+        <div class="value">{{ simulation_info.total_rooms }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Patients</div>
+        <div class="value">{{ simulation_info.total_patients }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Admissions</div>
+        <div class="value">{{ simulation_info.total_admissions }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Readmissions</div>
+        <div class="value">{{ simulation_info.readmissions }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Medications</div>
+        <div class="value">{{ simulation_info.total_medications }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Visits</div>
+        <div class="value">{{ simulation_info.total_visits }}</div>
+      </div>
+    </div>
+  </div>
+</section>
 
 {% if height_svg_female or height_svg_male %}
-<h2>Patient Height Distribution</h2>
-<div style="display:flex; gap:16px; flex-wrap:wrap;">
+<h3>Patient Height Distribution</h3>
+<div class="chart-grid">
   {% if height_svg_female %}
-  <div>{{ height_svg_female | safe }}</div>
+  <div class="chart-box">{{ height_svg_female | safe }}</div>
   {% endif %}
   {% if height_svg_male %}
-  <div>{{ height_svg_male | safe }}</div>
+  <div class="chart-box">{{ height_svg_male | safe }}</div>
   {% endif %}
 </div>
 {% endif %}
 
 {% if age_svg_female or age_svg_male %}
-<h2>Patient Age Distribution</h2>
-<div style="display:flex; gap:16px; flex-wrap:wrap;">
+<h3>Patient Age Distribution</h3>
+<div class="chart-grid">
   {% if age_svg_female %}
-  <div>{{ age_svg_female | safe }}</div>
+  <div class="chart-box">{{ age_svg_female | safe }}</div>
   {% endif %}
   {% if age_svg_male %}
-  <div>{{ age_svg_male | safe }}</div>
+  <div class="chart-box">{{ age_svg_male | safe }}</div>
   {% endif %}
 </div>
 {% endif %}
 
-
-
-<h2>Rooms</h2>
-
-<table>
-<tr>
-  <th>Room</th>
-  <th>Details</th>
-</tr>
-{% for room in rooms %}
-<tr>
-  <td>{{ room.room_number }}</td>
-  <td>
-    <a href="/rooms/{{ room.room_id }}">View</a>
-  </td>
-</tr>
-{% endfor %}
-</table>
+<div class="card">
+  <h3>Rooms</h3>
+  <div class="room-list">
+    <table>
+    <tr>
+      <th>Room</th>
+      <th>Details</th>
+    </tr>
+    {% for room in rooms %}
+    <tr>
+      <td>{{ room.room_number }}</td>
+      <td>
+        <a href="/rooms/{{ room.room_id }}">View room timeline</a>
+      </td>
+    </tr>
+    {% endfor %}
+    </table>
+  </div>
+</div>
 {% endblock %}

@@ -5,14 +5,14 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 10 # total simulated days
+DAYS = 365*1 # total simulated days
 
 
 # -------------------------
 # Population
 # -------------------------
 
-PATIENT_COUNT = 10
+PATIENT_COUNT = 10000
 
 
 # -------------------------
@@ -66,9 +66,9 @@ ENABLE_COMFORT = True
 ENABLE_MEDICATION = True
 ENABLE_VISITS = True
 
-ENABLE_TOILET_USAGE = False
-ENABLE_SENSOR_EMIT = False
-ENABLE_UTILITY_USAGE = False
+ENABLE_TOILET_USAGE = True
+ENABLE_SENSOR_EMIT = True
+ENABLE_UTILITY_USAGE = True
 
 
 # -------------------------

@@ -10,7 +10,9 @@ from persistence.models.visit import Visit
 from persistence.models.data import Data
 from persistence.models.utility_usage import UtilityUsage
 from persistence.models.comfort_preference import ComfortPreference
-from datetime import timedelta
+from persistence.models.sensor import Sensor
+from persistence.models.device import Device
+from datetime import timedelta, datetime, time
 from statistics import mean, pstdev
 import math
 from sqlalchemy import func
@@ -19,6 +21,42 @@ from sqlalchemy import func
 from simulation_batch.config import START_DATE, DAYS
 
 sim_bp = Blueprint("sim_bp", __name__)
+
+
+def _fmt_time(value: datetime | None) -> str:
+    if not value:
+        return "--:--"
+    return value.strftime("%H:%M")
+
+
+def _fmt_dt(value: datetime | None) -> str:
+    if not value:
+        return "--"
+    return value.strftime("%Y-%m-%d %H:%M")
+
+
+def _in_window(ts: datetime | None, start: datetime | None, end: datetime | None) -> bool:
+    if not ts or not start:
+        return False
+    if ts < start:
+        return False
+    if end and ts > end:
+        return False
+    return True
+
+
+def _assignment_for_time(assignments: list[dict], ts: datetime | None) -> dict | None:
+    if not ts:
+        return None
+    for a in assignments:
+        a_start = a.get("start_time")
+        a_end = a.get("end_time")
+        if a_start and ts < a_start:
+            continue
+        if a_end and ts > a_end:
+            continue
+        return a
+    return None
 
 
 def _build_dist_svg(values: list[int], *, title: str, x_label: str) -> str | None:
@@ -360,6 +398,14 @@ def patients():
     return render_template("patients.html", patients=patient_data)
 
 
+@sim_bp.route("/ai-suggestion")
+def ai_suggestion():
+    """
+    Static explainer page for AI comfort suggestion input/output.
+    """
+    return render_template("ai_suggestion.html")
+
+
 @sim_bp.route("/patients/<int:patient_id>")
 def patient_detail(patient_id):
     """
@@ -368,7 +414,6 @@ def patient_detail(patient_id):
 
     with session_scope() as session:
         patient = session.query(Patient).get(patient_id)
-        print(f"Fetched patient: {patient}")  # Debug log
         if not patient:
             return "Patient not found", 404
 
@@ -390,22 +435,13 @@ def patient_detail(patient_id):
             "release_date": latest_adm.discharged_at if latest_adm else None,
         }
 
-        print(f"Patient data prepared for template: {patient_data}")  # Debug log
-        
-        # Convert comfort preferences to match template expectations
-        comforts = [
-            {
-                "comfort_pref_id": pref.comfort_pref_id,
-                "timestamp": pref.timestamp,
-                "temperature_main": pref.temperature_main,
-                "temperature_toilet": pref.temperature_toilet,
-                "light_intensity": pref.light_intensity,
-                "sound_level": pref.sound_level,
-                "airflow": pref.airflow,
-            }
-            for pref in patient.comfort_preferences
-        ]
+        room_lookup = {room.room_id: room.room_number for room in session.query(Room).all()}
 
+        admissions_sorted = sorted(
+            patient.admissions,
+            key=lambda a: (a.admitted_at is not None, a.admitted_at),
+            reverse=True,
+        )
         admissions = [
             {
                 "admission_id": adm.admission_id,
@@ -415,58 +451,259 @@ def patient_detail(patient_id):
                 "weight": adm.weight,
                 "current_diagnosis": adm.current_diagnosis,
             }
-            for adm in sorted(
-                patient.admissions,
-                key=lambda a: a.admitted_at or 0,
-                reverse=True,
-            )
+            for adm in admissions_sorted
         ]
 
-        medications = [
-            {
-                "medication_id": med.medication_id,
-                "medication_time": med.medication_time,
-                "drug_name": med.drug_name,
-                "dose": med.dose,
-                "route": med.route,
-                "status": med.status,
-            }
-            for med in sorted(
-                patient.medications,
-                key=lambda m: m.medication_time or 0,
-                reverse=True,
-            )
-        ]
+        medications = sorted(
+            patient.medications,
+            key=lambda m: (m.medication_time is not None, m.medication_time),
+            reverse=True,
+        )
+        visits = sorted(
+            patient.visits,
+            key=lambda v: (v.visit_time is not None, v.visit_time),
+            reverse=True,
+        )
+        comforts = sorted(
+            patient.comfort_preferences,
+            key=lambda c: (c.timestamp is not None, c.timestamp),
+            reverse=True,
+        )
+        room_assignments = sorted(
+            patient.assignments,
+            key=lambda r: (r.start_time is not None, r.start_time),
+            reverse=True,
+        )
 
-        visits = [
-            {
-                "visit_id": v.visit_id,
-                "visit_time": v.visit_time,
-                "body_temperature": v.body_temperature,
-                "blood_pressure": v.blood_pressure,
-                "symptoms": v.symptoms,
-            }
-            for v in sorted(
-                patient.visits,
-                key=lambda v: v.visit_time or 0,
-                reverse=True,
+        admission_views = []
+        for adm in admissions_sorted:
+            adm_assignments = sorted(
+                [a for a in room_assignments if a.admission_id == adm.admission_id],
+                key=lambda r: (r.start_time is not None, r.start_time),
             )
-        ]
+            admission_start = adm.admitted_at
+            admission_end = adm.discharged_at
 
-        room_assignments = [
-            {
-                "assignment_id": ra.assignment_id,
-                "admission_id": ra.admission_id,
-                "room_id": ra.room_id,
-                "start_time": ra.start_time,
-                "end_time": ra.end_time,
-            }
-            for ra in sorted(
-                patient.assignments,
-                key=lambda r: r.start_time or 0,
-                reverse=True,
+            # Determine room-context utility events during this stay.
+            utility_events = []
+            for assign in adm_assignments:
+                q = session.query(UtilityUsage).filter(UtilityUsage.room_id == assign.room_id)
+                assign_start = max(filter(None, [assign.start_time, admission_start]))
+                assign_end = min(
+                    [x for x in [assign.end_time, admission_end] if x is not None],
+                    default=None,
+                )
+                if assign_start:
+                    q = q.filter(UtilityUsage.start_time >= assign_start)
+                if assign_end:
+                    q = q.filter(UtilityUsage.start_time <= assign_end)
+                utility_events.extend(q.order_by(UtilityUsage.start_time.asc()).all())
+
+            # Compute day span from admission window and all event timestamps.
+            event_times = [t for t in [admission_start, admission_end] if t is not None]
+            event_times += [m.medication_time for m in medications if _in_window(m.medication_time, admission_start, admission_end)]
+            event_times += [v.visit_time for v in visits if _in_window(v.visit_time, admission_start, admission_end)]
+            event_times += [c.timestamp for c in comforts if _in_window(c.timestamp, admission_start, admission_end)]
+            event_times += [a.start_time for a in adm_assignments if a.start_time]
+            event_times += [a.end_time for a in adm_assignments if a.end_time]
+            event_times += [u.start_time for u in utility_events if u.start_time]
+            event_times = [t for t in event_times if t is not None]
+            if not event_times:
+                continue
+
+            span_start = min(event_times).date()
+            span_end = max(event_times).date()
+            day_map = {}
+            cursor = span_start
+            while cursor <= span_end:
+                day_map[cursor] = {
+                    "date_key": cursor.isoformat(),
+                    "label": cursor.strftime("%A, %d %b %Y"),
+                    "events": [],
+                    "comfort_events": [],
+                    "environment_events": [],
+                    "clinical_events": [],
+                    "room_events": [],
+                }
+                cursor += timedelta(days=1)
+
+            def add_event(ts, category, title, details, target_day=None, badge_class=None, badge_label=None):
+                day_key = target_day if target_day else (ts.date() if ts else span_start)
+                if day_key not in day_map:
+                    return
+                event = {
+                    "time": _fmt_time(ts),
+                    "timestamp_str": _fmt_dt(ts),
+                    "timestamp": ts,
+                    "category": category,
+                    "badge_class": badge_class if badge_class else category,
+                    "badge_label": badge_label if badge_label else category,
+                    "title": title,
+                    "details": details,
+                }
+                day_map[day_key]["events"].append(event)
+                bucket = f"{category}_events"
+                if bucket in day_map[day_key]:
+                    day_map[day_key][bucket].append(event)
+
+            add_event(admission_start, "room", "Admission started", _fmt_dt(admission_start))
+            if admission_end:
+                add_event(admission_end, "room", "Discharged", _fmt_dt(admission_end))
+
+            for assign in adm_assignments:
+                room_number = room_lookup.get(assign.room_id, f"Room {assign.room_id}")
+                add_event(
+                    assign.start_time,
+                    "room",
+                    f"Moved to {room_number}",
+                    f"Assignment #{assign.assignment_id} (start)",
+                )
+                if assign.end_time:
+                    add_event(
+                        assign.end_time,
+                        "room",
+                        f"Left {room_number}",
+                        f"Assignment #{assign.assignment_id} (end)",
+                    )
+
+            for c in comforts:
+                if not _in_window(c.timestamp, admission_start, admission_end):
+                    continue
+                active_assignment = _assignment_for_time(
+                    [
+                        {"start_time": a.start_time, "end_time": a.end_time, "room_id": a.room_id}
+                        for a in adm_assignments
+                    ],
+                    c.timestamp,
+                )
+                room_hint = ""
+                if active_assignment:
+                    room_id = active_assignment["room_id"]
+                    room_name = room_lookup.get(room_id, f"Room {room_id}")
+                    room_hint = f" in {room_name}"
+                comfort_text = (
+                    f"Main {c.temperature_main} C, Toilet {c.temperature_toilet if c.temperature_toilet is not None else '--'} C, "
+                    f"Light {c.light_intensity if c.light_intensity is not None else '--'}, "
+                    f"Sound {c.sound_level if c.sound_level is not None else '--'}, "
+                    f"Airflow {'On' if c.airflow else 'Off'}{room_hint}"
+                )
+                add_event(c.timestamp, "comfort", "Comfort setting updated", comfort_text)
+
+            for m in medications:
+                if not _in_window(m.medication_time, admission_start, admission_end):
+                    continue
+                med_text = (
+                    f"{m.drug_name} | Dose {m.dose if m.dose else '--'} | "
+                    f"Route {m.route if m.route else '--'} | Status {m.status if m.status else '--'}"
+                )
+                add_event(
+                    m.medication_time,
+                    "clinical",
+                    "Medication",
+                    med_text,
+                    badge_class="clinical-medication",
+                    badge_label="medication",
+                )
+
+            for v in visits:
+                if not _in_window(v.visit_time, admission_start, admission_end):
+                    continue
+                visit_text = (
+                    f"Temp {v.body_temperature if v.body_temperature is not None else '--'} C | "
+                    f"BP {v.blood_pressure if v.blood_pressure else '--'} | "
+                    f"Symptoms {v.symptoms if v.symptoms else '--'}"
+                )
+                add_event(
+                    v.visit_time,
+                    "clinical",
+                    "Visit",
+                    visit_text,
+                    badge_class="clinical-visit",
+                    badge_label="visit",
+                )
+
+            for u in utility_events:
+                room_number = room_lookup.get(u.room_id, f"Room {u.room_id}")
+                env_text = (
+                    f"{room_number} | Power {u.power_consumption if u.power_consumption is not None else '--'} kWh | "
+                    f"Water {u.water_consumption if u.water_consumption is not None else '--'} L"
+                )
+                add_event(
+                    u.start_time,
+                    "environment",
+                    f"Environment usage: {u.category}",
+                    env_text,
+                )
+
+            days = []
+            for d in sorted(day_map.keys()):
+                day = day_map[d]
+                day["events"] = sorted(
+                    day["events"],
+                    key=lambda e: (e["timestamp"] is None, e["timestamp"]),
+                )
+
+                day_start = datetime.combine(d, time.min)
+                day_end = datetime.combine(d, time.max)
+                room_ids_for_day = set()
+                for assign in adm_assignments:
+                    assign_start = assign.start_time
+                    assign_end = assign.end_time
+                    if not assign_start:
+                        continue
+                    if admission_end and (assign_end is None or admission_end < assign_end):
+                        assign_end = admission_end
+                    if assign_start > day_end:
+                        continue
+                    if assign_end and assign_end < day_start:
+                        continue
+                    room_ids_for_day.add(assign.room_id)
+
+                sensor_rows = []
+                if room_ids_for_day:
+                    data_rows = (
+                        session.query(Data, Sensor, Device)
+                        .join(Sensor, Data.sensor_id == Sensor.sensor_id)
+                        .join(Device, Sensor.device_id == Device.device_id)
+                        .filter(
+                            Device.room_id.in_(room_ids_for_day),
+                            Data.timestamp >= day_start,
+                            Data.timestamp <= day_end,
+                        )
+                        .order_by(Data.timestamp.desc())
+                        .all()
+                    )
+                    sensor_rows = [
+                        {
+                            "timestamp": _fmt_dt(row.timestamp),
+                            "room_id": device.room_id,
+                            "sensor_type": sensor.sensor_type,
+                            "value": row.value,
+                            "unit": sensor.unit,
+                        }
+                        for row, sensor, device in data_rows
+                    ]
+
+                day["sensor_rows"] = sensor_rows
+                day["sensor_count"] = len(sensor_rows)
+                day["sensor_types"] = sorted({row["sensor_type"] for row in sensor_rows if row.get("sensor_type")})
+                day["sensor_rooms"] = sorted({row["room_id"] for row in sensor_rows if row.get("room_id") is not None})
+                days.append(day)
+
+            admission_views.append(
+                {
+                    "admission_id": adm.admission_id,
+                    "admitted_at": adm.admitted_at,
+                    "discharged_at": adm.discharged_at,
+                    "age": adm.age,
+                    "weight": adm.weight,
+                    "current_diagnosis": adm.current_diagnosis,
+                    "days": days,
+                    "assignment_count": len(adm_assignments),
+                }
             )
-        ]
+
+        active_admission_id = admission_views[0]["admission_id"] if admission_views else None
 
     return render_template(
         "patient_detail.html",
@@ -476,4 +713,6 @@ def patient_detail(patient_id):
         medications=medications,
         visits=visits,
         room_assignments=room_assignments,
+        admission_views=admission_views,
+        active_admission_id=active_admission_id,
     )

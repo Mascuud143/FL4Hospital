@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .io-page { display: grid; gap: 14px; }
+  .io-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .field { margin-bottom: 8px; }
+  .field label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .field input, .field select {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    background: #fff;
+  }
+  .out-list { display: grid; gap: 8px; }
+  .out-item {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: var(--surface-alt);
+  }
+  .k { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
+  .v { font-size: 1.05rem; font-weight: 700; }
+  .note { font-size: 0.88rem; color: var(--muted); }
+  @media (max-width: 900px) {
+    .io-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="io-page">
+  <div class="card">
+    <h2 style="margin:0;">Patient Input -> Comfort Preference Output</h2>
+    <p class="note" style="margin-bottom:0;">
+    </p>
+  </div>
+
+  <div class="io-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Input (Patient + Context)</h3>
+      <div class="field">
+        <label for="age">Age</label>
+        <input id="age" type="number" min="0" value="72" />
+      </div>
+      <div class="field">
+        <label for="height">Height (cm)</label>
+        <input id="height" type="number" min="0" value="168" />
+      </div>
+      <div class="field">
+        <label for="weight">Weight (kg)</label>
+        <input id="weight" type="number" min="0" value="74" />
+      </div>
+      <div class="field">
+        <label for="diagnosis">Diagnosis</label>
+        <select id="diagnosis">
+          <option value="respiratory">Respiratory</option>
+          <option value="cardiac">Cardiac</option>
+          <option value="post-op">Post-op</option>
+          <option value="general">General</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="current_medication">Current medication</label>
+        <select id="current_medication">
+          <option value="none">None</option>
+          <option value="sedative">Sedative</option>
+          <option value="painkiller">Painkiller</option>
+          <option value="steroid">Steroid</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">Output (ComfortPreference Suggestion)</h3>
+      <div class="out-list">
+        <div class="out-item">
+          <div class="k">Temperature Main</div>
+          <div class="v" id="outTempMain">22.0 C</div>
+        </div>
+        <div class="out-item">
+          <div class="k">Temperature Toilet</div>
+          <div class="v" id="outTempToilet">23.0 C</div>
+        </div>
+        <div class="out-item">
+          <div class="k">Light Intensity</div>
+          <div class="v" id="outLight">58</div>
+        </div>
+        <div class="out-item">
+          <div class="k">Sound Level</div>
+          <div class="v" id="outSound">34</div>
+        </div>
+        <div class="out-item">
+          <div class="k">Airflow</div>
+          <div class="v" id="outAirflow">false</div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const age = document.getElementById("age");
+    const diagnosis = document.getElementById("diagnosis");
+    const currentMedication = document.getElementById("current_medication");
+    const btn = document.getElementById("suggestBtn");
+
+    const outTempMain = document.getElementById("outTempMain");
+    const outTempToilet = document.getElementById("outTempToilet");
+    const outLight = document.getElementById("outLight");
+    const outSound = document.getElementById("outSound");
+    const outAirflow = document.getElementById("outAirflow");
+
+    btn.addEventListener("click", () => {
+      let tempMain = 22.0;
+      let tempToilet = 23.0;
+      let light = 58;
+      let sound = 34;
+      let airflow = false;
+
+      const a = Number(age.value || 0);
+      if (a >= 75) {
+        tempMain += 0.8;
+        tempToilet += 0.8;
+      }
+
+      if (diagnosis.value === "respiratory") {
+        airflow = true;
+        sound -= 2;
+      }
+      if (diagnosis.value === "cardiac") {
+        sound -= 3;
+        light -= 6;
+      }
+
+      if (currentMedication.value === "sedative") {
+        light = Math.max(20, light - 14);
+        sound = Math.max(20, sound - 6);
+      } else if (currentMedication.value === "painkiller") {
+        sound = Math.max(22, sound - 4);
+      } else if (currentMedication.value === "steroid") {
+        tempMain -= 0.3;
+        airflow = true;
+      }
+
+      outTempMain.textContent = `${tempMain.toFixed(1)} C`;
+      outTempToilet.textContent = `${tempToilet.toFixed(1)} C`;
+      outLight.textContent = String(light);
+      outSound.textContent = String(sound);
+      outAirflow.textContent = airflow ? "true" : "false";
+    });
+  })();
+</script>
+{% endblock %}
