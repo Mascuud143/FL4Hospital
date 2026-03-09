@@ -1,41 +1,483 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Patient name: {{ patient.name }}</h2>
+<style>
+  .patient-page { display: grid; gap: 14px; }
+  .patient-head {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 14px;
+  }
+  .patient-name { margin: 0 0 6px; }
+  .patient-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+  }
+  .meta-box {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-alt);
+    padding: 8px;
+  }
+  .meta-box .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; }
+  .meta-box .v { font-weight: 700; }
 
-<table>
-<tr><th>Age</th><td>{{ patient.age }}</td></tr>
-<tr><th>Gender</th><td>{{ patient.gender }}</td></tr>
-<tr><th>Height</th><td>{{ patient.height }} cm</td></tr>
-<tr><th>Weight</th><td>{{ patient.weight }} kg</td></tr>
-<tr><th>Ethnicity</th><td>{{ patient.ethnicity }}</td></tr>
-<tr><th>Diagnosis</th><td>{{ patient.current_diagnosis }}</td></tr>
-<tr><th>Admission Date</th><td>{{ patient.admission_date }}</td></tr>
-<tr><th>Release Date</th><td>{{ patient.release_date }}</td></tr>
-</table>
+  .admission-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .adm-btn {
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 999px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .adm-btn.active {
+    background: var(--primary-soft);
+    border-color: #95bfdf;
+  }
 
-<h3>Comfort Preferences for ideal day for this patient (Labels)</h3>
-{% if comforts %}
-<table>
-<tr>
-  <th>Time</th>
-  <th>Temp (°C)</th>
-  <th>Light</th>
-  <th>Sound</th>
-  <th>Ventilation</th>
-</tr>
-{% for c in comforts %}
-<tr>
-  <td>{{ c.timestamp.strftime("%Y-%m-%d %H:%M") }}</td>
-  <td>{{ c.temperature }}</td>
-  <td>{{ c.light_intensity }}</td>
-  <td>{{ c.sound_level }}</td>
-  <td>{{ c.ventilation }}</td>
-</tr>
-{% endfor %}
-</table>
-{% else %}
-<p>No comfort preferences recorded yet.</p>
-{% endif %}
+  .admission-panel { display: none; }
+  .admission-panel.active { display: block; }
 
-<p><a href="/">Back to Rooms</a></p>
+  .day-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .day-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  .day-card[open] {
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  }
+
+  .day-head {
+    padding: 10px 12px;
+    background: linear-gradient(120deg, #f8fcff, #f2f8ff);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+  }
+
+  summary.day-head {
+    cursor: pointer;
+    list-style: none;
+  }
+
+  summary.day-head::-webkit-details-marker {
+    display: none;
+  }
+
+  .day-head::after {
+    content: "+";
+    margin-left: auto;
+    color: var(--muted);
+    font-weight: 700;
+  }
+
+  .day-card[open] .day-head::after {
+    content: "-";
+  }
+
+  .day-columns {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .group-box {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    min-height: 95px;
+  }
+
+  .group-box h5 {
+    margin: 0 0 6px;
+    font-size: 0.84rem;
+  }
+
+  .evt-line {
+    font-size: 0.84rem;
+    margin-bottom: 4px;
+  }
+
+  .evt-ts {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: #f4f8ff;
+    color: #30445e;
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .timeline {
+    border-top: 1px solid var(--line);
+    padding: 10px 12px 12px;
+    background: #fcfdff;
+  }
+
+  .day-main {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 10px;
+    border-top: 1px solid var(--line);
+    background: #fcfdff;
+  }
+
+  .day-main .timeline {
+    border-top: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  .sensor-side {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  .sensor-side h5 {
+    margin: 0;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-alt);
+    font-size: 0.84rem;
+  }
+
+  .sensor-wrap {
+    max-height: 460px;
+    overflow: auto;
+  }
+
+  .sensor-table {
+    margin-top: 0;
+    border-radius: 0;
+    font-size: 0.82rem;
+  }
+
+  .sensor-table th, .sensor-table td {
+    padding: 6px;
+    font-size: 0.8rem;
+  }
+
+  .sensor-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    background: #fcfdff;
+  }
+
+  .sensor-controls label {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-right: 4px;
+  }
+
+  .sensor-controls select {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 4px 8px;
+    font-size: 0.82rem;
+    background: #fff;
+  }
+
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 62px 140px 1fr;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px dashed #e3ebf5;
+    font-size: 0.9rem;
+  }
+  .timeline-row:last-child { border-bottom: 0; }
+
+  .badge-comfort { background: var(--primary-soft); }
+  .badge-environment { background: var(--success-soft); }
+  .badge-clinical-medication { background: var(--warning-soft); }
+  .badge-clinical-visit { background: var(--info-soft); }
+  .badge-room { background: var(--danger-soft); }
+
+  @media (max-width: 980px) {
+    .patient-head { grid-template-columns: 1fr; }
+    .day-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 700px) {
+    .day-columns { grid-template-columns: 1fr; }
+    .day-main { grid-template-columns: 1fr; }
+    .timeline-row { grid-template-columns: 56px 1fr; }
+    .timeline-row .event-detail { grid-column: span 2; }
+  }
+</style>
+
+<div class="patient-page">
+  <section class="patient-head">
+    <div class="card">
+      <h2 class="patient-name">{{ patient.name }}</h2>
+      <p class="muted">Patient-centered day timeline grouped by admission.</p>
+      <div class="patient-meta">
+        <div class="meta-box"><div class="k">Gender</div><div class="v">{{ patient.gender if patient.gender else '--' }}</div></div>
+        <div class="meta-box"><div class="k">Height</div><div class="v">{{ patient.height if patient.height is not none else '--' }} cm</div></div>
+        <div class="meta-box"><div class="k">Ethnicity</div><div class="v">{{ patient.ethnicity if patient.ethnicity else '--' }}</div></div>
+        <div class="meta-box"><div class="k">Latest Age</div><div class="v">{{ patient.age if patient.age is not none else '--' }}</div></div>
+        <div class="meta-box"><div class="k">Latest Weight</div><div class="v">{{ patient.weight if patient.weight is not none else '--' }} kg</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4 style="margin-top:0;">Admissions</h4>
+      <p class="muted" style="margin-top:0;">Toggle between admissions when patient has re-admissions.</p>
+      {% if admissions %}
+      <table>
+        <tr>
+          <th>ID</th>
+          <th>Admitted</th>
+          <th>Discharged</th>
+          <th>Diagnosis</th>
+        </tr>
+        {% for a in admissions %}
+        <tr>
+          <td>#{{ a.admission_id }}</td>
+          <td>{% if a.admitted_at %}{{ a.admitted_at.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+          <td>{% if a.discharged_at %}{{ a.discharged_at.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+          <td>{{ a.current_diagnosis if a.current_diagnosis else '--' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No admissions found.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    {% if admission_views and admission_views|length > 1 %}
+    <div class="admission-toggle">
+      {% for a in admission_views %}
+      <button class="adm-btn {% if a.admission_id == active_admission_id %}active{% endif %}" type="button" data-adm-btn="{{ a.admission_id }}">
+        Admission #{{ a.admission_id }}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if admission_views %}
+      {% for adm in admission_views %}
+      <div class="admission-panel {% if adm.admission_id == active_admission_id %}active{% endif %}" data-adm-panel="{{ adm.admission_id }}">
+        <h3 style="margin-top: 0;">
+          Admission #{{ adm.admission_id }} timeline
+          <span class="chip">{{ adm.days|length }} day{% if adm.days|length != 1 %}s{% endif %}</span>
+        </h3>
+        <p class="muted">
+          {% if adm.admitted_at %}Start: {{ adm.admitted_at.strftime("%Y-%m-%d %H:%M") }}{% else %}Start: --{% endif %}
+          |
+          {% if adm.discharged_at %}End: {{ adm.discharged_at.strftime("%Y-%m-%d %H:%M") }}{% else %}End: --{% endif %}
+          |
+          Diagnosis: {{ adm.current_diagnosis if adm.current_diagnosis else '--' }}
+        </p>
+
+        <div class="day-list">
+          {% for day in adm.days %}
+          <details class="day-card">
+            <summary class="day-head">
+              <strong>{{ day.label }}</strong>
+              <span class="muted">{{ day.events|length }} events</span>
+            </summary>
+
+            <div class="day-columns">
+              <div class="group-box">
+                <h5>Comfort Settings</h5>
+                {% if day.comfort_events %}
+                  {% for event in day.comfort_events %}
+                  <div class="evt-line"><span class="evt-ts">{{ event.timestamp_str }}</span>{{ event.details }}</div>
+                  {% endfor %}
+                {% else %}
+                  <div class="evt-line muted">No comfort updates</div>
+                {% endif %}
+              </div>
+
+              <div class="group-box">
+                <h5>Environment</h5>
+                {% if day.environment_events %}
+                  {% for event in day.environment_events %}
+                  <div class="evt-line"><span class="evt-ts">{{ event.timestamp_str }}</span>{{ event.title }}</div>
+                  <div class="evt-line muted">{{ event.details }}</div>
+                  {% endfor %}
+                {% else %}
+                  <div class="evt-line muted">No environment events</div>
+                {% endif %}
+              </div>
+
+              <div class="group-box">
+                <h5>Medication & Visits</h5>
+                {% if day.clinical_events %}
+                  {% for event in day.clinical_events %}
+                  <div class="evt-line"><span class="evt-ts">{{ event.timestamp_str }}</span>{{ event.title }}</div>
+                  <div class="evt-line muted">{{ event.details }}</div>
+                  {% endfor %}
+                {% else %}
+                  <div class="evt-line muted">No medication or visits</div>
+                {% endif %}
+              </div>
+
+              <div class="group-box">
+                <h5>Room Situation</h5>
+                {% if day.room_events %}
+                  {% for event in day.room_events %}
+                  <div class="evt-line"><span class="evt-ts">{{ event.timestamp_str }}</span>{{ event.title }}</div>
+                  <div class="evt-line muted">{{ event.details }}</div>
+                  {% endfor %}
+                {% else %}
+                  <div class="evt-line muted">No room changes</div>
+                {% endif %}
+              </div>
+            </div>
+
+            <div class="day-main">
+              <div class="timeline">
+                {% if day.events %}
+                  {% for event in day.events %}
+                  <div class="timeline-row">
+                    <div>
+                      {{ event.time }}<br/>
+                      <span class="muted" style="font-size:0.75rem;">{{ event.timestamp_str }}</span>
+                    </div>
+                    <div>
+                      <span class="chip badge-{{ event.badge_class }}">{{ event.badge_label }}</span>
+                    </div>
+                    <div class="event-detail">
+                      <strong>{{ event.title }}</strong><br/>
+                      <span class="muted">{{ event.details }}</span>
+                    </div>
+                  </div>
+                  {% endfor %}
+                {% else %}
+                  <p class="muted">No events for this day.</p>
+                {% endif %}
+              </div>
+
+              {% set day_uid = adm.admission_id ~ '-' ~ day.date_key %}
+              <aside class="sensor-side">
+                <h5>Sensor Data ({{ day.sensor_count }}) - full day</h5>
+                <div class="sensor-controls">
+                  <div>
+                    <label for="sensor-type-{{ day_uid }}">Sensor</label>
+                    <select id="sensor-type-{{ day_uid }}" data-filter-type="{{ day_uid }}">
+                      <option value="all">All sensors</option>
+                      {% for t in day.sensor_types %}
+                      <option value="{{ t }}">{{ t }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  <div>
+                    <label for="sensor-room-{{ day_uid }}">Room</label>
+                    <select id="sensor-room-{{ day_uid }}" data-filter-room="{{ day_uid }}">
+                      <option value="all">All rooms</option>
+                      {% for rid in day.sensor_rooms %}
+                      <option value="{{ rid }}">{{ rid }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                </div>
+                <div class="sensor-wrap">
+                  {% if day.sensor_rows %}
+                  <table class="sensor-table" data-sensor-table="{{ day_uid }}">
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Room</th>
+                      <th>Sensor</th>
+                      <th>Value</th>
+                    </tr>
+                    {% for s in day.sensor_rows %}
+                    <tr data-sensor-row="{{ day_uid }}" data-sensor-type="{{ s.sensor_type }}" data-room-id="{{ s.room_id }}">
+                      <td>{{ s.timestamp }}</td>
+                      <td>{{ s.room_id }}</td>
+                      <td>{{ s.sensor_type }}</td>
+                      <td>
+                        {% if s.value is not none %}{{ s.value }}{% else %}--{% endif %}
+                        {% if s.unit %} {{ s.unit }}{% endif %}
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </table>
+                  {% else %}
+                  <p class="muted" style="padding:10px;">No sensor readings in this day window.</p>
+                  {% endif %}
+                </div>
+              </aside>
+            </div>
+          </details>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="muted">No admission timeline data available for this patient.</p>
+    {% endif %}
+  </section>
+</div>
+
+<script>
+  (() => {
+    const buttons = document.querySelectorAll("[data-adm-btn]");
+    const panels = document.querySelectorAll("[data-adm-panel]");
+
+    if (buttons.length && panels.length) {
+      const activate = (id) => {
+        buttons.forEach((btn) => btn.classList.toggle("active", btn.dataset.admBtn === id));
+        panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.admPanel === id));
+      };
+
+      buttons.forEach((btn) => {
+        btn.addEventListener("click", () => activate(btn.dataset.admBtn));
+      });
+    }
+
+    const applySensorFilter = (dayUid) => {
+      const typeSel = document.querySelector(`[data-filter-type="${dayUid}"]`);
+      const roomSel = document.querySelector(`[data-filter-room="${dayUid}"]`);
+      const rows = document.querySelectorAll(`[data-sensor-row="${dayUid}"]`);
+      if (!typeSel || !roomSel || !rows.length) return;
+
+      const typeVal = typeSel.value;
+      const roomVal = roomSel.value;
+      rows.forEach((row) => {
+        const rowType = row.getAttribute("data-sensor-type");
+        const rowRoom = row.getAttribute("data-room-id");
+        const typeOk = typeVal === "all" || rowType === typeVal;
+        const roomOk = roomVal === "all" || rowRoom === roomVal;
+        row.style.display = typeOk && roomOk ? "" : "none";
+      });
+    };
+
+    document.querySelectorAll("[data-filter-type]").forEach((sel) => {
+      sel.addEventListener("change", () => applySensorFilter(sel.getAttribute("data-filter-type")));
+    });
+
+    document.querySelectorAll("[data-filter-room]").forEach((sel) => {
+      sel.addEventListener("change", () => applySensorFilter(sel.getAttribute("data-filter-room")));
+    });
+  })();
+</script>
 {% endblock %}

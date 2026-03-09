@@ -8,25 +8,17 @@ from typing import List, Tuple
 from persistence.database import session_scope
 from persistence.models.room_assignment import RoomAssignment
 from persistence.models.utility_usage import UtilityUsage
-
-from persistence.models.device import Device as DeviceModel
-from persistence.models.toilet_light import ToiletLight
+from simulation_batch.csv_filestorage import write_model_row
 
 
 @dataclass
 class ToiletUsagePolicy:
     """
-    Generates water + toilet-light utility usage per patient/room assignment.
+    Generates aggregated water usage per patient/room assignment.
 
-    Per toilet visit:
-      1) UtilityUsage(category="toilet_light") session with power_consumption (kWh)
-      2) UtilityUsage(category="water") session with water_consumption (liters)
-         ✅ same [start_time, end_time] as the light session
-
-    Showers:
-      - only in the morning window
-      - 50% chance per occupied day (per assignment/day)
-      - UtilityUsage(category="water") session with liters = duration * flow
+    Per occupied day:
+      - Aggregate all toilet visit water usage into ONE row.
+      - Optional shower water is added to the same daily total.
     """
 
     # Visits per day-part (inclusive randint ranges)
@@ -34,10 +26,6 @@ class ToiletUsagePolicy:
     visits_morning_range: Tuple[int, int] = (1, 3)    # 06-12
     visits_afternoon_range: Tuple[int, int] = (2, 5)  # 12-18 (most)
     visits_evening_range: Tuple[int, int] = (1, 4)    # 18-24
-
-    # Toilet light energy assumptions
-    toilet_light_power_w: float = 12.0
-    light_duration_s_range: Tuple[int, int] = (60, 6 * 60)  # 1–6 minutes
 
     # Water per toilet visit (liters)
     flush_l_range: Tuple[float, float] = (4.0, 9.0)
@@ -68,23 +56,9 @@ def _random_times_in_window(rng: random.Random, w0: datetime, w1: datetime, k: i
     return times
 
 
-def _get_toilet_light_device_id(session, *, room_id: int) -> int | None:
-    """
-    Resolve toilet light device_id for a room via Device table.
-    Assumes seeding created Device rows with device_type="toilet_light" and room_id set.
-    """
-    d = (
-        session.query(DeviceModel)
-        .filter(DeviceModel.room_id == room_id)
-        .filter(DeviceModel.device_type == "toilet_light")
-        .one_or_none()
-    )
-    return int(d.device_id) if d else None
-
-
 class ToiletUsageGenerator:
     """
-    Inserts UtilityUsage rows for toilet visits and showers
+    Inserts aggregated UtilityUsage rows (water only) per occupied day
     for all RoomAssignments overlapping [start_time, end_time].
 
     Assumption: one patient per room at a time.
@@ -112,9 +86,6 @@ class ToiletUsageGenerator:
                 a_start = max(a.start_time.astimezone(timezone.utc), start_time)
                 a_end = min(a.end_time.astimezone(timezone.utc), end_time)
 
-                # Resolve toilet light device once per assignment/room
-                toilet_light_device_id = _get_toilet_light_device_id(session, room_id=a.room_id)
-
                 day_cursor = _day_start(a_start)
                 while day_cursor < a_end:
                     day0 = day_cursor
@@ -127,8 +98,10 @@ class ToiletUsageGenerator:
                         day_cursor += timedelta(days=1)
                         continue
 
+                    total_liters = 0.0
+
                     # -------------------------
-                    # Morning shower (50% chance)
+                    # Morning shower (optional)
                     # -------------------------
                     if self.rng.random() < self.policy.shower_probability:
                         h0, h1 = self.policy.shower_window_hours
@@ -146,18 +119,7 @@ class ToiletUsageGenerator:
                             minutes = max(0.0, (t_shower_end - t_shower).total_seconds() / 60.0)
                             lpm = self.rng.uniform(*self.policy.shower_flow_l_per_min_range)
                             liters = float(minutes * lpm)
-
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="water",
-                                    start_time=t_shower,
-                                    end_time=t_shower_end,
-                                    power_consumption=None,
-                                    water_consumption=liters,
-                                )
-                            )
-                            inserted += 1
+                            total_liters += liters
 
                     # -------------------------
                     # Toilet visits by day-part
@@ -178,51 +140,28 @@ class ToiletUsageGenerator:
                         k = self.rng.randint(k_range[0], k_range[1])
                         visit_times = _random_times_in_window(self.rng, pp0, pp1, k)
 
-                        for t in visit_times:
-                            # ---- Toilet light session ----
-                            dur_s = self.rng.randint(*self.policy.light_duration_s_range)
-                            t_end = min(t + timedelta(seconds=dur_s), w1)
-
-                            hours = max(0.0, (t_end - t).total_seconds() / 3600.0)
-                            power_kwh = (self.policy.toilet_light_power_w * hours) / 1000.0
-
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="toilet_light",
-                                    start_time=t,
-                                    end_time=t_end,
-                                    power_consumption=power_kwh,
-                                    water_consumption=None,
-                                )
-                            )
-                            inserted += 1
-
-                            # Mirror light ON/OFF in toilet_lights table
-                            if toilet_light_device_id is not None:
-                                session.add(ToiletLight(device_id=toilet_light_device_id, state=True, timestamp=t))
-                                session.add(ToiletLight(device_id=toilet_light_device_id, state=False, timestamp=t_end))
-
+                        for _t in visit_times:
                             # ---- Water usage for the visit ----
-                            # ✅ same [t, t_end] as the light session
                             flush_l = self.rng.uniform(*self.policy.flush_l_range)
                             sink_l = self.rng.uniform(*self.policy.sink_l_range)
                             if part_name == "night":
                                 sink_l *= self.policy.night_sink_multiplier
 
                             liters = float(flush_l + sink_l)
+                            total_liters += liters
 
-                            session.add(
-                                UtilityUsage(
-                                    room_id=a.room_id,
-                                    category="water",
-                                    start_time=t,
-                                    end_time=t_end,  # ✅ MATCH LIGHT DURATION
-                                    power_consumption=None,
-                                    water_consumption=liters,
-                                )
-                            )
-                            inserted += 1
+                    if total_liters > 0.0:
+                        row = UtilityUsage(
+                            room_id=a.room_id,
+                            category="water",
+                            start_time=w0,
+                            end_time=w1,
+                            power_consumption=None,
+                            water_consumption=round(total_liters, 2),
+                        )
+                        write_model_row(row)
+                        session.add(row)
+                        inserted += 1
 
                     day_cursor += timedelta(days=1)
 

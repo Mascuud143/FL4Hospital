@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Patients</h2>
+{% if patients %}
+<table>
+<tr>
+  <th>ID</th>
+  <th>Name</th>
+  <th>Age</th>
+  <th>Admission</th>
+  <th>Release</th>
+  <th>Profile</th>
+</tr>
+{% for p in patients %}
+<tr>
+  <td>{{ p.patient_id }}</td>
+  <td>{{ p.name }}</td>
+  <td>{% if p.age is not none %}{{ p.age }}{% else %}--{% endif %}</td>
+  <td>{% if p.admission_date %}{{ p.admission_date.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td>{% if p.release_date %}{{ p.release_date.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+  <td><a href="/patients/{{ p.patient_id }}">View</a></td>
+</tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No patients found.</p>
+{% endif %}
+
+<p><a href="/">Back to Rooms</a></p>
+{% endblock %}

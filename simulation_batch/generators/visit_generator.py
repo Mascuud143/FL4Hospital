@@ -12,8 +12,7 @@ from persistence.models.visit import Visit
 
 #reuse UTC helper
 from simulation_batch.room_engine import _as_utc
-
-from .patients import DIAGNOSES
+from simulation_batch.csv_filestorage import write_model_row
 
 
 class VisitGenerator:
@@ -127,17 +126,18 @@ class VisitGenerator:
                             return round(self.rng.uniform(36.0, 38.5), 1)
                         
                     for ts in visit_times:
-                        session.add(
-                            Visit(
-                                patient_id=adm.patient_id,
-                                visit_time=ts,
-                                body_temperature=generate_body_temperature_based_on_symptom(generate_a_symptom_or_none(adm.current_diagnosis)),
-                                blood_pressure=generate_blood_pressure_based_on_symptom(generate_a_symptom_or_none(adm.current_diagnosis)),
-                                # get random symptoms from diagnosis, some times empty, some times one sytom only no multiple symptoms for simplicity
-                                symptoms=generate_a_symptom_or_none(adm.current_diagnosis),
-                               
-                            )
+                        row = Visit(
+                            patient_id=adm.patient_id,
+                            visit_time=ts,
+                            body_temperature=round(
+                                self.rng.uniform(36.0, 38.5), 1
+                            ),
+                            blood_pressure=f"{self.rng.randint(110,140)}/{self.rng.randint(70,90)}",
+                            # get random symptoms from diagnosis, some times empty, some times one sytom only no multiple symptoms for simplicity
+                            symptoms=generate_a_symptom_or_none(adm.current_diagnosis),
                         )
+                        write_model_row(row)
+                        session.add(row)
                         inserted += 1
 
                     day_cursor += timedelta(days=1)

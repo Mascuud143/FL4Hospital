@@ -5,6 +5,8 @@ from typing import Optional
 
 from persistence.database import session_scope
 from persistence.models.utility_usage import UtilityUsage
+from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.config import ENABLE_UTILITY_USAGE
 
 
 def insert_utility_usage(
@@ -30,6 +32,8 @@ def insert_utility_usage(
       - "toilet_light"
       - "water"
     """
+    if not ENABLE_UTILITY_USAGE:
+        return
     start_time_utc = start_time.astimezone(timezone.utc)
     end_time_utc = end_time.astimezone(timezone.utc)
 
@@ -47,4 +51,6 @@ def insert_utility_usage(
         kwargs["device_id"] = int(device_id)
 
     with session_scope() as session:
-        session.add(UtilityUsage(**kwargs))
+        row = UtilityUsage(**kwargs)
+        write_model_row(row)
+        session.add(row)

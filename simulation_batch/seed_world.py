@@ -9,6 +9,7 @@ from persistence.models.room import Room
 from persistence.models.patient import Patient
 from persistence.models.admission import Admission
 from persistence.models.room_assignment import RoomAssignment
+from simulation_batch.csv_filestorage import write_model_row
 
 from simulation_batch.config import (
     PATIENT_COUNT,
@@ -21,7 +22,7 @@ from simulation_batch.config import (
 
 from simulation_batch.generators.patients import generate_patients
 from simulation_batch.generators.name_gen import generate_name
-from simulation_batch.generators.age_height_weight_gen import age_height_weight_generator
+from simulation_batch.generators.age_height_weight_gender_gen import age_height_weight__gender_generator
 
 # Runtime (not DB) device/sensor objects
 from ble import Device as BLEDevice, Sensor as BLESensor
@@ -47,7 +48,7 @@ def _random_mac(rng: random.Random) -> str:
 
 def _unit_for(st: str) -> str:
     return {
-        "temperature": "°C",
+        "temperature": "C",
         "humidity": "%",
         "co2": "ppm",
         "light": "lux",
@@ -84,6 +85,7 @@ def _find_or_create_room_for_window(
         next_number = max(int(x.room_number) for x in rooms) + 1
 
     new_room = Room(room_number=next_number)
+    write_model_row(new_room)
     session.add(new_room)
     session.flush()
     rooms.append(new_room)
@@ -158,12 +160,12 @@ def seed_simulated_world(
 
     generated = generate_patients(patient_count)
     for idx, p in enumerate(generated):
-        age_hw = age_height_weight_generator()
+        age_hw = age_height_weight__gender_generator()
 
         patient = Patient(
             name=generate_name(),
             ethnicity=p.get("ethnicity"),
-            gender=rng.choice(["Male", "Female"]),
+            gender=age_hw["gender"],
             height=age_hw["height"],
         )
 
@@ -220,6 +222,7 @@ def seed_simulated_world(
     with session_scope() as session:
         # insert patients first so they get IDs
         for patient in patients:
+            write_model_row(patient)
             session.add(patient)
         session.flush()
 
@@ -243,6 +246,7 @@ def seed_simulated_world(
                 room_index += 1
                 current_offset_days = 0
                 current_room = Room(room_number=100 + room_index)
+                write_model_row(current_room)
                 session.add(current_room)
                 session.flush()
                 rooms.append(current_room)
@@ -262,22 +266,23 @@ def seed_simulated_world(
                 initial_room_id=current_room.room_id,
                 admitted_at=admitted_at,
                 discharged_at=discharged_at,
-                age = int(round(age_at_time(base["age0"], admitted_at))),
+                age=int(round(age_at_time(base["age0"], admitted_at))),
                 weight=round(weight_at_admission(base["weight0"]), 2),
                 current_diagnosis=base["current_diagnosis"],
             )
+            write_model_row(adm)
             session.add(adm)
             session.flush()
 
-            session.add(
-                RoomAssignment(
-                    admission_id=adm.admission_id,
-                    patient_id=patient.patient_id,
-                    room_id=current_room.room_id,
-                    start_time=admitted_at,
-                    end_time=discharged_at,
-                )
+            row = RoomAssignment(
+                admission_id=adm.admission_id,
+                patient_id=patient.patient_id,
+                room_id=current_room.room_id,
+                start_time=admitted_at,
+                end_time=discharged_at,
             )
+            write_model_row(row)
+            session.add(row)
 
             room_occupancy[current_room.room_id].append((admitted_at, discharged_at))
             admissions_created.append(
@@ -335,7 +340,6 @@ def seed_simulated_world(
                 # Diagnosis behavior (default stable)
                 dx = base_dx
                 if DIAGNOSIS_CHANGE_PROB > 0 and rng.random() < DIAGNOSIS_CHANGE_PROB:
-                    # If you want "related diagnosis", swap this to a related-dx mapper.
                     dx = generate_patients(1)[0].get("diagnosis")
 
                 adm = Admission(
@@ -343,22 +347,23 @@ def seed_simulated_world(
                     initial_room_id=room_for_adm.room_id,
                     admitted_at=admitted_at,
                     discharged_at=discharged_at,
-                    age = int(round(age_at_time(base["age0"], admitted_at))),
+                    age=int(round(age_at_time(base_age, admitted_at))),
                     weight=round(weight_at_admission(base_weight), 2),
                     current_diagnosis=dx,
                 )
+                write_model_row(adm)
                 session.add(adm)
                 session.flush()
 
-                session.add(
-                    RoomAssignment(
-                        admission_id=adm.admission_id,
-                        patient_id=pid,
-                        room_id=room_for_adm.room_id,
-                        start_time=admitted_at,
-                        end_time=discharged_at,
-                    )
+                row = RoomAssignment(
+                    admission_id=adm.admission_id,
+                    patient_id=pid,
+                    room_id=room_for_adm.room_id,
+                    start_time=admitted_at,
+                    end_time=discharged_at,
                 )
+                write_model_row(row)
+                session.add(row)
 
                 room_occupancy.setdefault(room_for_adm.room_id, [])
                 room_occupancy[room_for_adm.room_id].append((admitted_at, discharged_at))
@@ -444,21 +449,22 @@ def seed_simulated_world(
             if destination is None:
                 max_room_number += 1
                 destination = Room(room_number=max_room_number)
+                write_model_row(destination)
                 session.add(destination)
                 session.flush()
                 rooms.append(destination)
                 transfer_rooms.append(destination)
                 room_occupancy.setdefault(destination.room_id, [])
 
-            session.add(
-                RoomAssignment(
-                    admission_id=admission_id,
-                    patient_id=pid,
-                    room_id=destination.room_id,
-                    start_time=transfer_time,
-                    end_time=discharge,
-                )
+            row = RoomAssignment(
+                admission_id=admission_id,
+                patient_id=pid,
+                room_id=destination.room_id,
+                start_time=transfer_time,
+                end_time=discharge,
             )
+            write_model_row(row)
+            session.add(row)
 
             room_occupancy.setdefault(destination.room_id, [])
             room_occupancy[destination.room_id].append((transfer_time, discharge))

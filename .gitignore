@@ -84,3 +84,6 @@ yarn-error.log*
 *.bak
 *.swp
 *~
+
+.tmp_xlsx_extract/
+filestorage/data.csv

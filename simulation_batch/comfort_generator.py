@@ -13,8 +13,7 @@ from persistence.models.visit import Visit  # ✅ FIX: real visits table
 from persistence.models import Speaker, Device  # ✅ NEW: import Speaker and Device models
 
 from simulation_batch.room_engine import _as_utc
-
-
+from simulation_batch.csv_filestorage import write_model_row
 
 
 # ==========================================================
@@ -325,16 +324,8 @@ class ComfortGenerator:
                             airflow=targets["airflow"],
                             source="simulation",
                         )
-                        #get speaker device from database based on room_id, assuming one device per room for simplicity
-                        device_speaker = session.query(Device).filter(Device.room_id == a.room_id, Device.device_type == "speaker").first()
-                        print(f"speaker device for room {a.room_id}: {device_speaker.device_id}")
 
-                        # add speaker level to the database as well
-                        speaker_row = Speaker(  
-                            device_id=device_speaker.device_id,
-                            level=targets["sound_level"],
-                            timestamp=t,
-                        )
+                        write_model_row(row)
                         session.add(row)
                         session.add(speaker_row)
                         inserted += 1

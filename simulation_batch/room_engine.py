@@ -15,6 +15,7 @@ from persistence.models.toilet_heater import ToiletHeater
 
 from domain.utility_calculator import calculate_energy_usage_kwh
 from simulation_batch.utility_usage_writer import insert_utility_usage
+from simulation_batch.csv_filestorage import write_model_row
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -174,7 +175,9 @@ class RoomEngine:
             dev_id = self._get_device_id(session, room_id=room.room_id, device_type="ventilation")
             if dev_id is None:
                 return
-            session.add(Ventilation(device_id=dev_id, mode=mode, level=level, timestamp=when))
+            row = Ventilation(device_id=dev_id, mode=mode, level=level, timestamp=when)
+            write_model_row(row)
+            session.add(row)
 
     # -------------------------
     # Toilet heater state logging
@@ -190,7 +193,9 @@ class RoomEngine:
             dev_id = self._get_device_id(session, room_id=room.room_id, device_type="toilet_heater")
             if dev_id is None:
                 return
-            session.add(ToiletHeater(device_id=dev_id, state=state, timestamp=when))
+            row = ToiletHeater(device_id=dev_id, state=state, timestamp=when)
+            write_model_row(row)
+            session.add(row)
 
     # -------------------------
     # Apply DB preferences + manage sessions

@@ -9,6 +9,15 @@ from .room_engine import RoomEngine, RoomState, _as_utc
 from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
 from .toilet_usage_generator import ToiletUsageGenerator
+from persistence.models.data import Data
+from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.config import (
+    ENABLE_COMFORT,
+    ENABLE_MEDICATION,
+    ENABLE_VISITS,
+    ENABLE_TOILET_USAGE,
+    ENABLE_SENSOR_EMIT,
+)
 
 # NEW: clinical generators
 from simulation_batch.generators.medication_generator import MedicationGenerator
@@ -49,7 +58,8 @@ class SimulationOrchestrator:
     ):
         self.start_time = start_time
         self.end_time = end_time
-        self.on_event = on_event
+        self._on_event_user = on_event
+        self.on_event = self._wrap_on_event(on_event)
         self.config = config or OrchestratorConfig()
         self.seed = seed
 
@@ -72,6 +82,20 @@ class SimulationOrchestrator:
 
         self._stop = asyncio.Event()
 
+    def _wrap_on_event(self, handler: OnEvent) -> OnEvent:
+        async def _wrapped(event: Dict[str, Any]) -> None:
+            # Save to data table CSV before any downstream sink
+            write_model_row(
+                Data(
+                    sensor_id=event["sensor_id"],
+                    value=event["value"],
+                    timestamp=event["timestamp"],
+                )
+            )
+            await handler(event)
+
+        return _wrapped
+
     # -------------------------------------------------------
     # START
     # -------------------------------------------------------
@@ -91,42 +115,54 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 2️⃣ Medication events
         # ---------------------------------------------------
-        med_gen = MedicationGenerator(seed=self.seed, diagnoses=DIAGNOSES)
-        inserted = med_gen.generate_for_horizon(
-            self.start_time,
-            self.end_time,
-        )
-        print(f"[orchestrator] medication rows inserted: {inserted}")
+        if ENABLE_MEDICATION:
+            med_gen = MedicationGenerator(seed=self.seed, diagnoses=DIAGNOSES)
+            inserted = med_gen.generate_for_horizon(
+                self.start_time,
+                self.end_time,
+            )
+            print(f"[orchestrator] medication rows inserted: {inserted}")
+        else:
+            print("[orchestrator] medication generation disabled")
 
         # ---------------------------------------------------
         # 3️⃣ Visit events
         # ---------------------------------------------------
-        visit_gen = VisitGenerator(seed=self.seed)
-        inserted = visit_gen.generate_for_horizon(
-            self.start_time,
-            self.end_time,
-        )
-        print(f"[orchestrator] visit rows inserted: {inserted}")
+        if ENABLE_VISITS:
+            visit_gen = VisitGenerator(seed=self.seed)
+            inserted = visit_gen.generate_for_horizon(
+                self.start_time,
+                self.end_time,
+            )
+            print(f"[orchestrator] visit rows inserted: {inserted}")
+        else:
+            print("[orchestrator] visit generation disabled")
 
 
         # ---------------------------------------------------
         # 1️⃣ Comfort preferences
         # ---------------------------------------------------
-        inserted = self.comfort.generate_for_horizon(
-            self.start_time,
-            self.end_time,
-        )
-        print(f"[orchestrator] comfort rows inserted: {inserted}")
+        if ENABLE_COMFORT:
+            inserted = self.comfort.generate_for_horizon(
+                self.start_time,
+                self.end_time,
+            )
+            print(f"[orchestrator] comfort rows inserted: {inserted}")
+        else:
+            print("[orchestrator] comfort generation disabled")
 
         # ---------------------------------------------------
         # 4️⃣ Toilet usage
         # ---------------------------------------------------
-        toilet_gen = ToiletUsageGenerator(seed=self.seed)
-        inserted = toilet_gen.generate_for_horizon(
-            self.start_time,
-            self.end_time,
-        )
-        print(f"[orchestrator] toilet utility rows inserted: {inserted}")
+        if ENABLE_TOILET_USAGE:
+            toilet_gen = ToiletUsageGenerator(seed=self.seed)
+            inserted = toilet_gen.generate_for_horizon(
+                self.start_time,
+                self.end_time,
+            )
+            print(f"[orchestrator] toilet utility rows inserted: {inserted}")
+        else:
+            print("[orchestrator] toilet usage generation disabled")
 
         print("[orchestrator] PRE-GENERATION COMPLETE\n")
 
@@ -167,7 +203,7 @@ class SimulationOrchestrator:
             self.engine.step(now, step_s=self.config.step_s)
 
             # Emit sensor readings
-            if (now - last_sample).total_seconds() >= self.config.sample_every_s:
+            if ENABLE_SENSOR_EMIT and (now - last_sample).total_seconds() >= self.config.sample_every_s:
                 await self.sampler.emit(
                     now,
                     room_engine=self.engine,
@@ -188,3 +224,4 @@ class SimulationOrchestrator:
 
     def stop(self) -> None:
         self._stop.set()
+    

@@ -5,7 +5,7 @@ from datetime import date
 # -------------------------
 
 START_DATE = date(2026, 1, 1)
-DAYS = 365 * 1  # total simulated days
+DAYS = 365*1 # total simulated days
 
 
 # -------------------------
@@ -56,6 +56,19 @@ SENSOR_SAMPLE_EVERY_S = 300  # every 5 simulated minutes
 # Wall-clock sleep per simulation step.
 # 0.0 = run as fast as possible
 WALL_SLEEP_S = 0.0
+
+
+# -------------------------
+# Generation toggles
+# -------------------------
+
+ENABLE_COMFORT = True
+ENABLE_MEDICATION = True
+ENABLE_VISITS = True
+
+ENABLE_TOILET_USAGE = True
+ENABLE_SENSOR_EMIT = True
+ENABLE_UTILITY_USAGE = True
 
 
 # -------------------------

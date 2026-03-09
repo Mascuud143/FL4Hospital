@@ -1,6 +1,7 @@
 import asyncio
 import os
 import argparse
+import json
 from datetime import datetime, timedelta, timezone
 
 from persistence import init_db
@@ -56,8 +57,8 @@ def build_real_devices() -> list[Device]:
 
     for d in devices:
         d.add_sensor(Sensor(uuid=TEMP_CHAR_UUID, sensor_type="temperature", unit="°C", parser=parse_temp_thingy))
-        d.add_sensor(Sensor(uuid=HUMIDITY_CHAR_UUID, sensor_type="humidity", unit="%", parser=parse_humidity_thingy))
-        d.add_sensor(Sensor(uuid=AIR_QUALITY_CHAR_UUID, sensor_type="co2", unit="ppm", parser=parse_air_quality_thingy))
+        # d.add_sensor(Sensor(uuid=HUMIDITY_CHAR_UUID, sensor_type="humidity", unit="%", parser=parse_humidity_thingy))
+        # d.add_sensor(Sensor(uuid=AIR_QUALITY_CHAR_UUID, sensor_type="co2", unit="ppm", parser=parse_air_quality_thingy))
         d.add_sensor(Sensor(uuid=LIGHT_CHAR_UUID, sensor_type="light", unit="lux", parser=parse_light_thingy))
         # d.add_sensor(Sensor(uuid=SOUUND_CHAR_UUID, sensor_type="sound", unit="dB", parser=parse_sound_thingy))
         d.room_id = 1
@@ -170,6 +171,29 @@ async def main():
     args = parse_args()
 
     if args.mode == "simulation":
+        # reset _counters.json to 0
+        with open("filestorage/_counters.json", "w") as f:
+            counters = {
+                "patients": 0,
+                "rooms": 0,
+                "admissions": 0,
+                "room_assignments": 0,
+                "medications": 0,
+                "visits": 0,
+                "comfort_preferences": 0,
+                "utility_usages": 0,
+                "toilet_lights": 0,
+                "toilet_heaters": 0,
+                "data": 0,
+                "ventilations": 0
+            }
+            json.dump(counters, f)
+
+        # delete all existing csv files in filestorage
+        for filename in os.listdir("filestorage"):
+            if filename.endswith(".csv"):
+                os.remove(os.path.join("filestorage", filename))
+
         await run_sim(args.db, args.echo, args.reset_db)
     elif args.mode == "hybrid":
         await run_real_hybrid(args.db, args.echo, args.reset_db)
