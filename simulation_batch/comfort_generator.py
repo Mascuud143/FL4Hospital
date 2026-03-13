@@ -327,7 +327,7 @@ class ComfortGenerator:
 
                         write_model_row(row)
                         session.add(row)
-                        session.add(speaker_row)
+                        #session.add(speaker_row)
                         inserted += 1
 
                     day_cursor += timedelta(days=1)

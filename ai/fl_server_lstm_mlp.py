@@ -6,11 +6,11 @@ import flwr as fl
 import numpy as np
 import pandas as pd
 
-from fl_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
+from fl_client_lstm_mlp import TARGET_COLUMNS, get_input_dim, get_params, make_model
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Flower server for next-hour environment training.")
+    parser = argparse.ArgumentParser(description="Flower server for next-hour hybrid MLP+LSTM training.")
     parser.add_argument("--split-dir", default="ai/splits_next_hour", help="Directory with next_hour train split")
     parser.add_argument("--server-address", default="127.0.0.1:8080", help="Server bind address")
     parser.add_argument("--rounds", type=int, default=3, help="Federated rounds")
@@ -19,12 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-available-clients", type=int, default=2, help="Minimum connected clients")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
-    parser.add_argument("--n-features", type=int, default=256, help="Unused compatibility flag")
-    parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour", help="Directory to write global weights per round")
+    parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour_lstm_mlp", help="Directory to write global weights per round")
     return parser.parse_args()
 
 
-def make_initial_parameters(_: int) -> fl.common.Parameters:
+def make_initial_parameters() -> fl.common.Parameters:
     model = make_model(get_input_dim())
     return fl.common.ndarrays_to_parameters(get_params(model))
 
@@ -180,10 +179,10 @@ def main() -> None:
         min_fit_clients=args.min_fit_clients,
         min_evaluate_clients=args.min_evaluate_clients,
         min_available_clients=args.min_available_clients,
-        initial_parameters=make_initial_parameters(args.n_features),
+        initial_parameters=make_initial_parameters(),
     )
 
-    print("fl_server.py starting")
+    print("fl_server_lstm_mlp.py starting")
     print(f"split_dir={split_dir}")
     print(f"targets={','.join(TARGET_COLUMNS)}")
     print(f"rooms_detected={rooms}")

@@ -172,6 +172,7 @@ def build_indices(data_dir: str) -> dict[str, Any]:
                 "admitted_at": admitted_at,
                 "discharged_at": parse_ts(row.get("discharged_at")),
                 "age": to_int(row.get("age")),
+                "weight": to_float(row.get("weight")),
                 "diagnosis": (row.get("current_diagnosis") or "").strip(),
             }
         )

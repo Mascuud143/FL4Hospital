@@ -14,6 +14,8 @@ from persistence.models.visit import Visit
 from simulation_batch.room_engine import _as_utc
 from simulation_batch.csv_filestorage import write_model_row
 
+from simulation_batch.generators.patients import DIAGNOSES
+
 
 class VisitGenerator:
     """

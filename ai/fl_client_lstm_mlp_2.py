@@ -1,15 +1,24 @@
 import argparse
 import os
 import time
+from collections import OrderedDict
 from typing import Any
 
 import flwr as fl
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, recall_score
-from sklearn.neural_network import MLPRegressor
 
-from next_hour_schema import AIRFLOW_INDEX, CHANGE_BASELINE_COLUMNS, INPUT_COLUMNS, TARGET_COLUMNS, next_hour_change_flags, row_to_input_vector
+try:
+    import torch
+    from torch import nn
+    from torch.utils.data import DataLoader, TensorDataset
+except ModuleNotFoundError as exc:  # pragma: no cover
+    raise ModuleNotFoundError(
+        "PyTorch is required for ai_fl_lstm_MLP_2. Install torch in the project environment before running this mode."
+    ) from exc
+
+from next_hour_schema import AIRFLOW_INDEX, CHANGE_BASELINE_COLUMNS, INPUT_COLUMNS, TARGET_COLUMNS, row_to_input_vector
 
 DEFAULT_OUTPUT_THRESHOLDS = {
     "y_temp_main": 1.0,
@@ -17,11 +26,10 @@ DEFAULT_OUTPUT_THRESHOLDS = {
     "y_light": 5.0,
     "y_sound": 5.0,
 }
-MODEL_HIDDEN_LAYER_SIZES = (128, 64, 32)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Flower room client for federated next-hour environment rows.")
+    parser = argparse.ArgumentParser(description="Flower room client for federated next-hour hybrid MLP+LSTM training v2.")
     parser.add_argument("--split-dir", default="ai/splits_next_hour", help="Directory with next_hour train and test CSV files")
     parser.add_argument("--room-id", required=True, help="Room/client id to run")
     parser.add_argument("--server-address", default="127.0.0.1:8080", help="Flower server address")
@@ -29,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--connect-retries", type=int, default=60, help="Connection retries")
     parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between retries")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize for room filtering")
+    parser.add_argument("--sequence-length", type=int, default=4, help="Number of historical rows per LSTM sample")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
     return parser.parse_args()
 
 
@@ -36,35 +46,74 @@ def get_input_dim() -> int:
     return len(INPUT_COLUMNS)
 
 
-def make_model(input_dim: int) -> MLPRegressor:
-    model = MLPRegressor(
-        hidden_layer_sizes=MODEL_HIDDEN_LAYER_SIZES,
-        activation="relu",
-        solver="adam",
-        random_state=42,
-        learning_rate_init=1e-3,
-        batch_size=32,
-        max_iter=1,
-        shuffle=False,
-    )
-    x0 = np.zeros((1, input_dim), dtype=np.float64)
-    y0 = np.zeros((1, len(TARGET_COLUMNS)), dtype=np.float64)
-    model.partial_fit(x0, y0)
-    return model
+class ChangeHead(nn.Module):
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x).squeeze(-1)
 
 
-def get_params(model: MLPRegressor) -> list[np.ndarray]:
-    return [np.asarray(layer, dtype=np.float64) for layer in [*model.coefs_, *model.intercepts_]]
+class TargetHead(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 1, output_dim: int = len(TARGET_COLUMNS)):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        last_hidden = lstm_out[:, -1, :]
+        return self.head(last_hidden)
 
 
-def set_params(model: MLPRegressor, params: list[np.ndarray]) -> None:
-    split_idx = len(model.coefs_)
-    model.coefs_ = [np.asarray(layer, dtype=np.float64).copy() for layer in params[:split_idx]]
-    model.intercepts_ = [np.asarray(layer, dtype=np.float64).reshape(-1).copy() for layer in params[split_idx:]]
+class HybridNextHourModelV2(nn.Module):
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.change_head = ChangeHead(input_dim=input_dim)
+        self.target_head = TargetHead(input_dim=input_dim)
+
+    def forward(self, x_flat: torch.Tensor, x_seq: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        change_logits = self.change_head(x_flat)
+        target_preds = self.target_head(x_seq)
+        return change_logits, target_preds
+
+
+def make_model(input_dim: int) -> HybridNextHourModelV2:
+    return HybridNextHourModelV2(input_dim=input_dim)
+
+
+def get_params(model: HybridNextHourModelV2) -> list[np.ndarray]:
+    return [tensor.detach().cpu().numpy() for _, tensor in model.state_dict().items()]
+
+
+def set_params(model: HybridNextHourModelV2, params: list[np.ndarray]) -> None:
+    state_dict = model.state_dict()
+    if len(params) != len(state_dict):
+        raise ValueError(f"Parameter count mismatch: expected {len(state_dict)}, got {len(params)}")
+    new_state = OrderedDict()
+    for (name, tensor), value in zip(state_dict.items(), params):
+        new_state[name] = torch.tensor(value, dtype=tensor.dtype)
+    model.load_state_dict(new_state, strict=True)
 
 
 def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
-    keep_cols = ["client_id", *CHANGE_BASELINE_COLUMNS, "y_any_change", *INPUT_COLUMNS, *TARGET_COLUMNS]
+    keep_cols = ["client_id", "t", *CHANGE_BASELINE_COLUMNS, "y_any_change", *INPUT_COLUMNS, *TARGET_COLUMNS]
     chunks: list[pd.DataFrame] = []
     for chunk in pd.read_csv(path, usecols=lambda c: c in keep_cols, chunksize=chunksize):
         room_chunk = chunk[chunk["client_id"].astype(str) == room_id]
@@ -77,11 +126,51 @@ def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
 
 
 def sanitize_targets(df: pd.DataFrame) -> pd.DataFrame:
-    for col in CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS).copy()
+    for col in ["t", *CHANGE_BASELINE_COLUMNS, "y_any_change", *INPUT_COLUMNS, *TARGET_COLUMNS]:
+        if col != "t":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["t", *CHANGE_BASELINE_COLUMNS, "y_any_change", *INPUT_COLUMNS, *TARGET_COLUMNS]).copy()
     df["y_airflow"] = df["y_airflow"].clip(0.0, 1.0)
-    return df
+    df["y_any_change"] = df["y_any_change"].clip(0.0, 1.0)
+    df["t"] = pd.to_datetime(df["t"], utc=True, errors="coerce")
+    return df.dropna(subset=["t"]).sort_values("t").reset_index(drop=True)
+
+
+def build_hybrid_arrays(
+    df: pd.DataFrame,
+    sequence_length: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    x_rows = row_to_input_vector(df)
+    y_rows = df[TARGET_COLUMNS].to_numpy(dtype=np.float32)
+    current_rows = df[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float32)
+    change_rows = df["y_any_change"].to_numpy(dtype=np.float32)
+    if len(df) < sequence_length:
+        empty_seq = np.zeros((0, sequence_length, len(INPUT_COLUMNS)), dtype=np.float32)
+        empty_flat = np.zeros((0, len(INPUT_COLUMNS)), dtype=np.float32)
+        empty_target = np.zeros((0, len(TARGET_COLUMNS)), dtype=np.float32)
+        empty_current = np.zeros((0, len(CHANGE_BASELINE_COLUMNS)), dtype=np.float32)
+        empty_change = np.zeros((0,), dtype=np.float32)
+        return empty_seq, empty_flat, empty_target, empty_current, empty_change
+
+    x_seq = []
+    x_flat = []
+    y_seq = []
+    current_seq = []
+    change_seq = []
+    for idx in range(sequence_length - 1, len(df)):
+        start_idx = idx - sequence_length + 1
+        x_seq.append(x_rows[start_idx : idx + 1])
+        x_flat.append(x_rows[idx])
+        y_seq.append(y_rows[idx])
+        current_seq.append(current_rows[idx])
+        change_seq.append(change_rows[idx])
+    return (
+        np.asarray(x_seq, dtype=np.float32),
+        np.asarray(x_flat, dtype=np.float32),
+        np.asarray(y_seq, dtype=np.float32),
+        np.asarray(current_seq, dtype=np.float32),
+        np.asarray(change_seq, dtype=np.float32),
+    )
 
 
 def target_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, int]:
@@ -100,36 +189,76 @@ def target_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, 
     return correct, int(y_true.shape[0] - correct)
 
 
-class RoomClient(fl.client.NumPyClient):
+def _pos_weight_from_targets(values: np.ndarray) -> torch.Tensor:
+    positives = float(np.sum(values >= 0.5))
+    negatives = float(len(values) - positives)
+    if positives <= 0.0:
+        return torch.tensor(1.0, dtype=torch.float32)
+    return torch.tensor(max(negatives / positives, 1.0), dtype=torch.float32)
+
+
+class RoomHybridClientV2(fl.client.NumPyClient):
     def __init__(
         self,
         room_id: str,
-        x_train: np.ndarray,
+        x_train_seq: np.ndarray,
+        x_train_flat: np.ndarray,
         y_train: np.ndarray,
-        x_test: np.ndarray,
+        change_train: np.ndarray,
+        x_test_seq: np.ndarray,
+        x_test_flat: np.ndarray,
         y_test: np.ndarray,
         current_test: np.ndarray,
         change_true: np.ndarray,
         input_dim: int,
         local_epochs: int,
+        batch_size: int,
     ):
         self.room_id = room_id
-        self.x_train = x_train
+        self.x_train_seq = x_train_seq
+        self.x_train_flat = x_train_flat
         self.y_train = y_train
-        self.x_test = x_test
+        self.change_train = change_train
+        self.x_test_seq = x_test_seq
+        self.x_test_flat = x_test_flat
         self.y_test = y_test
         self.current_test = current_test
-        self.change_true = change_true
+        self.change_true = change_true.astype(np.int64)
         self.local_epochs = local_epochs
-        self.model = make_model(input_dim)
+        self.batch_size = batch_size
+        self.device = torch.device("cpu")
+        self.model = make_model(input_dim).to(self.device)
+        self.change_pos_weight = _pos_weight_from_targets(self.change_train).to(self.device)
 
     def get_parameters(self, config: dict[str, Any]):
         return get_params(self.model)
 
     def fit(self, parameters, config):
         set_params(self.model, parameters)
+        if self.y_train.size == 0:
+            return get_params(self.model), 0, {"room_id": self.room_id}
+
+        self.model.train()
+        dataset = TensorDataset(
+            torch.tensor(self.x_train_flat, dtype=torch.float32, device=self.device),
+            torch.tensor(self.x_train_seq, dtype=torch.float32, device=self.device),
+            torch.tensor(self.change_train, dtype=torch.float32, device=self.device),
+            torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
+        )
+        loader = DataLoader(dataset, batch_size=max(1, min(self.batch_size, len(dataset))), shuffle=False)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        change_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.change_pos_weight)
+        target_loss_fn = nn.MSELoss()
+
         for _ in range(self.local_epochs):
-            self.model.partial_fit(self.x_train, self.y_train)
+            for batch_flat, batch_seq, batch_change, batch_targets in loader:
+                optimizer.zero_grad()
+                change_logits, target_preds = self.model(batch_flat, batch_seq)
+                change_loss = change_loss_fn(change_logits, batch_change)
+                target_loss = target_loss_fn(target_preds, batch_targets)
+                (change_loss + target_loss).backward()
+                optimizer.step()
+
         return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
 
     def evaluate(self, parameters, config):
@@ -169,11 +298,21 @@ class RoomClient(fl.client.NumPyClient):
                 "room_id": self.room_id,
             }
 
-        y_pred = self.model.predict(self.x_test)
+        self.model.eval()
+        with torch.no_grad():
+            change_logits, y_pred = self.model(
+                torch.tensor(self.x_test_flat, dtype=torch.float32, device=self.device),
+                torch.tensor(self.x_test_seq, dtype=torch.float32, device=self.device),
+            )
+            y_pred = y_pred.cpu().numpy()
+            change_logits = change_logits.cpu().numpy()
+
         reg_true = self.y_test[:, :AIRFLOW_INDEX]
         reg_pred = y_pred[:, :AIRFLOW_INDEX]
         airflow_true = self.y_test[:, AIRFLOW_INDEX].round().astype(int)
         airflow_pred = (np.clip(y_pred[:, AIRFLOW_INDEX], 0.0, 1.0) >= 0.5).astype(int)
+        change_prob = 1.0 / (1.0 + np.exp(-change_logits))
+        change_pred = (change_prob >= 0.5).astype(int)
 
         regression_mae = {
             target: float(mean_absolute_error(reg_true[:, idx], reg_pred[:, idx]))
@@ -193,7 +332,7 @@ class RoomClient(fl.client.NumPyClient):
         airflow_precision = float(precision_score(airflow_true, airflow_pred, zero_division=0))
         airflow_recall = float(recall_score(airflow_true, airflow_pred, zero_division=0))
         airflow_f1 = float(f1_score(airflow_true, airflow_pred, zero_division=0))
-        change_pred = next_hour_change_flags(self.current_test, y_pred)
+
         change_accuracy = float(accuracy_score(self.change_true, change_pred))
         change_precision = float(precision_score(self.change_true, change_pred, zero_division=0))
         change_recall = float(recall_score(self.change_true, change_pred, zero_division=0))
@@ -252,34 +391,33 @@ def main() -> None:
 
     train_df = sanitize_targets(load_room_df(train_path, room_id=room_id, chunksize=args.chunksize))
     test_df = sanitize_targets(load_room_df(test_path, room_id=room_id, chunksize=args.chunksize))
-    if len(train_df) == 0:
-        raise RuntimeError(f"No training rows for room_id={room_id}")
+    x_train_seq, x_train_flat, y_train, _, change_train = build_hybrid_arrays(train_df, args.sequence_length)
+    x_test_seq, x_test_flat, y_test, current_test, change_true = build_hybrid_arrays(test_df, args.sequence_length)
+    if len(y_train) == 0:
+        raise RuntimeError(f"Not enough training rows for room_id={room_id} and sequence_length={args.sequence_length}")
 
-    input_dim = get_input_dim()
-    x_train = row_to_input_vector(train_df)
-    y_train = train_df[TARGET_COLUMNS].to_numpy(dtype=np.float64)
-    x_test = row_to_input_vector(test_df)
-    y_test = test_df[TARGET_COLUMNS].to_numpy(dtype=np.float64)
-    current_test = test_df[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64)
-    change_true = test_df["y_any_change"].to_numpy(dtype=np.int64)
-
-    client = RoomClient(
+    client = RoomHybridClientV2(
         room_id=room_id,
-        x_train=x_train,
+        x_train_seq=x_train_seq,
+        x_train_flat=x_train_flat,
         y_train=y_train,
-        x_test=x_test,
+        change_train=change_train,
+        x_test_seq=x_test_seq,
+        x_test_flat=x_test_flat,
         y_test=y_test,
         current_test=current_test,
         change_true=change_true,
-        input_dim=input_dim,
+        input_dim=get_input_dim(),
         local_epochs=args.local_epochs,
+        batch_size=args.batch_size,
     )
 
-    print("fl_client.py starting")
+    print("fl_client_lstm_mlp_2.py starting")
     print(f"room_id={room_id}")
     print(f"split_dir={split_dir}")
     print(f"server_address={args.server_address}")
-    print(f"train_rows={len(y_train)} test_rows={len(y_test)}")
+    print(f"sequence_length={args.sequence_length}")
+    print(f"train_sequences={len(y_train)} test_sequences={len(y_test)}")
 
     attempts = 0
     while attempts < args.connect_retries:
