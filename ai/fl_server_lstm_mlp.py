@@ -70,6 +70,11 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
+            round_weights_path = os.path.join(self.weights_out_dir, f"round_{server_round}_global_weights.npz")
+            latest_weights_path = os.path.join(self.weights_out_dir, "latest_global_weights.npz")
+            save_parameters(aggregated_parameters, round_weights_path)
+            save_parameters(aggregated_parameters, latest_weights_path)
+            print(f"saved_global_weights={round_weights_path}")
         return aggregated_parameters, aggregated_metrics
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -117,6 +122,31 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
                 summary[key] += float(metrics.get(key, 0.0))
 
         count = max(summary["evaluated_examples"], 1.0)
+        airflow_tp = summary["airflow_tp"]
+        airflow_tn = summary["airflow_tn"]
+        airflow_fp = summary["airflow_fp"]
+        airflow_fn = summary["airflow_fn"]
+        change_tp = summary["change_tp"]
+        change_tn = summary["change_tn"]
+        change_fp = summary["change_fp"]
+        change_fn = summary["change_fn"]
+
+        airflow_total = max(airflow_tp + airflow_tn + airflow_fp + airflow_fn, 1.0)
+        airflow_precision = airflow_tp / max(airflow_tp + airflow_fp, 1.0)
+        airflow_recall = airflow_tp / max(airflow_tp + airflow_fn, 1.0)
+        airflow_f1 = 0.0
+        if airflow_precision + airflow_recall > 0:
+            airflow_f1 = 2.0 * airflow_precision * airflow_recall / (airflow_precision + airflow_recall)
+        airflow_accuracy = (airflow_tp + airflow_tn) / airflow_total
+
+        change_total = max(change_tp + change_tn + change_fp + change_fn, 1.0)
+        change_precision = change_tp / max(change_tp + change_fp, 1.0)
+        change_recall = change_tp / max(change_tp + change_fn, 1.0)
+        change_f1 = 0.0
+        if change_precision + change_recall > 0:
+            change_f1 = 2.0 * change_precision * change_recall / (change_precision + change_recall)
+        change_accuracy = (change_tp + change_tn) / change_total
+
         self.latest_eval_summary = {
             "mae_y_temp_main": summary["mae_sum_y_temp_main"] / count,
             "mae_y_temp_toilet": summary["mae_sum_y_temp_toilet"] / count,
@@ -129,20 +159,20 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "regression_correct": int(summary["regression_correct"]),
             "regression_wrong": int(summary["regression_wrong"]),
             "regression_correct_rate": summary["regression_correct"] / max(summary["regression_correct"] + summary["regression_wrong"], 1.0),
-            "airflow_accuracy": summary["airflow_accuracy_sum"] / count,
-            "airflow_precision": summary["airflow_precision_sum"] / count,
-            "airflow_recall": summary["airflow_recall_sum"] / count,
-            "airflow_f1": summary["airflow_f1_sum"] / count,
+            "airflow_accuracy": airflow_accuracy,
+            "airflow_precision": airflow_precision,
+            "airflow_recall": airflow_recall,
+            "airflow_f1": airflow_f1,
             "airflow_correct": int(summary["airflow_correct"]),
             "airflow_incorrect": int(summary["airflow_incorrect"]),
             "airflow_tp": int(summary["airflow_tp"]),
             "airflow_tn": int(summary["airflow_tn"]),
             "airflow_fp": int(summary["airflow_fp"]),
             "airflow_fn": int(summary["airflow_fn"]),
-            "change_accuracy": summary["change_accuracy_sum"] / count,
-            "change_precision": summary["change_precision_sum"] / count,
-            "change_recall": summary["change_recall_sum"] / count,
-            "change_f1": summary["change_f1_sum"] / count,
+            "change_accuracy": change_accuracy,
+            "change_precision": change_precision,
+            "change_recall": change_recall,
+            "change_f1": change_f1,
             "change_correct": int(summary["change_correct"]),
             "change_incorrect": int(summary["change_incorrect"]),
             "change_tp": int(summary["change_tp"]),

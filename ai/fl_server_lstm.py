@@ -70,6 +70,11 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
+            round_weights_path = os.path.join(self.weights_out_dir, f"round_{server_round}_global_weights.npz")
+            latest_weights_path = os.path.join(self.weights_out_dir, "latest_global_weights.npz")
+            save_parameters(aggregated_parameters, round_weights_path)
+            save_parameters(aggregated_parameters, latest_weights_path)
+            print(f"saved_global_weights={round_weights_path}")
         return aggregated_parameters, aggregated_metrics
 
     def aggregate_evaluate(self, server_round, results, failures):

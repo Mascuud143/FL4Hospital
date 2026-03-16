@@ -7,7 +7,14 @@ from typing import Any
 import flwr as fl
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    recall_score,
+)
 
 try:
     import torch
@@ -26,6 +33,11 @@ DEFAULT_OUTPUT_THRESHOLDS = {
     "y_light": 5.0,
     "y_sound": 5.0,
 }
+
+
+def _safe_logit(p: float) -> float:
+    clipped = min(max(float(p), 1e-6), 1.0 - 1e-6)
+    return float(np.log(clipped / (1.0 - clipped)))
 
 
 def parse_args() -> argparse.Namespace:
@@ -192,6 +204,57 @@ def _pos_weight_from_targets(values: np.ndarray) -> torch.Tensor:
     return torch.tensor(max(negatives / positives, 1.0), dtype=torch.float32)
 
 
+def _balanced_binary_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    pos_weight: float,
+    neg_weight: float,
+) -> torch.Tensor:
+    base = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    weights = torch.where(
+        targets >= 0.5,
+        torch.full_like(targets, fill_value=float(pos_weight)),
+        torch.full_like(targets, fill_value=float(neg_weight)),
+    )
+    return (base * weights).mean()
+
+
+def _class_weights(values: np.ndarray) -> tuple[float, float]:
+    if len(values) == 0:
+        return 1.0, 1.0
+    positives = float(np.sum(values >= 0.5))
+    negatives = float(len(values) - positives)
+    if positives <= 0.0:
+        return 1.0, 2.0
+    if negatives <= 0.0:
+        return 2.0, 1.0
+    pos_frac = positives / (positives + negatives)
+    neg_frac = 1.0 - pos_frac
+    # Inverse-frequency weighting with bounded scale to avoid unstable gradients.
+    pos_weight = min(max(1.0 / max(pos_frac, 1e-6), 0.5), 5.0)
+    neg_weight = min(max(1.0 / max(neg_frac, 1e-6), 0.5), 5.0)
+    return float(pos_weight), float(neg_weight)
+
+
+def _best_threshold(probs: np.ndarray, labels: np.ndarray) -> float:
+    if len(probs) == 0:
+        return 0.5
+    if np.all(labels == labels[0]):
+        return 0.5
+    best_thr = 0.5
+    best_f1 = -1.0
+    best_prec = -1.0
+    for thr in np.linspace(0.1, 0.9, 17):
+        pred = (probs >= thr).astype(int)
+        f1 = float(f1_score(labels, pred, zero_division=0))
+        prec = float(precision_score(labels, pred, zero_division=0))
+        if f1 > best_f1 or (f1 == best_f1 and prec > best_prec):
+            best_f1 = f1
+            best_prec = prec
+            best_thr = float(thr)
+    return best_thr
+
+
 class RoomHybridClient(fl.client.NumPyClient):
     def __init__(
         self,
@@ -223,7 +286,28 @@ class RoomHybridClient(fl.client.NumPyClient):
         self.batch_size = batch_size
         self.device = torch.device("cpu")
         self.model = make_model(input_dim).to(self.device)
-        self.change_pos_weight = _pos_weight_from_targets(self.change_train).to(self.device)
+        change_pos_weight, change_neg_weight = _class_weights(self.change_train)
+        self.change_pos_weight = float(change_pos_weight)
+        self.change_neg_weight = float(change_neg_weight)
+
+        airflow_train = self.y_train[:, AIRFLOW_INDEX] if self.y_train.size else np.zeros((0,), dtype=np.float32)
+        airflow_pos_weight, airflow_neg_weight = _class_weights(airflow_train)
+        self.airflow_pos_weight = float(airflow_pos_weight)
+        self.airflow_neg_weight = float(airflow_neg_weight)
+
+        change_prior = float(np.mean(self.change_train >= 0.5)) if len(self.change_train) else 0.5
+        airflow_prior = float(np.mean(airflow_train >= 0.5)) if len(airflow_train) else 0.5
+        self.change_threshold = 0.5
+        self.airflow_threshold = 0.5
+
+        # Bias initialization helps prevent immediate collapse to one class.
+        with torch.no_grad():
+            final_layer = self.model.change_mlp.net[-1]
+            if isinstance(final_layer, nn.Linear):
+                final_layer.bias.fill_(_safe_logit(change_prior))
+            airflow_head = self.model.target_lstm.head[-1]
+            if isinstance(airflow_head, nn.Linear):
+                airflow_head.bias[AIRFLOW_INDEX] = _safe_logit(airflow_prior)
 
     def get_parameters(self, config: dict[str, Any]):
         return get_params(self.model)
@@ -240,25 +324,58 @@ class RoomHybridClient(fl.client.NumPyClient):
             torch.tensor(self.change_train, dtype=torch.float32, device=self.device),
             torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
         )
-        loader = DataLoader(dataset, batch_size=max(1, min(self.batch_size, len(dataset))), shuffle=False)
+        loader = DataLoader(dataset, batch_size=max(1, min(self.batch_size, len(dataset))), shuffle=True)
         optimizer_mlp = torch.optim.Adam(self.model.change_mlp.parameters(), lr=1e-3)
         optimizer_lstm = torch.optim.Adam(self.model.target_lstm.parameters(), lr=1e-3)
-        change_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.change_pos_weight)
-        target_loss_fn = nn.MSELoss()
 
         for _ in range(self.local_epochs):
             for batch_flat, batch_seq, batch_change, batch_targets in loader:
                 optimizer_mlp.zero_grad()
                 change_logits = self.model.change_mlp(batch_flat)
-                change_loss = change_loss_fn(change_logits, batch_change)
+                change_loss = _balanced_binary_loss(
+                    change_logits,
+                    batch_change,
+                    pos_weight=self.change_pos_weight,
+                    neg_weight=self.change_neg_weight,
+                )
                 change_loss.backward()
                 optimizer_mlp.step()
 
                 optimizer_lstm.zero_grad()
                 target_preds = self.model.target_lstm(batch_seq)
-                target_loss = target_loss_fn(target_preds, batch_targets)
+                reg_loss = torch.nn.functional.mse_loss(
+                    target_preds[:, :AIRFLOW_INDEX],
+                    batch_targets[:, :AIRFLOW_INDEX],
+                )
+                airflow_loss = _balanced_binary_loss(
+                    target_preds[:, AIRFLOW_INDEX],
+                    batch_targets[:, AIRFLOW_INDEX],
+                    pos_weight=self.airflow_pos_weight,
+                    neg_weight=self.airflow_neg_weight,
+                )
+                target_loss = reg_loss + airflow_loss
                 target_loss.backward()
                 optimizer_lstm.step()
+
+        # Calibrate thresholds using local training predictions after each round.
+        with torch.no_grad():
+            train_change_logits = self.model.change_mlp(
+                torch.tensor(self.x_train_flat, dtype=torch.float32, device=self.device)
+            ).cpu().numpy()
+            train_change_probs = 1.0 / (1.0 + np.exp(-train_change_logits))
+            self.change_threshold = _best_threshold(
+                train_change_probs.astype(np.float64),
+                (self.change_train >= 0.5).astype(int),
+            )
+
+            train_target_logits = self.model.target_lstm(
+                torch.tensor(self.x_train_seq, dtype=torch.float32, device=self.device)
+            ).cpu().numpy()
+            train_airflow_probs = 1.0 / (1.0 + np.exp(-train_target_logits[:, AIRFLOW_INDEX]))
+            self.airflow_threshold = _best_threshold(
+                train_airflow_probs.astype(np.float64),
+                np.rint(self.y_train[:, AIRFLOW_INDEX]).astype(int),
+            )
 
         return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
 
@@ -307,9 +424,10 @@ class RoomHybridClient(fl.client.NumPyClient):
         reg_true = self.y_test[:, :AIRFLOW_INDEX]
         reg_pred = y_pred[:, :AIRFLOW_INDEX]
         airflow_true = self.y_test[:, AIRFLOW_INDEX].round().astype(int)
-        airflow_pred = (np.clip(y_pred[:, AIRFLOW_INDEX], 0.0, 1.0) >= 0.5).astype(int)
+        airflow_prob = 1.0 / (1.0 + np.exp(-y_pred[:, AIRFLOW_INDEX]))
+        airflow_pred = (airflow_prob >= self.airflow_threshold).astype(int)
         change_prob = 1.0 / (1.0 + np.exp(-change_logits))
-        change_pred = (change_prob >= 0.5).astype(int)
+        change_pred = (change_prob >= self.change_threshold).astype(int)
 
         regression_mae = {
             target: float(mean_absolute_error(reg_true[:, idx], reg_pred[:, idx]))
@@ -371,6 +489,8 @@ class RoomHybridClient(fl.client.NumPyClient):
             "change_tn": change_tn,
             "change_fp": change_fp,
             "change_fn": change_fn,
+            "airflow_threshold": float(self.airflow_threshold),
+            "change_threshold": float(self.change_threshold),
             "room_id": self.room_id,
         }
 

@@ -12,6 +12,7 @@ venv/
 .venv/
 env/
 ENV/
+venv311/
 
 ####################################
 # Packaging / Build
@@ -87,3 +88,14 @@ yarn-error.log*
 
 .tmp_xlsx_extract/
 filestorage/data.csv
+
+# Generated AI artifacts
+ai/outputs/
+ai/outputs_next_hour/
+ai/outputs_next_hour_2/
+ai/outputs_next_hour_3/
+ai/splits/
+ai/splits_by_y/
+ai/splits_next_hour/
+ai/splits_next_hour_2/
+ai/splits_next_hour_3/

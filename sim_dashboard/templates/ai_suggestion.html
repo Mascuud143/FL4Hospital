@@ -1,18 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <style>
-  .io-page { display: grid; gap: 14px; }
-  .io-grid {
+  .page-grid { display: grid; gap: 14px; }
+  .panel-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
+  .field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
   .field { margin-bottom: 8px; }
   .field label {
     display: block;
+    margin-bottom: 4px;
     font-size: 0.8rem;
     color: var(--muted);
-    margin-bottom: 4px;
   }
   .field input, .field select {
     width: 100%;
@@ -22,142 +27,676 @@
     font: inherit;
     background: #fff;
   }
-  .out-list { display: grid; gap: 8px; }
-  .out-item {
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn {
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 8px 10px;
-    background: var(--surface-alt);
+    padding: 8px 12px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    background: #fff;
   }
-  .k { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
-  .v { font-size: 1.05rem; font-weight: 700; }
-  .note { font-size: 0.88rem; color: var(--muted); }
-  @media (max-width: 900px) {
-    .io-grid { grid-template-columns: 1fr; }
+  .btn.primary {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+  }
+  .progress {
+    width: 100%;
+    height: 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    overflow: hidden;
+  }
+  .progress .bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2a8fbd, #4fb286);
+    transition: width 0.3s ease;
+  }
+  .state {
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .log {
+    margin-top: 10px;
+    height: 260px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    padding: 10px;
+    white-space: pre-wrap;
+  }
+  .hint { font-size: 0.86rem; color: var(--muted); }
+  .metrics-grid {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .metric-card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-alt);
+    padding: 8px;
+  }
+  .metric-k { font-size: 0.76rem; text-transform: uppercase; color: var(--muted); }
+  .metric-v { font-size: 1.06rem; font-weight: 700; margin: 2px 0; }
+  .metric-x { font-size: 0.78rem; color: var(--muted); line-height: 1.3; }
+  @media (max-width: 980px) {
+    .panel-grid { grid-template-columns: 1fr; }
+    .field-grid { grid-template-columns: 1fr; }
+    .metrics-grid { grid-template-columns: 1fr; }
   }
 </style>
 
-<div class="io-page">
+<div class="page-grid">
   <div class="card">
-    <h2 style="margin:0;">Patient Input -> Comfort Preference Output</h2>
-    <p class="note" style="margin-bottom:0;">
+    <h2 style="margin:0;">AI Now -> +1h Prediction Control</h2>
+    <p class="hint" style="margin:6px 0 0;">
+      Build/split data, run federated training, and test saved weights for Now -> +1h predictions.
     </p>
   </div>
 
-  <div class="io-grid">
+  <div class="panel-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Input (Patient + Context)</h3>
-      <div class="field">
-        <label for="age">Age</label>
-        <input id="age" type="number" min="0" value="72" />
+      <h3 style="margin-top:0;">1) Split Runner</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="splitMethod">Split method</label>
+          <select id="splitMethod">
+            <option value="split_by_room">split_by_room (legacy A/B)</option>
+            <option value="split_by_y">split_by_y (legacy A/B, event-focused)</option>
+            <option value="split_next_hour_by_room">split_now_to_plus1h_by_room (recommended)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="splitTrainRatio">Train ratio</label>
+          <input id="splitTrainRatio" type="number" min="0.1" max="0.95" step="0.05" value="0.80" />
+        </div>
+        <div class="field">
+          <label for="splitMinTrainRows">Min train rows</label>
+          <input id="splitMinTrainRows" type="number" min="1" step="1" value="20" />
+        </div>
+        <div class="field">
+          <label for="splitBuildVariant">Build variant (Now -> +1h only)</label>
+          <select id="splitBuildVariant">
+            <option value="v1">v1: regular timeline sampling</option>
+            <option value="v2">v2: around symptom/medication events</option>
+            <option value="v3">v3: around comfort-change events</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="splitBuildFirst">Build rows first</label>
+          <select id="splitBuildFirst">
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="splitInputDir">Input dir</label>
+          <input id="splitInputDir" type="text" value="ai/outputs" />
+        </div>
+        <div class="field">
+          <label for="splitDataDir">Data dir</label>
+          <input id="splitDataDir" type="text" value="filestorage" />
+        </div>
+        <div class="field">
+          <label for="splitStepMinutes">Step minutes</label>
+          <input id="splitStepMinutes" type="number" min="1" step="1" value="30" />
+        </div>
+        <div class="field">
+          <label for="splitHorizonMinutes">Prediction horizon minutes (+)</label>
+          <input id="splitHorizonMinutes" type="number" min="1" step="1" value="30" />
+        </div>
+        <div class="field">
+          <label for="splitBeforeMinutes">Before minutes (v2/v3)</label>
+          <input id="splitBeforeMinutes" type="number" min="1" step="1" value="60" />
+        </div>
+        <div class="field">
+          <label for="splitAfterMinutes">After minutes (v2/v3)</label>
+          <input id="splitAfterMinutes" type="number" min="1" step="1" value="60" />
+        </div>
+        <div class="field" style="grid-column: span 2;">
+          <label for="splitOutputDir">Output dir</label>
+          <input id="splitOutputDir" type="text" value="ai/splits" />
+        </div>
       </div>
-      <div class="field">
-        <label for="height">Height (cm)</label>
-        <input id="height" type="number" min="0" value="168" />
+      <div class="btn-row">
+        <button id="runSplitBtn" class="btn primary" type="button">Run Split</button>
+        <button id="stopSplitBtn" class="btn" type="button">Stop Split</button>
       </div>
-      <div class="field">
-        <label for="weight">Weight (kg)</label>
-        <input id="weight" type="number" min="0" value="74" />
-      </div>
-      <div class="field">
-        <label for="diagnosis">Diagnosis</label>
-        <select id="diagnosis">
-          <option value="respiratory">Respiratory</option>
-          <option value="cardiac">Cardiac</option>
-          <option value="post-op">Post-op</option>
-          <option value="general">General</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="current_medication">Current medication</label>
-        <select id="current_medication">
-          <option value="none">None</option>
-          <option value="sedative">Sedative</option>
-          <option value="painkiller">Painkiller</option>
-          <option value="steroid">Steroid</option>
-        </select>
-      </div>
+      <div style="margin-top:10px;" class="progress"><div id="splitProgressBar" class="bar"></div></div>
+      <div id="splitState" class="state">Idle</div>
+      <div id="splitMetrics" class="metrics-grid"></div>
+      <div id="splitLog" class="log">[dashboard] waiting...</div>
     </section>
 
     <section class="card">
-      <h3 style="margin-top:0;">Output (ComfortPreference Suggestion)</h3>
-      <div class="out-list">
-        <div class="out-item">
-          <div class="k">Temperature Main</div>
-          <div class="v" id="outTempMain">22.0 C</div>
+      <h3 style="margin-top:0;">2) Federated Runner</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="modelType">Model type</label>
+          <select id="modelType">
+            <option value="mlp">Pure MLP</option>
+            <option value="lstm">Pure LSTM</option>
+            <option value="mlp_lstm">MLP + LSTM</option>
+          </select>
         </div>
-        <div class="out-item">
-          <div class="k">Temperature Toilet</div>
-          <div class="v" id="outTempToilet">23.0 C</div>
+        <div class="field">
+          <label for="flRounds">Rounds</label>
+          <input id="flRounds" type="number" min="1" step="1" value="3" />
         </div>
-        <div class="out-item">
-          <div class="k">Light Intensity</div>
-          <div class="v" id="outLight">58</div>
+        <div class="field">
+          <label for="flLocalEpochs">Local epochs</label>
+          <input id="flLocalEpochs" type="number" min="1" step="1" value="1" />
         </div>
-        <div class="out-item">
-          <div class="k">Sound Level</div>
-          <div class="v" id="outSound">34</div>
+        <div class="field">
+          <label for="flBatchSize">LSTM batch size</label>
+          <input id="flBatchSize" type="number" min="1" step="1" value="32" />
         </div>
-        <div class="out-item">
-          <div class="k">Airflow</div>
-          <div class="v" id="outAirflow">false</div>
+        <div class="field">
+          <label for="flSeqLen">LSTM sequence length</label>
+          <input id="flSeqLen" type="number" min="1" step="1" value="4" />
+        </div>
+        <div class="field">
+          <label for="flSplitDir">Split dir (Now -> +1h)</label>
+          <input id="flSplitDir" type="text" value="ai/splits_next_hour" />
+        </div>
+        <div class="field">
+          <label for="flMaxRooms">Max rooms (client cap)</label>
+          <input id="flMaxRooms" type="number" min="1" step="1" value="20" />
+        </div>
+        <div class="field">
+          <label for="flFractionFit">Fraction fit</label>
+          <input id="flFractionFit" type="number" min="0.01" max="1" step="0.01" value="0.20" />
+        </div>
+        <div class="field">
+          <label for="flFractionEval">Fraction evaluate</label>
+          <input id="flFractionEval" type="number" min="0.01" max="1" step="0.01" value="0.20" />
+        </div>
+        <div class="field">
+          <label for="flMinFitClients">Min fit clients</label>
+          <input id="flMinFitClients" type="number" min="1" step="1" value="2" />
+        </div>
+        <div class="field">
+          <label for="flMinEvalClients">Min eval clients</label>
+          <input id="flMinEvalClients" type="number" min="1" step="1" value="2" />
+        </div>
+        <div class="field">
+          <label for="flMinAvailableClients">Min available clients</label>
+          <input id="flMinAvailableClients" type="number" min="1" step="1" value="2" />
+        </div>
+        <div class="field">
+          <label for="flClientCpu">Client CPU</label>
+          <input id="flClientCpu" type="number" min="0.1" max="4" step="0.1" value="0.5" />
+        </div>
+        <div class="field">
+          <label for="flChunkSize">Chunk size</label>
+          <input id="flChunkSize" type="number" min="1000" step="1000" value="50000" />
         </div>
       </div>
+      <div class="btn-row">
+        <button id="runFederatedBtn" class="btn primary" type="button">Run Federated</button>
+        <button id="stopFederatedBtn" class="btn" type="button">Stop Federated</button>
+      </div>
+      <div style="margin-top:10px;" class="progress"><div id="fedProgressBar" class="bar"></div></div>
+      <div id="fedState" class="state">Idle</div>
+      <div id="fedMetrics" class="metrics-grid"></div>
+      <div id="fedLog" class="log">[dashboard] waiting...</div>
     </section>
   </div>
+
+  <section class="card">
+    <h3 style="margin-top:0;">3) Test Saved Weights (Now -> +1h MLP Prediction)</h3>
+    {% if predict_import_error %}
+    <p class="hint">Prediction modules failed to load: {{ predict_import_error }}</p>
+    {% endif %}
+    <div class="field-grid">
+      <div class="field">
+        <label for="predWeightsPath">Weights path</label>
+        <input id="predWeightsPath" type="text" value="ai/fl_weights_sim/latest_global_weights.npz" />
+      </div>
+      <div class="field">
+        <label for="predGender">Gender</label>
+        <select id="predGender">
+          <option value="male">Male</option>
+          <option value="female">Female</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="predAge">Age</label>
+        <input id="predAge" type="number" min="0" step="1" value="72" />
+      </div>
+      <div class="field">
+        <label for="predHeight">Height</label>
+        <input id="predHeight" type="number" min="0" step="1" value="168" />
+      </div>
+      <div class="field">
+        <label for="predWeight">Weight</label>
+        <input id="predWeight" type="number" min="0" step="1" value="74" />
+      </div>
+      <div class="field">
+        <label for="predHour">Hour</label>
+        <input id="predHour" type="number" min="0" max="23" step="1" value="12" />
+      </div>
+      <div class="field">
+        <label for="predMinute">Minute</label>
+        <input id="predMinute" type="number" min="0" max="59" step="1" value="0" />
+      </div>
+      <div class="field">
+        <label for="predDiagnosis">Diagnosis</label>
+        <select id="predDiagnosis">
+          <option value="">(none)</option>
+          {% for x in diagnosis_names %}
+          <option value="{{ x }}">{{ x }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="predSymptom">Symptom</label>
+        <select id="predSymptom">
+          {% for x in symptom_names %}
+          <option value="{{ x }}">{{ x if x else "(none)" }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="predMedication">Medication (optional)</label>
+        <select id="predMedication">
+          <option value="">(none)</option>
+          {% for x in medication_names %}
+          <option value="{{ x }}">{{ x }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="predCurrTempMain">Current temp main</label>
+        <input id="predCurrTempMain" type="number" step="0.1" value="22.0" />
+      </div>
+      <div class="field">
+        <label for="predCurrTempToilet">Current temp toilet</label>
+        <input id="predCurrTempToilet" type="number" step="0.1" value="23.0" />
+      </div>
+      <div class="field">
+        <label for="predCurrLight">Current light</label>
+        <input id="predCurrLight" type="number" step="1" value="58" />
+      </div>
+      <div class="field">
+        <label for="predCurrSound">Current sound</label>
+        <input id="predCurrSound" type="number" step="1" value="34" />
+      </div>
+      <div class="field">
+        <label for="predCurrAirflow">Current airflow</label>
+        <select id="predCurrAirflow">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button id="runPredictBtn" class="btn primary" type="button">Predict From Saved Weights</button>
+    </div>
+    <div id="predState" class="state">Idle</div>
+    <div id="predMetrics" class="metrics-grid"></div>
+  </section>
 </div>
 
 <script>
   (() => {
-    const age = document.getElementById("age");
-    const diagnosis = document.getElementById("diagnosis");
-    const currentMedication = document.getElementById("current_medication");
-    const btn = document.getElementById("suggestBtn");
+    const splitMethod = document.getElementById("splitMethod");
+    const splitTrainRatio = document.getElementById("splitTrainRatio");
+    const splitMinTrainRows = document.getElementById("splitMinTrainRows");
+    const splitBuildVariant = document.getElementById("splitBuildVariant");
+    const splitBuildFirst = document.getElementById("splitBuildFirst");
+    const splitInputDir = document.getElementById("splitInputDir");
+    const splitDataDir = document.getElementById("splitDataDir");
+    const splitStepMinutes = document.getElementById("splitStepMinutes");
+    const splitHorizonMinutes = document.getElementById("splitHorizonMinutes");
+    const splitBeforeMinutes = document.getElementById("splitBeforeMinutes");
+    const splitAfterMinutes = document.getElementById("splitAfterMinutes");
+    const splitOutputDir = document.getElementById("splitOutputDir");
+    const runSplitBtn = document.getElementById("runSplitBtn");
+    const stopSplitBtn = document.getElementById("stopSplitBtn");
+    const splitProgressBar = document.getElementById("splitProgressBar");
+    const splitState = document.getElementById("splitState");
+    const splitMetrics = document.getElementById("splitMetrics");
+    const splitLog = document.getElementById("splitLog");
 
-    const outTempMain = document.getElementById("outTempMain");
-    const outTempToilet = document.getElementById("outTempToilet");
-    const outLight = document.getElementById("outLight");
-    const outSound = document.getElementById("outSound");
-    const outAirflow = document.getElementById("outAirflow");
+    const modelType = document.getElementById("modelType");
+    const flRounds = document.getElementById("flRounds");
+    const flLocalEpochs = document.getElementById("flLocalEpochs");
+    const flBatchSize = document.getElementById("flBatchSize");
+    const flSeqLen = document.getElementById("flSeqLen");
+    const flSplitDir = document.getElementById("flSplitDir");
+    const flMaxRooms = document.getElementById("flMaxRooms");
+    const flFractionFit = document.getElementById("flFractionFit");
+    const flFractionEval = document.getElementById("flFractionEval");
+    const flMinFitClients = document.getElementById("flMinFitClients");
+    const flMinEvalClients = document.getElementById("flMinEvalClients");
+    const flMinAvailableClients = document.getElementById("flMinAvailableClients");
+    const flClientCpu = document.getElementById("flClientCpu");
+    const flChunkSize = document.getElementById("flChunkSize");
+    const runFederatedBtn = document.getElementById("runFederatedBtn");
+    const stopFederatedBtn = document.getElementById("stopFederatedBtn");
+    const fedProgressBar = document.getElementById("fedProgressBar");
+    const fedState = document.getElementById("fedState");
+    const fedMetrics = document.getElementById("fedMetrics");
+    const fedLog = document.getElementById("fedLog");
+    const predWeightsPath = document.getElementById("predWeightsPath");
+    const predGender = document.getElementById("predGender");
+    const predAge = document.getElementById("predAge");
+    const predHeight = document.getElementById("predHeight");
+    const predWeight = document.getElementById("predWeight");
+    const predHour = document.getElementById("predHour");
+    const predMinute = document.getElementById("predMinute");
+    const predDiagnosis = document.getElementById("predDiagnosis");
+    const predSymptom = document.getElementById("predSymptom");
+    const predMedication = document.getElementById("predMedication");
+    const predCurrTempMain = document.getElementById("predCurrTempMain");
+    const predCurrTempToilet = document.getElementById("predCurrTempToilet");
+    const predCurrLight = document.getElementById("predCurrLight");
+    const predCurrSound = document.getElementById("predCurrSound");
+    const predCurrAirflow = document.getElementById("predCurrAirflow");
+    const runPredictBtn = document.getElementById("runPredictBtn");
+    const predState = document.getElementById("predState");
+    const predMetrics = document.getElementById("predMetrics");
+    let splitJobId = null;
+    let fedJobId = null;
 
-    btn.addEventListener("click", () => {
-      let tempMain = 22.0;
-      let tempToilet = 23.0;
-      let light = 58;
-      let sound = 34;
-      let airflow = false;
-
-      const a = Number(age.value || 0);
-      if (a >= 75) {
-        tempMain += 0.8;
-        tempToilet += 0.8;
+    function appendLog(el, lines) {
+      if (!lines || lines.length === 0) {
+        return;
       }
-
-      if (diagnosis.value === "respiratory") {
-        airflow = true;
-        sound -= 2;
+      if (el.textContent === "[dashboard] waiting...") {
+        el.textContent = "";
       }
-      if (diagnosis.value === "cardiac") {
-        sound -= 3;
-        light -= 6;
-      }
+      el.textContent += (el.textContent ? "\n" : "") + lines.join("\n");
+      el.scrollTop = el.scrollHeight;
+    }
 
-      if (currentMedication.value === "sedative") {
-        light = Math.max(20, light - 14);
-        sound = Math.max(20, sound - 6);
-      } else if (currentMedication.value === "painkiller") {
-        sound = Math.max(22, sound - 4);
-      } else if (currentMedication.value === "steroid") {
-        tempMain -= 0.3;
-        airflow = true;
-      }
+    function setProgress(bar, value) {
+      const pct = Math.max(0, Math.min(100, Number(value || 0)));
+      bar.style.width = `${pct}%`;
+    }
 
-      outTempMain.textContent = `${tempMain.toFixed(1)} C`;
-      outTempToilet.textContent = `${tempToilet.toFixed(1)} C`;
-      outLight.textContent = String(light);
-      outSound.textContent = String(sound);
-      outAirflow.textContent = airflow ? "true" : "false";
+    function formatMetric(value) {
+      if (value === null || value === undefined || value === "") {
+        return "-";
+      }
+      if (typeof value === "number") {
+        if (Number.isInteger(value)) {
+          return String(value);
+        }
+        return value.toFixed(4);
+      }
+      return String(value);
+    }
+
+    function renderMetrics(container, metricsPayload) {
+      container.innerHTML = "";
+      const items = (metricsPayload && metricsPayload.items) || [];
+      const visible = items.filter((item) => item && item.value !== null && item.value !== undefined);
+      if (visible.length === 0) {
+        return;
+      }
+      visible.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "metric-card";
+        card.innerHTML = `
+          <div class="metric-k">${item.label || item.key}</div>
+          <div class="metric-v">${formatMetric(item.value)}</div>
+          <div class="metric-x">${item.explain || ""}</div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function applySplitDefaults() {
+      if (splitMethod.value === "split_next_hour_by_room") {
+        if (splitBuildVariant.value === "v2") {
+          splitInputDir.value = "ai/outputs_next_hour_2";
+          splitOutputDir.value = "ai/splits_next_hour_2";
+          flSplitDir.value = "ai/splits_next_hour_2";
+        } else if (splitBuildVariant.value === "v3") {
+          splitInputDir.value = "ai/outputs_next_hour_3";
+          splitOutputDir.value = "ai/splits_next_hour_3";
+          flSplitDir.value = "ai/splits_next_hour_3";
+        } else {
+          splitInputDir.value = "ai/outputs_next_hour";
+          splitOutputDir.value = "ai/splits_next_hour";
+          flSplitDir.value = "ai/splits_next_hour";
+        }
+        splitHorizonMinutes.value = "60";
+      } else if (splitMethod.value === "split_by_y") {
+        splitInputDir.value = "ai/outputs";
+        splitOutputDir.value = "ai/splits_by_y";
+        splitHorizonMinutes.value = "30";
+      } else {
+        splitInputDir.value = "ai/outputs";
+        splitOutputDir.value = "ai/splits";
+        splitHorizonMinutes.value = "30";
+      }
+    }
+
+    async function stopJob(jobId) {
+      const response = await fetch(`/api/ai/jobs/${jobId}/stop`, { method: "POST" });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(err || `HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    async function startJob(url, payload) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(err || `HTTP ${response.status}`);
+      }
+      return response.json();
+    }
+
+    function pollJob(jobId, stateEl, logEl, barEl, metricsEl, onDone) {
+      let cursor = 0;
+      const timer = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
+          if (!response.ok) {
+            throw new Error(`status ${response.status}`);
+          }
+          const data = await response.json();
+          appendLog(logEl, data.logs || []);
+          cursor = data.next_cursor || cursor;
+          setProgress(barEl, data.progress);
+          stateEl.textContent = `${data.status} (${data.progress}%)`;
+          renderMetrics(metricsEl, data.metrics);
+
+          if (data.status === "completed" || data.status === "failed" || data.status === "stopped") {
+            clearInterval(timer);
+            if (typeof onDone === "function") {
+              onDone(data);
+            }
+          }
+        } catch (error) {
+          clearInterval(timer);
+          stateEl.textContent = `poll failed: ${error.message}`;
+          appendLog(logEl, [`[dashboard] polling error: ${error.message}`]);
+          if (typeof onDone === "function") {
+            onDone(null);
+          }
+        }
+      }, 1000);
+    }
+
+    runSplitBtn.addEventListener("click", async () => {
+      runSplitBtn.disabled = true;
+      splitState.textContent = "starting...";
+      splitLog.textContent = "[dashboard] starting split job...";
+      splitMetrics.innerHTML = "";
+      setProgress(splitProgressBar, 0);
+
+      try {
+        const data = await startJob("/api/ai/split/start", {
+          split_method: splitMethod.value,
+          train_ratio: Number(splitTrainRatio.value || 0.8),
+          min_train_rows: Number(splitMinTrainRows.value || 1),
+          build_variant: splitBuildVariant.value,
+          build_rows_first: splitBuildFirst.value === "true",
+          input_dir: splitInputDir.value.trim(),
+          output_dir: splitOutputDir.value.trim(),
+          data_dir: splitDataDir.value.trim(),
+          step_minutes: Number(splitStepMinutes.value || 30),
+          horizon_minutes: Number(splitHorizonMinutes.value || 30),
+          before_minutes: Number(splitBeforeMinutes.value || 60),
+          after_minutes: Number(splitAfterMinutes.value || 60),
+          sample_minutes: 30
+        });
+        splitJobId = data.job_id;
+        splitState.textContent = `running (job: ${data.job_id})`;
+        pollJob(data.job_id, splitState, splitLog, splitProgressBar, splitMetrics, () => {
+          splitJobId = null;
+          runSplitBtn.disabled = false;
+        });
+      } catch (error) {
+        runSplitBtn.disabled = false;
+        splitState.textContent = `start failed: ${error.message}`;
+        appendLog(splitLog, [`[dashboard] start error: ${error.message}`]);
+      }
     });
+
+    stopSplitBtn.addEventListener("click", async () => {
+      if (!splitJobId) {
+        splitState.textContent = "no running split job";
+        return;
+      }
+      try {
+        await stopJob(splitJobId);
+        splitState.textContent = `stopping (job: ${splitJobId})`;
+      } catch (error) {
+        splitState.textContent = `stop failed: ${error.message}`;
+        appendLog(splitLog, [`[dashboard] stop error: ${error.message}`]);
+      }
+    });
+
+    runFederatedBtn.addEventListener("click", async () => {
+      runFederatedBtn.disabled = true;
+      fedState.textContent = "starting...";
+      fedLog.textContent = "[dashboard] starting federated job...";
+      fedMetrics.innerHTML = "";
+      setProgress(fedProgressBar, 0);
+
+      try {
+        const data = await startJob("/api/ai/federated/start", {
+          model_type: modelType.value,
+          split_dir: flSplitDir.value.trim(),
+          rounds: Number(flRounds.value || 3),
+          local_epochs: Number(flLocalEpochs.value || 1),
+          lstm_sequence_length: Number(flSeqLen.value || 4),
+          lstm_batch_size: Number(flBatchSize.value || 32),
+          max_rooms: Number(flMaxRooms.value || 20),
+          fraction_fit: Number(flFractionFit.value || 0.2),
+          fraction_evaluate: Number(flFractionEval.value || 0.2),
+          min_fit_clients: Number(flMinFitClients.value || 2),
+          min_evaluate_clients: Number(flMinEvalClients.value || 2),
+          min_available_clients: Number(flMinAvailableClients.value || 2),
+          client_cpu: Number(flClientCpu.value || 0.5),
+          chunksize: Number(flChunkSize.value || 50000)
+        });
+        fedJobId = data.job_id;
+        fedState.textContent = `running (job: ${data.job_id})`;
+        pollJob(data.job_id, fedState, fedLog, fedProgressBar, fedMetrics, () => {
+          fedJobId = null;
+          runFederatedBtn.disabled = false;
+        });
+      } catch (error) {
+        runFederatedBtn.disabled = false;
+        fedState.textContent = `start failed: ${error.message}`;
+        appendLog(fedLog, [`[dashboard] start error: ${error.message}`]);
+      }
+    });
+
+    stopFederatedBtn.addEventListener("click", async () => {
+      if (!fedJobId) {
+        fedState.textContent = "no running federated job";
+        return;
+      }
+      try {
+        await stopJob(fedJobId);
+        fedState.textContent = `stopping (job: ${fedJobId})`;
+      } catch (error) {
+        fedState.textContent = `stop failed: ${error.message}`;
+        appendLog(fedLog, [`[dashboard] stop error: ${error.message}`]);
+      }
+    });
+
+    splitMethod.addEventListener("change", applySplitDefaults);
+    splitBuildVariant.addEventListener("change", applySplitDefaults);
+
+    runPredictBtn.addEventListener("click", async () => {
+      runPredictBtn.disabled = true;
+      predState.textContent = "predicting...";
+      predMetrics.innerHTML = "";
+      try {
+        const response = await fetch("/api/ai/predict/mlp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            weights_path: predWeightsPath.value.trim(),
+            gender: predGender.value,
+            age: Number(predAge.value || 72),
+            height: Number(predHeight.value || 168),
+            weight: Number(predWeight.value || 74),
+            hour: Number(predHour.value || 12),
+            minute: Number(predMinute.value || 0),
+            diagnosis: predDiagnosis.value,
+            symptom: predSymptom.value,
+            medication: predMedication.value,
+            curr_temp_main: Number(predCurrTempMain.value || 22),
+            curr_temp_toilet: Number(predCurrTempToilet.value || 23),
+            curr_light: Number(predCurrLight.value || 58),
+            curr_sound: Number(predCurrSound.value || 34),
+            curr_airflow: predCurrAirflow.value === "true"
+          })
+        });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || `HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        predState.textContent = "prediction completed";
+        const p = data.prediction || {};
+        renderMetrics(predMetrics, {
+          items: [
+            { key: "y_temp_main", label: "Pred Temp Main (+1h)", value: p.y_temp_main, explain: "Predicted main room temperature one hour ahead." },
+            { key: "y_temp_toilet", label: "Pred Temp Toilet (+1h)", value: p.y_temp_toilet, explain: "Predicted toilet temperature one hour ahead." },
+            { key: "y_light", label: "Pred Light (+1h)", value: p.y_light, explain: "Predicted light intensity one hour ahead." },
+            { key: "y_sound", label: "Pred Sound (+1h)", value: p.y_sound, explain: "Predicted sound level one hour ahead." },
+            { key: "y_airflow_score", label: "Pred Airflow Score", value: p.y_airflow_score, explain: "Probability-like airflow score (>=0.5 means true)." },
+            { key: "y_airflow", label: "Pred Airflow", value: p.y_airflow, explain: "Predicted airflow on/off." },
+            { key: "y_any_change", label: "Pred Any Change", value: p.y_any_change, explain: "Whether any comfort value changes vs current settings." }
+          ]
+        });
+      } catch (error) {
+        predState.textContent = `prediction failed: ${error.message}`;
+      } finally {
+        runPredictBtn.disabled = false;
+      }
+    });
+
+    applySplitDefaults();
   })();
 </script>
 {% endblock %}
