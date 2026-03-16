@@ -1,0 +1,465 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .two-col { display:grid; grid-template-columns: 1.25fr 1fr; gap:16px; }
+  .stack { display:grid; gap:16px; }
+  .form-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:10px; }
+  .sensor-list { display:grid; gap:8px; margin-top:8px; }
+  .sensor-chip {
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid transparent;
+    border-left-width: 8px;
+  }
+  .sensor-chip strong { display:block; margin-bottom:6px; font-size:1rem; text-transform:capitalize; }
+  .sensor-meta { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin:8px 0 10px; }
+  .sensor-meta div { background:rgba(255,255,255,0.45); border-radius:8px; padding:6px 8px; }
+  .sensor-temperature { background:#fff0ee; border-color:#d85c4a; }
+  .sensor-humidity { background:#eef7ff; border-color:#4894d8; }
+  .sensor-co2 { background:#f1f5eb; border-color:#78905e; }
+  .sensor-light { background:#fff9e8; border-color:#d6a100; }
+  .sensor-sound { background:#f5efff; border-color:#8b63d2; }
+  .sensor-unknown { background:#f4f6f7; border-color:#8a9aa5; }
+  .sensor-edit { margin-top:10px; padding-top:10px; border-top:1px solid rgba(16,32,25,0.12); }
+  .device-subtitle { margin:4px 0 10px; color:#4c5d53; font-size:0.92rem; }
+  .status-pill {
+    display:inline-block;
+    padding:4px 10px;
+    border-radius:999px;
+    font-size:0.8rem;
+    font-weight:700;
+    text-transform:capitalize;
+  }
+  .status-active { background:#e4f5ea; color:#1f6b39; border:1px solid #99d0aa; }
+  .status-seen { background:#fff6de; color:#8a6116; border:1px solid #e0c37d; }
+  .status-registered { background:#eef2f4; color:#51616d; border:1px solid #c5d0d7; }
+  .status-saved { background:#eef2f4; color:#51616d; border:1px solid #c5d0d7; }
+  .status-connecting { background:#e8f2ff; color:#255f9a; border:1px solid #a7c5e8; }
+  .status-connected { background:#e4f5ea; color:#1f6b39; border:1px solid #99d0aa; }
+  .status-disconnected { background:#f6efe7; color:#8a5d2c; border:1px solid #d6b48f; }
+  .status-failed { background:#fde9e7; color:#a3342a; border:1px solid #e3aaa3; }
+  .device-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .sensor-collapse {
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .device-collapse {
+    border: 1px solid rgba(16,32,25,0.12);
+    border-radius: 12px;
+    padding: 10px 12px;
+    background: #fbfcf9;
+  }
+  .device-collapse + .device-collapse { margin-top: 10px; }
+  .device-summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-weight: 700;
+  }
+  .device-summary::-webkit-details-marker { display:none; }
+  .device-summary::after {
+    content: "Open";
+    font-size: 0.8rem;
+    font-weight: 700;
+    opacity: 0.7;
+  }
+  .device-collapse[open] .device-summary::after { content: "Close"; }
+  .device-summary-meta {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-right:auto;
+  }
+  .sensor-summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .sensor-summary::-webkit-details-marker { display:none; }
+  .sensor-summary::after {
+    content: "Open";
+    float: right;
+    font-size: 0.8rem;
+    font-weight: 700;
+    opacity: 0.7;
+  }
+  .sensor-collapse[open] .sensor-summary::after { content: "Close"; }
+  @media (max-width: 960px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0;">Admin View: Room {{ room.room_number }}</h2>
+    <p class="muted">
+      {% if patient %}
+        Current patient: <strong>{{ patient.name }}</strong> (ID {{ patient.patient_id }})
+      {% else %}
+        No active patient assignment for this room.
+      {% endif %}
+    </p>
+  </div>
+
+  <div class="two-col">
+    <div class="stack">
+      <div class="card">
+        <h3 style="margin-top:0;">Register Nordic Thingy:52</h3>
+        <form method="post" action="{{ url_for('hybrid_bp.add_room_device', room_id=room.room_id) }}">
+          <div class="form-grid">
+            <div>
+              <label>Location</label>
+              <select name="location">
+                <option value="main">Main</option>
+                <option value="toilet">Toilet</option>
+              </select>
+            </div>
+            <div>
+              <label>MAC Address</label>
+              <input name="mac_address" placeholder="FE:14:B2:D8:FD:AB" />
+            </div>
+          </div>
+          <p class="muted">This registers the Nordic device only. Sensor UUIDs are added separately per device.</p>
+          <p style="margin-top:10px;"><button type="submit">Add Nordic Device</button></p>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Devices</h3>
+        <table>
+          <tr><th>Type</th><th>Location</th><th>MAC</th><th>Status</th><th>Last Seen</th></tr>
+          {% for device in devices %}
+          <tr>
+            <td>{{ device.device_type }}</td>
+            <td>{{ device.location if device.location else '--' }}</td>
+            <td>{{ device.mac_address if device.mac_address else '--' }}</td>
+            <td><span class="status-pill status-{{ device.status }}">{{ device.status }}</span></td>
+            <td>{{ device.last_seen if device.last_seen else '--' }}</td>
+          </tr>
+          {% if device.device_type == 'sensor' %}
+          <tr>
+            <td colspan="5">
+              <details class="device-collapse" data-persist-key="device-{{ device.device_id }}">
+                <summary class="device-summary">
+                  <span>Connection</span>
+                  <span class="device-summary-meta">
+                    <span>{{ device.location if device.location else '--' }}</span>
+                    <span class="status-pill status-{{ device.status }}">{{ device.status }}</span>
+                  </span>
+                </summary>
+                <div class="stack" style="margin-top:12px;">
+                  <div>
+                    <p class="device-subtitle">
+                      Status:
+                      <span class="status-pill status-{{ device.status }}">{{ device.status }}</span>
+                      {% if device.last_connected_at %}
+                      | Last connected: {{ device.last_connected_at }}
+                      {% endif %}
+                      {% if device.last_error %}
+                      | Error: {{ device.last_error }}
+                      {% endif %}
+                    </p>
+                    <div class="device-actions">
+                      <form method="post" action="{{ url_for('hybrid_bp.connect_device', device_id=device.device_id) }}">
+                        <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                        <button type="submit">Connect</button>
+                      </form>
+                      <form method="post" action="{{ url_for('hybrid_bp.disconnect_device', device_id=device.device_id) }}">
+                        <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                        <button type="submit" class="secondary">Disconnect</button>
+                      </form>
+                    </div>
+                  </div>
+
+                  <div>
+                    <strong>Registered Sensor UUIDs</strong>
+                    {% if device.sensors %}
+                    <div class="sensor-list">
+                      {% for sensor in device.sensors %}
+                      <details class="sensor-collapse sensor-chip sensor-{{ sensor.sensor_type if sensor.sensor_type else 'unknown' }}" data-persist-key="sensor-{{ sensor.sensor_id }}">
+                        <summary class="sensor-summary">
+                          <strong>{{ sensor.sensor_type }} sensor</strong>
+                          <div class="device-subtitle">UUID: {{ sensor.uuid }}</div>
+                        </summary>
+                        <div class="device-subtitle">This UUID is connected to the {{ sensor.sensor_type }} input on this Nordic device.</div>
+                        <div class="sensor-meta">
+                          <div><strong style="font-size:0.78rem;">UUID</strong><br>{{ sensor.uuid }}</div>
+                          <div><strong style="font-size:0.78rem;">Unit</strong><br>{{ sensor.unit if sensor.unit else '--' }}</div>
+                          <div><strong style="font-size:0.78rem;">Sensor Type</strong><br>{{ sensor.sensor_type }}</div>
+                        </div>
+                        <form method="post" action="{{ url_for('hybrid_bp.update_device_sensor', sensor_id=sensor.sensor_id) }}" class="sensor-edit">
+                          <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                          <div class="form-grid">
+                            <div>
+                              <label>Edit Sensor Type</label>
+                              <select name="sensor_type" data-sensor-type-select>
+                                {% for value, label, default_unit in sensor_type_options %}
+                                <option value="{{ value }}" {% if value == sensor.sensor_type %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                              </select>
+                            </div>
+                            <div>
+                              <label>Edit UUID</label>
+                              <input name="uuid" value="{{ sensor.uuid }}" />
+                            </div>
+                            <div>
+                              <label>Edit Unit</label>
+                              <select name="unit" data-unit-select>
+                                {% for value, label, default_unit in sensor_type_options %}
+                                <option value="{{ default_unit }}" {% if default_unit == (sensor.unit if sensor.unit else sensor.default_unit) %}selected{% endif %}>{{ label }} ({{ default_unit }})</option>
+                                {% endfor %}
+                              </select>
+                            </div>
+                          </div>
+                          <p style="margin-top:10px;"><button type="submit" class="secondary">Update This Sensor</button></p>
+                        </form>
+                      </details>
+                      {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="muted">No sensor UUIDs added yet.</p>
+                    {% endif %}
+                  </div>
+
+                  <form method="post" action="{{ url_for('hybrid_bp.update_device_mac', device_id=device.device_id) }}">
+                    <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                    <div class="form-grid">
+                      <div>
+                        <label>Update MAC Address</label>
+                        <input name="mac_address" value="{{ device.mac_address if device.mac_address else '' }}" />
+                      </div>
+                    </div>
+                    <p style="margin-top:10px;"><button type="submit" class="secondary">Update MAC</button></p>
+                  </form>
+
+                  <form method="post" action="{{ url_for('hybrid_bp.add_device_sensor', device_id=device.device_id) }}">
+                    <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                    <div class="form-grid">
+                      <div>
+                        <label>Sensor Type</label>
+                        <select name="sensor_type" data-sensor-type-select>
+                          {% for value, label, default_unit in sensor_type_options %}
+                          <option value="{{ value }}">{{ label }}</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                      <div>
+                        <label>Sensor UUID</label>
+                        <input name="uuid" placeholder="ef680201-9b35-4933-9b10-52ffa9740042" />
+                      </div>
+                      <div>
+                        <label>Unit</label>
+                        <select name="unit" data-unit-select>
+                          {% for value, label, default_unit in sensor_type_options %}
+                          <option value="{{ default_unit }}">{{ label }} ({{ default_unit }})</option>
+                          {% endfor %}
+                        </select>
+                      </div>
+                    </div>
+                    <p class="muted">Choose the sensor type that belongs to the UUID you are registering.</p>
+                    <p style="margin-top:10px;"><button type="submit">Add Sensor UUID</button></p>
+                  </form>
+                </div>
+              </details>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Latest Sensor Data</h3>
+        <table>
+          <tr><th>Location</th><th>Sensor</th><th>Value</th><th>Time</th></tr>
+          {% for row in sensor_rows %}
+          <tr>
+            <td>{{ row.location if row.location else '--' }}</td>
+            <td>{{ row.sensor_type }}</td>
+            <td>{% if row.value is not none %}{{ row.value_display }} {{ row.unit }}{% else %}--{% endif %}</td>
+            <td>{% if row.timestamp %}{{ row.timestamp }}{% else %}--{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="card">
+        <h3 style="margin-top:0;">Simulated Actuators</h3>
+        <table>
+          <tr><th>Type</th><th>Location</th><th>State</th></tr>
+          {% for row in actuator_rows %}
+          <tr>
+            <td>{{ row.display_type }}</td>
+            <td>{{ row.location }}</td>
+            <td>{{ row.state }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Latest Comfort Setting</h3>
+        {% if latest_comfort %}
+        <p>Main temp: {{ latest_comfort.temperature_main }}</p>
+        <p>Toilet temp: {{ latest_comfort.temperature_toilet if latest_comfort.temperature_toilet is not none else '--' }}</p>
+        <p>Light: {{ latest_comfort.light_intensity if latest_comfort.light_intensity is not none else '--' }}</p>
+        <p>Sound: {{ latest_comfort.sound_level if latest_comfort.sound_level is not none else '--' }}</p>
+        <p>Airflow: {{ 'On' if latest_comfort.airflow else 'Off' }}</p>
+        {% else %}
+        <p class="muted">No comfort settings saved yet.</p>
+        {% endif %}
+      </div>
+
+      {% if patient %}
+      <div class="card">
+        <h3 style="margin-top:0;">Add Visit</h3>
+        <form method="post" action="{{ url_for('hybrid_bp.add_visit', patient_id=patient.patient_id) }}">
+          <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+          <div class="form-grid">
+            <div>
+              <label>Body Temperature</label>
+              <input name="body_temperature" />
+            </div>
+            <div>
+              <label>Blood Pressure</label>
+              <input name="blood_pressure" placeholder="120/80" />
+            </div>
+          </div>
+          <p>
+            <label>Symptoms / Notes</label>
+            <textarea name="symptoms" rows="3"></textarea>
+          </p>
+          <button type="submit">Save Visit</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Medications</h3>
+        <form method="post" action="{{ url_for('hybrid_bp.add_medication', patient_id=patient.patient_id) }}" style="margin-bottom:14px;">
+          <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+          <div class="form-grid">
+            <div>
+              <label>Drug Name</label>
+              <input name="drug_name" />
+            </div>
+            <div>
+              <label>Dose</label>
+              <input name="dose" placeholder="500mg" />
+            </div>
+            <div>
+              <label>Route</label>
+              <input name="route" placeholder="oral" />
+            </div>
+            <div>
+              <label>Scheduled Time</label>
+              <input type="datetime-local" name="medication_time" />
+            </div>
+            <div>
+              <label>Status</label>
+              <select name="status">
+                <option value="pending">Pending</option>
+                <option value="taken">Taken</option>
+                <option value="missed">Missed</option>
+              </select>
+            </div>
+          </div>
+          <p style="margin-top:10px;"><button type="submit">Add Medication</button></p>
+        </form>
+        <table>
+          <tr><th>Drug</th><th>Dose</th><th>Scheduled Time</th><th>Status</th><th>Action</th></tr>
+          {% for medication in medications %}
+          <tr>
+            <td>{{ medication.drug_name }}</td>
+            <td>{{ medication.dose if medication.dose else '--' }}</td>
+            <td>{{ medication.medication_time if medication.medication_time else '--' }}</td>
+            <td>{{ medication.status if medication.status else '--' }}</td>
+            <td>
+              <form method="post" action="{{ url_for('hybrid_bp.mark_medication_taken', medication_id=medication.medication_id) }}">
+                <input type="hidden" name="room_id" value="{{ room.room_id }}" />
+                <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+                  <input
+                    type="checkbox"
+                    name="taken"
+                    value="true"
+                    onchange="this.form.submit()"
+                    {% if medication.status == 'taken' %}checked{% endif %}
+                  />
+                  <span>Taken</span>
+                </label>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0;">Visits</h3>
+        <table>
+          <tr><th>Time</th><th>Temperature</th><th>Blood Pressure</th><th>Symptoms</th></tr>
+          {% for visit in visits %}
+          <tr>
+            <td>{{ visit.visit_time }}</td>
+            <td>{{ visit.body_temperature if visit.body_temperature is not none else '--' }}</td>
+            <td>{{ visit.blood_pressure if visit.blood_pressure else '--' }}</td>
+            <td>{{ visit.symptoms if visit.symptoms else '--' }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<script>
+  const sensorTypeDefaults = {{ unit_by_sensor_type|tojson }};
+  const storageKey = "hybrid-admin-room-{{ room.room_id }}-open-sections";
+  const openSections = new Set(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+
+  function persistOpenSections() {
+    localStorage.setItem(storageKey, JSON.stringify(Array.from(openSections)));
+  }
+
+  document.querySelectorAll("details[data-persist-key]").forEach((details) => {
+    const key = details.dataset.persistKey;
+    if (!key) return;
+    if (openSections.has(key)) {
+      details.open = true;
+    }
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        openSections.add(key);
+      } else {
+        openSections.delete(key);
+      }
+      persistOpenSections();
+    });
+  });
+
+  document.querySelectorAll("form").forEach((form) => {
+    const typeSelect = form.querySelector("[data-sensor-type-select]");
+    const unitSelect = form.querySelector("[data-unit-select]");
+    if (!typeSelect || !unitSelect) return;
+    const syncUnit = () => {
+      const nextUnit = sensorTypeDefaults[typeSelect.value];
+      if (!nextUnit) return;
+      unitSelect.value = nextUnit;
+    };
+    typeSelect.addEventListener("change", syncUnit);
+    if (!unitSelect.value) {
+      syncUnit();
+    }
+  });
+
+  setInterval(() => {
+    const active = document.activeElement;
+    const editing = active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+    if (!editing && document.visibilityState === "visible") {
+      window.location.reload();
+    }
+  }, 5000);
+</script>
+{% endblock %}

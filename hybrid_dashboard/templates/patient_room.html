@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .two-col { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+  .sensor-list { display:grid; gap:10px; }
+  .sensor-chip {
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid transparent;
+    border-left-width: 8px;
+  }
+  .sensor-temperature { background:#fff0ee; border-color:#d85c4a; }
+  .sensor-humidity { background:#eef7ff; border-color:#4894d8; }
+  .sensor-co2 { background:#f1f5eb; border-color:#78905e; }
+  .sensor-light { background:#fff9e8; border-color:#d6a100; }
+  .sensor-sound { background:#f5efff; border-color:#8b63d2; }
+  .sensor-unknown { background:#f4f6f7; border-color:#8a9aa5; }
+  .sensor-collapse { border-radius: 12px; overflow: hidden; }
+  .sensor-summary { cursor:pointer; list-style:none; }
+  .sensor-summary::-webkit-details-marker { display:none; }
+  .sensor-summary::after { content:"Open"; float:right; font-size:0.8rem; font-weight:700; opacity:0.7; }
+  .sensor-collapse[open] .sensor-summary::after { content:"Close"; }
+  .sensor-meta { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-top:10px; }
+  .sensor-meta div { background:rgba(255,255,255,0.45); border-radius:8px; padding:6px 8px; }
+  .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .toilet-toggle {
+    border: 1px solid #c6d2cc;
+    background: #eff3ef;
+    color: #203127;
+  }
+  .toilet-toggle.is-on {
+    background: #ffd978;
+    border-color: #d39a00;
+    color: #3f2b00;
+  }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+</style>
+
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0;">Patient View: Room {{ room.room_number }}</h2>
+    <p class="muted">
+      {% if patient %}
+        Patient: {{ patient.name }}
+      {% else %}
+        No patient is currently assigned to this room.
+      {% endif %}
+    </p>
+  </div>
+
+  <div class="two-col">
+    <div class="card">
+      <h3 style="margin-top:0;">Current Sensor Data</h3>
+      <div class="sensor-list" id="sensor-list">
+        {% for row in sensor_rows %}
+        <details class="sensor-collapse sensor-chip sensor-{{ row.sensor_type if row.sensor_type else 'unknown' }}">
+          <summary class="sensor-summary" data-sensor-key="{{ row.location if row.location else '--' }}|{{ row.sensor_type if row.sensor_type else 'unknown' }}|{{ row.uuid }}">
+            <strong>{{ row.sensor_type }} sensor</strong>
+            <div>{{ row.location if row.location else '--' }}</div>
+          </summary>
+          <div class="sensor-meta">
+            <div><strong style="font-size:0.78rem;">Value</strong><br>{% if row.value is not none %}{{ row.value_display }} {{ row.unit }}{% else %}--{% endif %}</div>
+            <div><strong style="font-size:0.78rem;">UUID</strong><br>{{ row.uuid }}</div>
+            <div><strong style="font-size:0.78rem;">Last Update</strong><br>{% if row.timestamp %}{{ row.timestamp }}{% else %}--{% endif %}</div>
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">Current Actuator State</h3>
+      <table>
+        <tr><th>Type</th><th>Location</th><th>State</th></tr>
+        <tbody id="actuator-table-body">
+          {% for row in actuator_rows %}
+          <tr>
+            <td>{{ row.display_type }}</td>
+            <td>{{ row.location }}</td>
+            <td>{{ row.state }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="actions">
+        <form method="post" action="{{ url_for('hybrid_bp.patient_go_to_toilet', room_id=room.room_id) }}">
+          {% set toilet_light_row = actuator_rows | selectattr('device_type', 'equalto', 'toilet_light') | first %}
+          <button
+            type="submit"
+            class="toilet-toggle{% if toilet_light_row and toilet_light_row.state == 'on' %} is-on{% endif %}"
+          >
+            {% if toilet_light_row and toilet_light_row.state == 'on' %}
+              Toilet Light On
+            {% else %}
+              Toilet Light Off
+            {% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Save New Comfort Setting</h3>
+    <form method="post" action="{{ url_for('hybrid_bp.save_patient_comfort', room_id=room.room_id) }}">
+      <input type="hidden" name="patient_id" value="{{ patient.patient_id if patient else '' }}" />
+      <div class="two-col">
+        <div>
+          <label>Main Temperature</label>
+          <input name="temperature_main" value="{{ latest_comfort.temperature_main if latest_comfort else '' }}" />
+        </div>
+        <div>
+          <label>Toilet Temperature</label>
+          <input name="temperature_toilet" value="{{ latest_comfort.temperature_toilet if latest_comfort and latest_comfort.temperature_toilet is not none else '' }}" />
+        </div>
+        <div>
+          <label>Light Intensity</label>
+          <input name="light_intensity" value="{{ latest_comfort.light_intensity if latest_comfort and latest_comfort.light_intensity is not none else '' }}" />
+        </div>
+        <div>
+          <label>Sound Level</label>
+          <input name="sound_level" value="{{ latest_comfort.sound_level if latest_comfort and latest_comfort.sound_level is not none else '' }}" />
+        </div>
+        <div>
+          <label>Airflow</label>
+          <select name="airflow_choice">
+            <option value="">Keep current</option>
+            <option value="on" {% if latest_comfort and latest_comfort.airflow %}selected{% endif %}>On</option>
+            <option value="off" {% if latest_comfort and not latest_comfort.airflow %}selected{% endif %}>Off</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit">Save Comfort Preference</button>
+    </form>
+  </div>
+</div>
+<script>
+  const roomId = {{ room.room_id }};
+  const sensorList = document.getElementById("sensor-list");
+  const actuatorTableBody = document.getElementById("actuator-table-body");
+  const openSensorKeys = new Set();
+
+  sensorList.addEventListener("toggle", (event) => {
+    const details = event.target;
+    if (!(details instanceof HTMLDetailsElement)) return;
+    const summary = details.querySelector("[data-sensor-key]");
+    if (!summary) return;
+    const key = summary.dataset.sensorKey;
+    if (!key) return;
+    if (details.open) {
+      openSensorKeys.add(key);
+    } else {
+      openSensorKeys.delete(key);
+    }
+  }, true);
+
+  function sensorCard(row) {
+    const value = row.value !== null && row.value !== undefined ? `${row.value_display ?? row.value} ${row.unit || ""}`.trim() : "--";
+    const timestamp = row.timestamp || "--";
+    const location = row.location || "--";
+    const sensorType = row.sensor_type || "unknown";
+    const uuid = row.uuid || "--";
+    const key = `${location}|${sensorType}|${uuid}`;
+    const openAttr = openSensorKeys.has(key) ? " open" : "";
+    return `
+      <details class="sensor-collapse sensor-chip sensor-${sensorType}"${openAttr}>
+        <summary class="sensor-summary" data-sensor-key="${key}">
+          <strong>${sensorType} sensor</strong>
+          <div>${location}</div>
+        </summary>
+        <div class="sensor-meta">
+          <div><strong style="font-size:0.78rem;">Value</strong><br>${value}</div>
+          <div><strong style="font-size:0.78rem;">UUID</strong><br>${uuid}</div>
+          <div><strong style="font-size:0.78rem;">Last Update</strong><br>${timestamp}</div>
+        </div>
+      </details>
+    `;
+  }
+
+  function actuatorRow(row) {
+    return `
+      <tr>
+        <td>${row.display_type}</td>
+        <td>${row.location}</td>
+        <td>${row.state}</td>
+      </tr>
+    `;
+  }
+
+  async function refreshLiveSections() {
+    if (document.visibilityState !== "visible") return;
+    try {
+      sensorList.querySelectorAll("details[open] [data-sensor-key]").forEach((summary) => {
+        if (summary.dataset.sensorKey) {
+          openSensorKeys.add(summary.dataset.sensorKey);
+        }
+      });
+      const response = await fetch(`/patient/rooms/${roomId}/live`, { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json();
+      sensorList.innerHTML = payload.sensor_rows.map(sensorCard).join("");
+      actuatorTableBody.innerHTML = payload.actuator_rows.map(actuatorRow).join("");
+    } catch (error) {
+      console.debug("patient live refresh failed", error);
+    }
+  }
+
+  setInterval(refreshLiveSections, 5000);
+</script>
+{% endblock %}

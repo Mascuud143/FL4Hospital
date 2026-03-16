@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0;">Patient Mode</h2>
+    <p class="muted">Choose your current room to see sensor readings, actuator state, and save new comfort settings.</p>
+  </div>
+
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+    {% for assignment in assignments %}
+    <div class="card">
+      <h3 style="margin-top:0;">Room {{ assignment.room.room_number }}</h3>
+      <p><span class="chip">Patient</span> {{ assignment.patient.name }}</p>
+      <a href="{{ url_for('hybrid_bp.patient_room', room_id=assignment.room_id) }}">Open patient room view</a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

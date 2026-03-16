@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0;">Two-Room Hybrid Hospital</h2>
+    <p class="muted">
+      This dashboard is separate from the simulation dashboard. It is designed for the live hybrid setup with
+      real Nordic Thingy:52 sensors and simulated room actuators.
+    </p>
+  </div>
+
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));">
+    {% for room in rooms %}
+    <div class="card">
+      <h3 style="margin-top:0;">Room {{ room.room_number }}</h3>
+      <p><span class="chip">Patient</span> {{ room.patient_name }}</p>
+      <p><span class="chip">Sensors</span> {{ room.sensor_count }} registered / {{ room.active_sensor_count }} active</p>
+      <p style="display:flex; gap:8px; flex-wrap:wrap;">
+        <a href="{{ url_for('hybrid_bp.admin_room', room_id=room.room_id) }}">Open admin view</a>
+        <a href="{{ url_for('hybrid_bp.patient_room', room_id=room.room_id) }}">Open patient view</a>
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

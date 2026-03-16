@@ -1,0 +1,3 @@
+patient_id,name,gender,ethnicity,height
+1,John Doe,male,unknown,178
+2,Jane Smith,female,unknown,165

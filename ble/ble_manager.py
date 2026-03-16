@@ -14,6 +14,23 @@ from .device import Device
 EventCallback = Callable[[dict], Awaitable[None]] 
 
 
+async def _probe_device_connection(mac_address: str, timeout: float) -> bool:
+    async with BleakClient(mac_address, timeout=timeout) as client:
+        return bool(client.is_connected)
+
+
+def probe_device_connection(mac_address: str, timeout: float = 8.0) -> bool:
+    normalized_mac = mac_address.strip().upper()
+    try:
+        return asyncio.run(_probe_device_connection(normalized_mac, timeout))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_probe_device_connection(normalized_mac, timeout))
+        finally:
+            loop.close()
+
+
 @dataclass
 class ConnectionState:
     client: Optional[BleakClient] = None
@@ -265,7 +282,7 @@ class BLEManager:
             "device_label": device.label or device.name or mac,
             "sensor_type": sensor.sensor_type,
             "unit": sensor.unit,
-            "uuid": uuid,
+            "uuid": str(getattr(uuid, "uuid", uuid)),
             "value": value,
             "raw_hex": data.hex(),
             "error": error,
