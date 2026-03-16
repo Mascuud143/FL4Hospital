@@ -1,0 +1,5 @@
+medication_id,patient_id,medication_time,route,drug_name,dose,status
+1,1,2026-03-16T10:00:00+00:00,oral,Paracetamol,500mg,pending
+2,2,2026-03-16T11:00:00+00:00,inhalation,Salbutamol,2 puffs,pending
+3,1,2026-03-16T14:00:00+00:00,oral,Ibuprofen,200mg,pending
+4,2,2026-03-16T15:00:00+00:00,inhalation,Budesonide,1 puff,pending

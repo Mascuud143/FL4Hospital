@@ -10,6 +10,7 @@ from .admission import Admission
 from .comfort_preference import ComfortPreference
 from .room_assignment import RoomAssignment
 from .utility_usage import UtilityUsage
+from .hybrid_zone_state import HybridZoneState
 
 from .visit import Visit
 from .medication import Medication
@@ -35,6 +36,7 @@ __all__ = [
     "Medication",
 
     "UtilityUsage",
+    "HybridZoneState",
 
     "Ventilation",
     "Speaker",

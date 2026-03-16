@@ -1,10 +1,10 @@
 # hybrid/ventilation_logic.py
 
-DEADBAND = 3      # stability zone (°C)
-AIRFLOW_BIAS = 0.2  # small drift zone
+DEADBAND = 0.5
+HYSTERESIS = 0.2
 
 
-def decide_mode(current_temp: float, target: float, airflow_requested: bool) -> str:
+def decide_mode(current_temp: float, target: float, airflow_requested: bool, current_mode: str = "off") -> str:
     """
     Stable thermostat controller with hysteresis.
     Prevents rapid mode switching.
@@ -12,16 +12,19 @@ def decide_mode(current_temp: float, target: float, airflow_requested: bool) -> 
 
     error = current_temp - target
 
-    # ---- inside comfort zone -> STOP HVAC ----
-    if abs(error) <= DEADBAND:
+    stop_threshold = DEADBAND
+    start_threshold = DEADBAND + HYSTERESIS
+
+    if current_mode in {"heat", "cool", "airflow"} and abs(error) <= start_threshold:
         return "off"
 
-    # ---- cooling needed ----
-    if error > DEADBAND:
+    if abs(error) <= stop_threshold:
+        return "off"
+
+    if error > start_threshold:
         return "cool" if not airflow_requested else "airflow"
 
-    # ---- heating needed ----
-    if error < -DEADBAND:
+    if error < -start_threshold:
         return "heat"
 
-    return "off"
+    return current_mode if current_mode in {"heat", "cool", "airflow"} else "off"

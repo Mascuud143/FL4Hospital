@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hybrid Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        :root {
+            --bg: #eef3ef;
+            --surface: #ffffff;
+            --surface-alt: #f7faf7;
+            --text: #102019;
+            --muted: #5e6d63;
+            --line: #d5e0d7;
+            --primary: #206144;
+            --accent: #945c1d;
+            --shadow: 0 12px 28px rgba(16, 32, 25, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, #d9ebe0 0, transparent 35%),
+                linear-gradient(180deg, #f4f8f4 0%, var(--bg) 100%);
+        }
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px 16px 48px;
+        }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 16px 18px;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            margin-bottom: 18px;
+        }
+        .topbar h1 {
+            margin: 0;
+            font-size: 1.35rem;
+        }
+        .nav-links {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .nav-links a {
+            text-decoration: none;
+            color: var(--text);
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 8px 12px;
+            background: var(--surface-alt);
+            font-weight: 600;
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: var(--shadow);
+        }
+        .muted { color: var(--muted); }
+        .chip {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--line);
+            background: var(--surface-alt);
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .flash {
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            border: 1px solid #bdd9c6;
+            background: #e3f3ea;
+            border-radius: 12px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+        th, td {
+            border: 1px solid var(--line);
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th { background: var(--surface-alt); }
+        input, select, textarea, button {
+            font: inherit;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #fff;
+        }
+        button {
+            border: 1px solid #8bb59d;
+            background: var(--primary);
+            color: #fff;
+            border-radius: 10px;
+            padding: 9px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        button.secondary {
+            background: var(--accent);
+            border-color: #c09565;
+        }
+        .grid {
+            display: grid;
+            gap: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="topbar">
+            <h1>Hybrid Hospital Dashboard</h1>
+            <div class="nav-links">
+                <a href="{{ url_for('hybrid_bp.landing') }}">Home</a>
+                <a href="{{ url_for('hybrid_bp.admin_home') }}">Admin</a>
+                <a href="{{ url_for('hybrid_bp.patient_home') }}">Patient</a>
+            </div>
+        </div>
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            {% for message in messages %}
+              <div class="flash">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

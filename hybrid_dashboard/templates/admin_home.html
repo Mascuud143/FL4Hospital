@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2 style="margin-top:0;">Admin / Staff Mode</h2>
+    <p class="muted">Initialize the two-room hybrid hospital from CSV, then manage each room, patient, and Nordic device.</p>
+    <form method="post" action="{{ url_for('hybrid_bp.admin_initialize') }}">
+      <button type="submit">Initialize Hybrid Hospital</button>
+    </form>
+  </div>
+
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+    {% for room in rooms %}
+    <div class="card">
+      <h3 style="margin-top:0;">Room {{ room.room_number }}</h3>
+      <p><span class="chip">Patient</span> {{ room.patient_name }}</p>
+      <p><span class="chip">Sensors</span> {{ room.sensor_count }} registered / {{ room.active_sensor_count }} active</p>
+      <a href="{{ url_for('hybrid_bp.admin_room', room_id=room.room_id) }}">Manage room {{ room.room_id }}</a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

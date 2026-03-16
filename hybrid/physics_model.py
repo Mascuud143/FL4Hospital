@@ -22,7 +22,7 @@ def _seconds(now, last):
         now = now.replace(tzinfo=timezone.utc)
 
     dt = (now - last).total_seconds()
-    return max(dt, 0.1)  # prevent zero / negative time
+    return min(max(dt, 0.1), 5.0)
 
 
 def step_temperature(
