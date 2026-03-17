@@ -16,13 +16,13 @@ def decide_mode(current_temp: float, target: float, airflow_requested: bool, cur
     start_threshold = DEADBAND + HYSTERESIS
 
     if current_mode in {"heat", "cool", "airflow"} and abs(error) <= start_threshold:
-        return "off"
+        return "airflow" if airflow_requested else "off"
 
     if abs(error) <= stop_threshold:
-        return "off"
+        return "airflow" if airflow_requested else "off"
 
     if error > start_threshold:
-        return "cool" if not airflow_requested else "airflow"
+        return "cool"
 
     if error < -start_threshold:
         return "heat"

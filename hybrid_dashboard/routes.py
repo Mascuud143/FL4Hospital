@@ -53,6 +53,19 @@ def _parse_form_datetime(value: str | None) -> datetime | None:
     return parsed
 
 
+def _parse_positive_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _active_assignment_for_room(session, room_id: int) -> RoomAssignment | None:
     now = _utc_now()
     return (
@@ -472,17 +485,35 @@ def add_medication(patient_id: int):
         flash("Drug name and scheduled time are required.")
         return redirect(url_for("hybrid_bp.admin_room", room_id=room_id))
 
-    medication = Medication(
-        patient_id=patient_id,
-        drug_name=drug_name,
-        medication_time=medication_time,
-        route=(request.form.get("route") or "").strip() or None,
-        dose=(request.form.get("dose") or "").strip() or None,
-        status=(request.form.get("status") or "pending").strip() or "pending",
-    )
+    repeat_every_hours = _parse_positive_int(request.form.get("repeat_every_hours"))
+    repeat_times = _parse_positive_int(request.form.get("repeat_times"))
+    if (repeat_every_hours is None) != (repeat_times is None):
+        flash("Repeat interval and repeat count must both be set, or both left empty.")
+        return redirect(url_for("hybrid_bp.admin_room", room_id=room_id))
+
+    occurrences = repeat_times if repeat_times is not None else 1
+    step = timedelta(hours=repeat_every_hours) if repeat_every_hours is not None else timedelta(0)
+
+    route = (request.form.get("route") or "").strip() or None
+    dose = (request.form.get("dose") or "").strip() or None
+    status = (request.form.get("status") or "pending").strip() or "pending"
+    medications = [
+        Medication(
+            patient_id=patient_id,
+            drug_name=drug_name,
+            medication_time=medication_time + (step * idx),
+            route=route,
+            dose=dose,
+            status=status,
+        )
+        for idx in range(occurrences)
+    ]
     with session_scope() as session:
-        session.add(medication)
-    flash("Medication added.")
+        session.add_all(medications)
+    if occurrences == 1:
+        flash("Medication added.")
+    else:
+        flash(f"Medication series added: {occurrences} doses every {repeat_every_hours} hour(s).")
     return redirect(url_for("hybrid_bp.admin_room", room_id=room_id))
 
 
