@@ -99,3 +99,5 @@ ai/splits_by_y/
 ai/splits_next_hour/
 ai/splits_next_hour_2/
 ai/splits_next_hour_3/
+ai_forecast/outputs_next_hour_3/
+ai_forecast/splits_next_hour_3/

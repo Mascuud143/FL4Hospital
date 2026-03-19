@@ -53,6 +53,15 @@ FEATURE_COLUMNS = [
     *TRIGGER_MEDICATION_COLUMNS,
 ]
 
+FEATURE_GROUPS = {
+    "baseline_numeric": BASE_NUMERIC_COLUMNS,
+    "event_type": EVENT_TYPE_COLUMNS,
+    "diagnosis": DIAGNOSIS_COLUMNS,
+    "symptoms": SYMPTOM_COLUMNS,
+    "active_medications": ACTIVE_MEDICATION_COLUMNS,
+    "trigger_medication": TRIGGER_MEDICATION_COLUMNS,
+}
+
 TARGET_COLUMNS = [
     "y_target_temp_main",
     "y_target_temp_toilet",
