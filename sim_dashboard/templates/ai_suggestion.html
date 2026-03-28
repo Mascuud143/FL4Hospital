@@ -1,372 +1,372 @@
 {% extends "base.html" %}
 {% block content %}
 <style>
-  .page-grid { display: grid; gap: 14px; }
-  .panel-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-  .field-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-  }
-  .field { margin-bottom: 8px; }
+  .page-grid { display: grid; gap: 16px; }
+  .section-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .field label {
     display: block;
     margin-bottom: 4px;
-    font-size: 0.8rem;
     color: var(--muted);
+    font-size: 0.8rem;
   }
   .field input, .field select {
     width: 100%;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 8px 10px;
-    font: inherit;
     background: #fff;
+    font: inherit;
   }
-  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .hint { color: var(--muted); font-size: 0.86rem; line-height: 1.45; }
+  .config-list { display: grid; gap: 10px; margin-top: 12px; }
+  .config-item {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-alt);
+    padding: 10px 12px;
+  }
+  .config-item strong { display: block; margin-bottom: 4px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .btn {
     border: 1px solid var(--line);
     border-radius: 10px;
     padding: 8px 12px;
+    background: #fff;
     font: inherit;
     font-weight: 700;
     cursor: pointer;
-    background: #fff;
   }
   .btn.primary {
     background: var(--primary);
-    border-color: var(--primary);
     color: #fff;
+    border-color: var(--primary);
   }
   .progress {
     width: 100%;
-    height: 12px;
+    height: 10px;
     border: 1px solid var(--line);
     border-radius: 999px;
     background: #fff;
     overflow: hidden;
+    margin-top: 10px;
   }
-  .progress .bar {
-    height: 100%;
+  .bar {
     width: 0%;
-    background: linear-gradient(90deg, #2a8fbd, #4fb286);
-    transition: width 0.3s ease;
+    height: 100%;
+    background: linear-gradient(90deg, #1d4ed8, #0f766e);
+    transition: width 0.25s ease;
   }
-  .state {
-    margin-top: 6px;
-    font-size: 0.85rem;
-    color: var(--muted);
+  .state { margin-top: 6px; color: var(--muted); font-size: 0.84rem; }
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
   }
+  .metric-card, .chart-card, .pie-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 10px 12px;
+  }
+  .metric-k { font-size: 0.76rem; color: var(--muted); text-transform: uppercase; }
+  .metric-v { font-size: 1.1rem; font-weight: 700; margin-top: 4px; }
+  .metric-x { font-size: 0.8rem; color: var(--muted); margin-top: 4px; line-height: 1.35; }
   .log {
     margin-top: 10px;
-    height: 260px;
+    height: 220px;
     overflow: auto;
-    border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 12px;
+    border: 1px solid #0f172a;
     background: #0f172a;
     color: #e2e8f0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.78rem;
-    line-height: 1.35;
     padding: 10px;
+    font: 0.78rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     white-space: pre-wrap;
   }
-  .hint { font-size: 0.86rem; color: var(--muted); }
-  .metrics-grid {
-    margin-top: 10px;
+  .results-toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr auto;
+    gap: 10px;
+    align-items: end;
+  }
+  .chart-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 12px;
+    margin-top: 12px;
   }
-  .metric-card {
-    border: 1px solid var(--line);
+  .chart-title, .pie-title {
+    margin: 0 0 8px;
+    font-size: 0.95rem;
+  }
+  .chart-svg {
+    width: 100%;
+    height: 240px;
+    display: block;
+    background: linear-gradient(180deg, #f8fafc, #eef2ff);
     border-radius: 10px;
-    background: var(--surface-alt);
-    padding: 8px;
   }
-  .metric-k { font-size: 0.76rem; text-transform: uppercase; color: var(--muted); }
-  .metric-v { font-size: 1.06rem; font-weight: 700; margin: 2px 0; }
-  .metric-x { font-size: 0.78rem; color: var(--muted); line-height: 1.3; }
-  @media (max-width: 980px) {
-    .panel-grid { grid-template-columns: 1fr; }
-    .field-grid { grid-template-columns: 1fr; }
-    .metrics-grid { grid-template-columns: 1fr; }
+  .chart-legend, .pie-legend {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    display: inline-block;
+  }
+  .pie-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .pie-visual {
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;
+    margin: 10px auto 0;
+    border: 1px solid var(--line);
+    background: conic-gradient(#cbd5e1 0deg, #cbd5e1 360deg);
+  }
+  .muted-box {
+    margin-top: 10px;
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+    padding: 12px;
+    color: var(--muted);
+    background: var(--surface-alt);
+  }
+  .hidden { display: none; }
+  @media (max-width: 1100px) {
+    .section-grid, .chart-grid, .results-toolbar, .pie-grid, .metrics-grid, .field-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
 
 <div class="page-grid">
-  <div class="card">
-    <h2 style="margin:0;">AI Now -> +1h Prediction Control</h2>
-    <p class="hint" style="margin:6px 0 0;">
-      Build/split data, run federated training, and test saved weights for Now -> +1h predictions.
+  <section class="card">
+    <h2 style="margin:0;">AI Forecast Dashboard</h2>
+    <p class="hint" style="margin:8px 0 0;">
+      Run the k-hours based build, split, and federated training pipeline from the dashboard, then inspect error analysis globally or per room.
     </p>
-  </div>
+  </section>
 
-  <div class="panel-grid">
+  <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">1) Split Runner</h3>
+      <h3 style="margin-top:0;">1) Build Next-Hour Rows</h3>
       <div class="field-grid">
         <div class="field">
-          <label for="splitMethod">Split method</label>
-          <select id="splitMethod">
-            <option value="split_by_room">split_by_room (legacy A/B)</option>
-            <option value="split_by_y">split_by_y (legacy A/B, event-focused)</option>
-            <option value="split_next_hour_by_room">split_now_to_plus1h_by_room (recommended)</option>
-          </select>
+          <label for="buildStepMinutes">Step minutes</label>
+          <input id="buildStepMinutes" type="number" min="1" step="1" value="30" />
         </div>
+        <div class="field">
+          <label for="buildHorizonMinutes">Horizon minutes</label>
+          <input id="buildHorizonMinutes" type="number" min="1" step="1" value="60" />
+        </div>
+        <div class="field">
+          <label for="buildWorkers">Number of workers</label>
+          <input id="buildWorkers" type="number" min="1" step="1" value="4" />
+        </div>
+        <div class="field">
+          <label for="buildChunkSize">Chunk size</label>
+          <input id="buildChunkSize" type="number" min="1" step="1" value="250" />
+        </div>
+      </div>
+      <div class="config-list">
+        <div class="config-item"><strong>Step minutes</strong>How often a new training row is created in time, for example every 30 minutes.</div>
+        <div class="config-item"><strong>Horizon minutes</strong>How far ahead the target should be predicted, for example 60 minutes into the future.</div>
+        <div class="config-item"><strong>Number of workers</strong>How many parallel worker processes are used to build rows.</div>
+      </div>
+      <div class="btn-row">
+        <button id="runBuildBtn" class="btn primary" type="button">Run Build</button>
+        <button id="stopBuildBtn" class="btn" type="button">Stop Build</button>
+      </div>
+      <div class="progress"><div id="buildBar" class="bar"></div></div>
+      <div id="buildState" class="state">Idle</div>
+      <div id="buildMetrics" class="metrics-grid"></div>
+      <div id="buildLog" class="log">[dashboard] waiting...</div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">2) Split By Room</h3>
+      <div class="field-grid">
         <div class="field">
           <label for="splitTrainRatio">Train ratio</label>
           <input id="splitTrainRatio" type="number" min="0.1" max="0.95" step="0.05" value="0.80" />
         </div>
         <div class="field">
-          <label for="splitMinTrainRows">Min train rows</label>
-          <input id="splitMinTrainRows" type="number" min="1" step="1" value="20" />
+          <label for="splitWorkers">Number of workers</label>
+          <input id="splitWorkers" type="number" min="1" step="1" value="4" />
         </div>
         <div class="field">
-          <label for="splitBuildVariant">Build variant (Now -> +1h only)</label>
-          <select id="splitBuildVariant">
-            <option value="v1">v1: regular timeline sampling</option>
-            <option value="v2">v2: around symptom/medication events</option>
-            <option value="v3">v3: around comfort-change events</option>
-          </select>
+          <label for="splitChunkSize">Chunk size for CSV loading</label>
+          <input id="splitChunkSize" type="number" min="1000" step="1000" value="200000" />
         </div>
-        <div class="field">
-          <label for="splitBuildFirst">Build rows first</label>
-          <select id="splitBuildFirst">
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="splitInputDir">Input dir</label>
-          <input id="splitInputDir" type="text" value="ai/outputs" />
-        </div>
-        <div class="field">
-          <label for="splitDataDir">Data dir</label>
-          <input id="splitDataDir" type="text" value="filestorage" />
-        </div>
-        <div class="field">
-          <label for="splitStepMinutes">Step minutes</label>
-          <input id="splitStepMinutes" type="number" min="1" step="1" value="30" />
-        </div>
-        <div class="field">
-          <label for="splitHorizonMinutes">Prediction horizon minutes (+)</label>
-          <input id="splitHorizonMinutes" type="number" min="1" step="1" value="30" />
-        </div>
-        <div class="field">
-          <label for="splitBeforeMinutes">Before minutes (v2/v3)</label>
-          <input id="splitBeforeMinutes" type="number" min="1" step="1" value="60" />
-        </div>
-        <div class="field">
-          <label for="splitAfterMinutes">After minutes (v2/v3)</label>
-          <input id="splitAfterMinutes" type="number" min="1" step="1" value="60" />
-        </div>
-        <div class="field" style="grid-column: span 2;">
-          <label for="splitOutputDir">Output dir</label>
-          <input id="splitOutputDir" type="text" value="ai/splits" />
-        </div>
+      </div>
+      <div class="config-list">
+        <div class="config-item"><strong>Train ratio</strong>The percentage of each room's time-ordered rows that go into the training set.</div>
+        <div class="config-item"><strong>Number of workers</strong>How many parallel worker processes split room timelines at the same time.</div>
+        <div class="config-item"><strong>Chunk size for CSV loading</strong>How many rows are read at a time during the split, instead of loading the whole file at once.</div>
       </div>
       <div class="btn-row">
         <button id="runSplitBtn" class="btn primary" type="button">Run Split</button>
         <button id="stopSplitBtn" class="btn" type="button">Stop Split</button>
       </div>
-      <div style="margin-top:10px;" class="progress"><div id="splitProgressBar" class="bar"></div></div>
+      <div class="progress"><div id="splitBar" class="bar"></div></div>
       <div id="splitState" class="state">Idle</div>
       <div id="splitMetrics" class="metrics-grid"></div>
       <div id="splitLog" class="log">[dashboard] waiting...</div>
     </section>
-
-    <section class="card">
-      <h3 style="margin-top:0;">2) Federated Runner</h3>
-      <div class="field-grid">
-        <div class="field">
-          <label for="modelType">Model type</label>
-          <select id="modelType">
-            <option value="mlp">Pure MLP</option>
-            <option value="lstm">Pure LSTM</option>
-            <option value="mlp_lstm">MLP + LSTM</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="flRounds">Rounds</label>
-          <input id="flRounds" type="number" min="1" step="1" value="3" />
-        </div>
-        <div class="field">
-          <label for="flLocalEpochs">Local epochs</label>
-          <input id="flLocalEpochs" type="number" min="1" step="1" value="1" />
-        </div>
-        <div class="field">
-          <label for="flBatchSize">LSTM batch size</label>
-          <input id="flBatchSize" type="number" min="1" step="1" value="32" />
-        </div>
-        <div class="field">
-          <label for="flSeqLen">LSTM sequence length</label>
-          <input id="flSeqLen" type="number" min="1" step="1" value="4" />
-        </div>
-        <div class="field">
-          <label for="flSplitDir">Split dir (Now -> +1h)</label>
-          <input id="flSplitDir" type="text" value="ai/splits_next_hour" />
-        </div>
-        <div class="field">
-          <label for="flMaxRooms">Max rooms (client cap)</label>
-          <input id="flMaxRooms" type="number" min="1" step="1" value="20" />
-        </div>
-        <div class="field">
-          <label for="flFractionFit">Fraction fit</label>
-          <input id="flFractionFit" type="number" min="0.01" max="1" step="0.01" value="0.20" />
-        </div>
-        <div class="field">
-          <label for="flFractionEval">Fraction evaluate</label>
-          <input id="flFractionEval" type="number" min="0.01" max="1" step="0.01" value="0.20" />
-        </div>
-        <div class="field">
-          <label for="flMinFitClients">Min fit clients</label>
-          <input id="flMinFitClients" type="number" min="1" step="1" value="2" />
-        </div>
-        <div class="field">
-          <label for="flMinEvalClients">Min eval clients</label>
-          <input id="flMinEvalClients" type="number" min="1" step="1" value="2" />
-        </div>
-        <div class="field">
-          <label for="flMinAvailableClients">Min available clients</label>
-          <input id="flMinAvailableClients" type="number" min="1" step="1" value="2" />
-        </div>
-        <div class="field">
-          <label for="flClientCpu">Client CPU</label>
-          <input id="flClientCpu" type="number" min="0.1" max="4" step="0.1" value="0.5" />
-        </div>
-        <div class="field">
-          <label for="flChunkSize">Chunk size</label>
-          <input id="flChunkSize" type="number" min="1000" step="1000" value="50000" />
-        </div>
-      </div>
-      <div class="btn-row">
-        <button id="runFederatedBtn" class="btn primary" type="button">Run Federated</button>
-        <button id="stopFederatedBtn" class="btn" type="button">Stop Federated</button>
-      </div>
-      <div style="margin-top:10px;" class="progress"><div id="fedProgressBar" class="bar"></div></div>
-      <div id="fedState" class="state">Idle</div>
-      <div id="fedMetrics" class="metrics-grid"></div>
-      <div id="fedLog" class="log">[dashboard] waiting...</div>
-    </section>
   </div>
 
   <section class="card">
-    <h3 style="margin-top:0;">3) Test Saved Weights (Now -> +1h MLP Prediction)</h3>
-    {% if predict_import_error %}
-    <p class="hint">Prediction modules failed to load: {{ predict_import_error }}</p>
-    {% endif %}
+    <h3 style="margin-top:0;">3) Federated Training</h3>
     <div class="field-grid">
       <div class="field">
-        <label for="predWeightsPath">Weights path</label>
-        <input id="predWeightsPath" type="text" value="ai/fl_weights_sim/latest_global_weights.npz" />
-      </div>
-      <div class="field">
-        <label for="predGender">Gender</label>
-        <select id="predGender">
-          <option value="male">Male</option>
-          <option value="female">Female</option>
+        <label for="modelType">Model type</label>
+        <select id="modelType">
+          <option value="mlp">MLP</option>
+          <option value="lstm">LSTM</option>
+          <option value="mlp_lstm">MLP + LSTM</option>
         </select>
       </div>
       <div class="field">
-        <label for="predAge">Age</label>
-        <input id="predAge" type="number" min="0" step="1" value="72" />
+        <label for="flRounds">Federated rounds</label>
+        <input id="flRounds" type="number" min="1" step="1" value="5" />
       </div>
       <div class="field">
-        <label for="predHeight">Height</label>
-        <input id="predHeight" type="number" min="0" step="1" value="168" />
+        <label for="flLocalEpochs">Epochs</label>
+        <input id="flLocalEpochs" type="number" min="1" step="1" value="1" />
       </div>
       <div class="field">
-        <label for="predWeight">Weight</label>
-        <input id="predWeight" type="number" min="0" step="1" value="74" />
+        <label for="flBatchSize">Batch size</label>
+        <input id="flBatchSize" type="number" min="1" step="1" value="32" />
       </div>
       <div class="field">
-        <label for="predHour">Hour</label>
-        <input id="predHour" type="number" min="0" max="23" step="1" value="12" />
+        <label for="flSeqLen">Sequence length</label>
+        <input id="flSeqLen" type="number" min="1" step="1" value="4" />
       </div>
       <div class="field">
-        <label for="predMinute">Minute</label>
-        <input id="predMinute" type="number" min="0" max="59" step="1" value="0" />
+        <label for="flMaxRooms">Maximum number of rooms</label>
+        <input id="flMaxRooms" type="number" min="1" step="1" value="20" />
       </div>
       <div class="field">
-        <label for="predDiagnosis">Diagnosis</label>
-        <select id="predDiagnosis">
-          <option value="">(none)</option>
-          {% for x in diagnosis_names %}
-          <option value="{{ x }}">{{ x }}</option>
-          {% endfor %}
-        </select>
+        <label for="flMinFitClients">Minimum fit clients</label>
+        <input id="flMinFitClients" type="number" min="1" step="1" value="2" />
       </div>
       <div class="field">
-        <label for="predSymptom">Symptom</label>
-        <select id="predSymptom">
-          {% for x in symptom_names %}
-          <option value="{{ x }}">{{ x if x else "(none)" }}</option>
-          {% endfor %}
-        </select>
+        <label for="flMinEvalClients">Minimum evaluation clients</label>
+        <input id="flMinEvalClients" type="number" min="1" step="1" value="2" />
       </div>
       <div class="field">
-        <label for="predMedication">Medication (optional)</label>
-        <select id="predMedication">
-          <option value="">(none)</option>
-          {% for x in medication_names %}
-          <option value="{{ x }}">{{ x }}</option>
-          {% endfor %}
-        </select>
+        <label for="flMinAvailableClients">Minimum available clients</label>
+        <input id="flMinAvailableClients" type="number" min="1" step="1" value="2" />
       </div>
       <div class="field">
-        <label for="predCurrTempMain">Current temp main</label>
-        <input id="predCurrTempMain" type="number" step="0.1" value="22.0" />
+        <label for="flClientCpu">CPU resources per client</label>
+        <input id="flClientCpu" type="number" min="0.1" step="0.1" value="1.0" />
       </div>
       <div class="field">
-        <label for="predCurrTempToilet">Current temp toilet</label>
-        <input id="predCurrTempToilet" type="number" step="0.1" value="23.0" />
+        <label for="flChunkSize">Chunk size for CSV loading</label>
+        <input id="flChunkSize" type="number" min="1000" step="1000" value="200000" />
       </div>
       <div class="field">
-        <label for="predCurrLight">Current light</label>
-        <input id="predCurrLight" type="number" step="1" value="58" />
+        <label for="flFractionFit">Fraction of clients used for training</label>
+        <input id="flFractionFit" type="number" min="0.1" max="1" step="0.1" value="1.0" />
       </div>
       <div class="field">
-        <label for="predCurrSound">Current sound</label>
-        <input id="predCurrSound" type="number" step="1" value="34" />
-      </div>
-      <div class="field">
-        <label for="predCurrAirflow">Current airflow</label>
-        <select id="predCurrAirflow">
-          <option value="false">false</option>
-          <option value="true">true</option>
-        </select>
+        <label for="flFractionEval">Fraction of clients used for evaluation</label>
+        <input id="flFractionEval" type="number" min="0.1" max="1" step="0.1" value="1.0" />
       </div>
     </div>
+
+    <div class="config-list">
+      <div class="config-item"><strong>Epochs</strong>How many times the local model trains on its data before sending updates back in a federated round.</div>
+      <div class="config-item"><strong>Batch size</strong>How many training samples are processed together in one update step.</div>
+      <div class="config-item"><strong>Activation functions</strong>The mathematical functions used inside the neural network to help it learn complex patterns, for example ReLU.</div>
+      <div class="config-item"><strong>Optimization method</strong>The algorithm used to update model weights during training, for example Adam.</div>
+      <div class="config-item"><strong>Learning rate</strong>How large each weight update is during training. A high value learns faster but can become unstable; a low value learns more slowly.</div>
+      <div class="config-item"><strong>Hidden layers and model structure</strong><span id="modelStructureText">MLP uses hidden layers 128 -> 64 -> 32. LSTM models use hidden size 64 with a dense 64-unit head.</span></div>
+      <div class="config-item"><strong>Federated rounds</strong>How many times the server collects updates from clients, aggregates them, and sends back a new global model.</div>
+      <div class="config-item"><strong>Sequence length</strong>For sequence models like LSTM, this is how many past time steps are used to predict the next value.</div>
+      <div class="config-item"><strong>Number of LSTM layers</strong>Current code default is 1 stacked LSTM layer.</div>
+      <div class="config-item"><strong>Hidden dimension size</strong>Current code default is hidden size 64.</div>
+    </div>
+
     <div class="btn-row">
-      <button id="runPredictBtn" class="btn primary" type="button">Predict From Saved Weights</button>
+      <button id="runTrainBtn" class="btn primary" type="button">Run Training</button>
+      <button id="stopTrainBtn" class="btn" type="button">Stop Training</button>
     </div>
-    <div id="predState" class="state">Idle</div>
-    <div id="predMetrics" class="metrics-grid"></div>
+    <div class="progress"><div id="trainBar" class="bar"></div></div>
+    <div id="trainState" class="state">Idle</div>
+    <div id="trainMetrics" class="metrics-grid"></div>
+    <div id="trainLog" class="log">[dashboard] waiting...</div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">4) AI Results And Error Analysis</h3>
+    <div class="results-toolbar">
+      <div class="field">
+        <label for="resultsModelType">Model type</label>
+        <select id="resultsModelType">
+          <option value="mlp">MLP</option>
+          <option value="lstm">LSTM</option>
+          <option value="mlp_lstm">MLP + LSTM</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="resultsScope">Analysis scope</label>
+        <select id="resultsScope">
+          <option value="global">Global</option>
+          <option value="local">Room</option>
+        </select>
+      </div>
+      <div class="field" id="roomField">
+        <label for="resultsRoomId">Room</label>
+        <select id="resultsRoomId"></select>
+      </div>
+      <button id="refreshResultsBtn" class="btn primary" type="button">Refresh Results</button>
+    </div>
+
+    <div class="muted-box">
+      Global analysis shows round-by-round metrics for the full federated model. Room analysis shows the same figure structure, but filtered to one selected room.
+    </div>
+
+    <div id="resultsState" class="state">No results loaded yet.</div>
+    <div id="resultsCards" class="metrics-grid"></div>
+    <div id="resultsCharts" class="chart-grid"></div>
+    <div id="resultsPies" class="pie-grid"></div>
   </section>
 </div>
 
 <script>
   (() => {
-    const splitMethod = document.getElementById("splitMethod");
+    const buildStepMinutes = document.getElementById("buildStepMinutes");
+    const buildHorizonMinutes = document.getElementById("buildHorizonMinutes");
+    const buildWorkers = document.getElementById("buildWorkers");
+    const buildChunkSize = document.getElementById("buildChunkSize");
+    const runBuildBtn = document.getElementById("runBuildBtn");
+    const stopBuildBtn = document.getElementById("stopBuildBtn");
+    const buildBar = document.getElementById("buildBar");
+    const buildState = document.getElementById("buildState");
+    const buildMetrics = document.getElementById("buildMetrics");
+    const buildLog = document.getElementById("buildLog");
+
     const splitTrainRatio = document.getElementById("splitTrainRatio");
-    const splitMinTrainRows = document.getElementById("splitMinTrainRows");
-    const splitBuildVariant = document.getElementById("splitBuildVariant");
-    const splitBuildFirst = document.getElementById("splitBuildFirst");
-    const splitInputDir = document.getElementById("splitInputDir");
-    const splitDataDir = document.getElementById("splitDataDir");
-    const splitStepMinutes = document.getElementById("splitStepMinutes");
-    const splitHorizonMinutes = document.getElementById("splitHorizonMinutes");
-    const splitBeforeMinutes = document.getElementById("splitBeforeMinutes");
-    const splitAfterMinutes = document.getElementById("splitAfterMinutes");
-    const splitOutputDir = document.getElementById("splitOutputDir");
+    const splitChunkSize = document.getElementById("splitChunkSize");
     const runSplitBtn = document.getElementById("runSplitBtn");
     const stopSplitBtn = document.getElementById("stopSplitBtn");
-    const splitProgressBar = document.getElementById("splitProgressBar");
+    const splitBar = document.getElementById("splitBar");
     const splitState = document.getElementById("splitState");
     const splitMetrics = document.getElementById("splitMetrics");
     const splitLog = document.getElementById("splitLog");
@@ -376,49 +376,39 @@
     const flLocalEpochs = document.getElementById("flLocalEpochs");
     const flBatchSize = document.getElementById("flBatchSize");
     const flSeqLen = document.getElementById("flSeqLen");
-    const flSplitDir = document.getElementById("flSplitDir");
     const flMaxRooms = document.getElementById("flMaxRooms");
-    const flFractionFit = document.getElementById("flFractionFit");
-    const flFractionEval = document.getElementById("flFractionEval");
     const flMinFitClients = document.getElementById("flMinFitClients");
     const flMinEvalClients = document.getElementById("flMinEvalClients");
     const flMinAvailableClients = document.getElementById("flMinAvailableClients");
     const flClientCpu = document.getElementById("flClientCpu");
     const flChunkSize = document.getElementById("flChunkSize");
-    const runFederatedBtn = document.getElementById("runFederatedBtn");
-    const stopFederatedBtn = document.getElementById("stopFederatedBtn");
-    const fedProgressBar = document.getElementById("fedProgressBar");
-    const fedState = document.getElementById("fedState");
-    const fedMetrics = document.getElementById("fedMetrics");
-    const fedLog = document.getElementById("fedLog");
-    const predWeightsPath = document.getElementById("predWeightsPath");
-    const predGender = document.getElementById("predGender");
-    const predAge = document.getElementById("predAge");
-    const predHeight = document.getElementById("predHeight");
-    const predWeight = document.getElementById("predWeight");
-    const predHour = document.getElementById("predHour");
-    const predMinute = document.getElementById("predMinute");
-    const predDiagnosis = document.getElementById("predDiagnosis");
-    const predSymptom = document.getElementById("predSymptom");
-    const predMedication = document.getElementById("predMedication");
-    const predCurrTempMain = document.getElementById("predCurrTempMain");
-    const predCurrTempToilet = document.getElementById("predCurrTempToilet");
-    const predCurrLight = document.getElementById("predCurrLight");
-    const predCurrSound = document.getElementById("predCurrSound");
-    const predCurrAirflow = document.getElementById("predCurrAirflow");
-    const runPredictBtn = document.getElementById("runPredictBtn");
-    const predState = document.getElementById("predState");
-    const predMetrics = document.getElementById("predMetrics");
+    const flFractionFit = document.getElementById("flFractionFit");
+    const flFractionEval = document.getElementById("flFractionEval");
+    const modelStructureText = document.getElementById("modelStructureText");
+    const runTrainBtn = document.getElementById("runTrainBtn");
+    const stopTrainBtn = document.getElementById("stopTrainBtn");
+    const trainBar = document.getElementById("trainBar");
+    const trainState = document.getElementById("trainState");
+    const trainMetrics = document.getElementById("trainMetrics");
+    const trainLog = document.getElementById("trainLog");
+
+    const resultsModelType = document.getElementById("resultsModelType");
+    const resultsScope = document.getElementById("resultsScope");
+    const resultsRoomId = document.getElementById("resultsRoomId");
+    const roomField = document.getElementById("roomField");
+    const refreshResultsBtn = document.getElementById("refreshResultsBtn");
+    const resultsState = document.getElementById("resultsState");
+    const resultsCards = document.getElementById("resultsCards");
+    const resultsCharts = document.getElementById("resultsCharts");
+    const resultsPies = document.getElementById("resultsPies");
+
+    let buildJobId = null;
     let splitJobId = null;
-    let fedJobId = null;
+    let trainJobId = null;
 
     function appendLog(el, lines) {
-      if (!lines || lines.length === 0) {
-        return;
-      }
-      if (el.textContent === "[dashboard] waiting...") {
-        el.textContent = "";
-      }
+      if (!lines || !lines.length) return;
+      if (el.textContent === "[dashboard] waiting...") el.textContent = "";
       el.textContent += (el.textContent ? "\n" : "") + lines.join("\n");
       el.scrollTop = el.scrollHeight;
     }
@@ -429,26 +419,15 @@
     }
 
     function formatMetric(value) {
-      if (value === null || value === undefined || value === "") {
-        return "-";
-      }
-      if (typeof value === "number") {
-        if (Number.isInteger(value)) {
-          return String(value);
-        }
-        return value.toFixed(4);
-      }
+      if (value === null || value === undefined || value === "") return "-";
+      if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4);
       return String(value);
     }
 
-    function renderMetrics(container, metricsPayload) {
+    function renderMetricCards(container, items) {
       container.innerHTML = "";
-      const items = (metricsPayload && metricsPayload.items) || [];
-      const visible = items.filter((item) => item && item.value !== null && item.value !== undefined);
-      if (visible.length === 0) {
-        return;
-      }
-      visible.forEach((item) => {
+      (items || []).forEach((item) => {
+        if (item.value === null || item.value === undefined) return;
         const card = document.createElement("div");
         card.className = "metric-card";
         card.innerHTML = `
@@ -460,52 +439,19 @@
       });
     }
 
-    function applySplitDefaults() {
-      if (splitMethod.value === "split_next_hour_by_room") {
-        if (splitBuildVariant.value === "v2") {
-          splitInputDir.value = "ai/outputs_next_hour_2";
-          splitOutputDir.value = "ai/splits_next_hour_2";
-          flSplitDir.value = "ai/splits_next_hour_2";
-        } else if (splitBuildVariant.value === "v3") {
-          splitInputDir.value = "ai/outputs_next_hour_3";
-          splitOutputDir.value = "ai/splits_next_hour_3";
-          flSplitDir.value = "ai/splits_next_hour_3";
-        } else {
-          splitInputDir.value = "ai/outputs_next_hour";
-          splitOutputDir.value = "ai/splits_next_hour";
-          flSplitDir.value = "ai/splits_next_hour";
-        }
-        splitHorizonMinutes.value = "60";
-      } else if (splitMethod.value === "split_by_y") {
-        splitInputDir.value = "ai/outputs";
-        splitOutputDir.value = "ai/splits_by_y";
-        splitHorizonMinutes.value = "30";
-      } else {
-        splitInputDir.value = "ai/outputs";
-        splitOutputDir.value = "ai/splits";
-        splitHorizonMinutes.value = "30";
-      }
-    }
-
-    async function stopJob(jobId) {
-      const response = await fetch(`/api/ai/jobs/${jobId}/stop`, { method: "POST" });
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(err || `HTTP ${response.status}`);
-      }
-      return response.json();
-    }
-
     async function startJob(url, payload) {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload || {})
       });
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(err || `HTTP ${response.status}`);
-      }
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return response.json();
+    }
+
+    async function stopJob(jobId) {
+      const response = await fetch(`/api/ai/jobs/${jobId}/stop`, { method: "POST" });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       return response.json();
     }
 
@@ -514,189 +460,293 @@
       const timer = setInterval(async () => {
         try {
           const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
-          if (!response.ok) {
-            throw new Error(`status ${response.status}`);
-          }
+          if (!response.ok) throw new Error(`status ${response.status}`);
           const data = await response.json();
           appendLog(logEl, data.logs || []);
           cursor = data.next_cursor || cursor;
           setProgress(barEl, data.progress);
           stateEl.textContent = `${data.status} (${data.progress}%)`;
-          renderMetrics(metricsEl, data.metrics);
-
-          if (data.status === "completed" || data.status === "failed" || data.status === "stopped") {
+          renderMetricCards(metricsEl, data.metrics ? data.metrics.items : []);
+          if (["completed", "failed", "stopped"].includes(data.status)) {
             clearInterval(timer);
-            if (typeof onDone === "function") {
-              onDone(data);
-            }
+            if (typeof onDone === "function") onDone(data);
           }
         } catch (error) {
           clearInterval(timer);
           stateEl.textContent = `poll failed: ${error.message}`;
           appendLog(logEl, [`[dashboard] polling error: ${error.message}`]);
-          if (typeof onDone === "function") {
-            onDone(null);
-          }
+          if (typeof onDone === "function") onDone(null);
         }
       }, 1000);
     }
+
+    function lineChartSvg(chart) {
+      const rounds = chart.rounds || [];
+      const series = (chart.series || []).filter((item) => Array.isArray(item.values));
+      if (!rounds.length || !series.length) {
+        return `<div class="muted-box">No round-based data available.</div>`;
+      }
+      const values = series.flatMap((item) => item.values).filter((value) => typeof value === "number");
+      const minY = Math.min(...values);
+      const maxY = Math.max(...values);
+      const width = 640;
+      const height = 240;
+      const left = 44;
+      const right = 20;
+      const top = 16;
+      const bottom = 28;
+      const innerW = width - left - right;
+      const innerH = height - top - bottom;
+      const spanX = Math.max(1, rounds.length - 1);
+      const spanY = Math.max(1e-9, maxY - minY);
+
+      const grid = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
+        const y = top + innerH - (pct * innerH);
+        const value = minY + (pct * spanY);
+        return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#cbd5e1" stroke-dasharray="4 4" />
+          <text x="8" y="${y + 4}" font-size="11" fill="#64748b">${value.toFixed(2)}</text>`;
+      }).join("");
+
+      const labels = rounds.map((round, idx) => {
+        const x = left + (idx / spanX) * innerW;
+        return `<text x="${x}" y="${height - 6}" text-anchor="middle" font-size="11" fill="#64748b">R${round}</text>`;
+      }).join("");
+
+      const lines = series.map((item) => {
+        const points = item.values.map((value, idx) => {
+          const x = left + (idx / spanX) * innerW;
+          const safeValue = typeof value === "number" ? value : minY;
+          const y = top + innerH - ((safeValue - minY) / spanY) * innerH;
+          return `${x},${y}`;
+        }).join(" ");
+        return `<polyline fill="none" stroke="${item.color}" stroke-width="3" points="${points}" />`;
+      }).join("");
+
+      return `
+        <svg class="chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+          ${grid}
+          <line x1="${left}" y1="${top}" x2="${left}" y2="${height - bottom}" stroke="#94a3b8" />
+          <line x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" stroke="#94a3b8" />
+          ${lines}
+          ${labels}
+        </svg>
+      `;
+    }
+
+    function renderLineCharts(charts) {
+      resultsCharts.innerHTML = "";
+      (charts || []).forEach((chart) => {
+        const card = document.createElement("div");
+        card.className = "chart-card";
+        const legend = (chart.series || []).map((item) => `
+          <span class="legend-item"><span class="legend-swatch" style="background:${item.color};"></span>${item.name}</span>
+        `).join("");
+        card.innerHTML = `
+          <h4 class="chart-title">${chart.label} by round</h4>
+          ${lineChartSvg(chart)}
+          <div class="chart-legend">${legend}</div>
+        `;
+        resultsCharts.appendChild(card);
+      });
+    }
+
+    function pieBackground(slices) {
+      const total = slices.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      if (!total) return "conic-gradient(#cbd5e1 0deg, #cbd5e1 360deg)";
+      let angle = 0;
+      const parts = slices.map((item) => {
+        const value = Number(item.value || 0);
+        const start = angle;
+        angle += (value / total) * 360;
+        return `${item.color} ${start}deg ${angle}deg`;
+      });
+      return `conic-gradient(${parts.join(", ")})`;
+    }
+
+    function renderPieCharts(charts) {
+      resultsPies.innerHTML = "";
+      (charts || []).forEach((chart) => {
+        const card = document.createElement("div");
+        card.className = "pie-card";
+        const legend = (chart.slices || []).map((item) => `
+          <span class="legend-item"><span class="legend-swatch" style="background:${item.color};"></span>${item.label}: ${formatMetric(item.value)}</span>
+        `).join("");
+        card.innerHTML = `
+          <h4 class="pie-title">${chart.title}</h4>
+          <div class="pie-visual" style="background:${pieBackground(chart.slices || [])};"></div>
+          <div class="pie-legend">${legend}</div>
+        `;
+        resultsPies.appendChild(card);
+      });
+    }
+
+    function updateModelText() {
+      const type = modelType.value;
+      if (type === "mlp") {
+        modelStructureText.textContent = "MLP uses hidden layers 128 -> 64 -> 32, ReLU activation, Adam optimizer, and learning rate 0.001.";
+      } else if (type === "lstm") {
+        modelStructureText.textContent = "LSTM uses 1 LSTM layer with hidden size 64 and a dense head 64 -> output, ReLU activation, Adam optimizer, and learning rate 0.001.";
+      } else {
+        modelStructureText.textContent = "Hybrid uses a change MLP branch 128 -> 64 -> 1 and a target LSTM branch with 1 LSTM layer, hidden size 64, and a dense head 64 -> output.";
+      }
+    }
+
+    async function loadResults() {
+      resultsState.textContent = "loading results...";
+      resultsCards.innerHTML = "";
+      resultsCharts.innerHTML = "";
+      resultsPies.innerHTML = "";
+      try {
+        const params = new URLSearchParams({
+          model_type: resultsModelType.value,
+          scope: resultsScope.value
+        });
+        if (resultsScope.value === "local" && resultsRoomId.value) {
+          params.set("room_id", resultsRoomId.value);
+        }
+        const response = await fetch(`/api/ai/results?${params.toString()}`);
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        const data = await response.json();
+
+        const roomIds = data.room_ids || [];
+        resultsRoomId.innerHTML = roomIds.map((roomId) => `<option value="${roomId}">${roomId}</option>`).join("");
+        if (data.room_id) resultsRoomId.value = data.room_id;
+        roomField.classList.toggle("hidden", resultsScope.value !== "local");
+
+        renderMetricCards(resultsCards, data.latest_cards || []);
+        renderLineCharts(data.line_charts || []);
+        renderPieCharts(data.pie_charts || []);
+        resultsState.textContent = `${data.scope} analysis loaded from ${data.weights_dir}`;
+      } catch (error) {
+        resultsState.textContent = `results unavailable: ${error.message}`;
+      }
+    }
+
+    runBuildBtn.addEventListener("click", async () => {
+      runBuildBtn.disabled = true;
+      buildState.textContent = "starting...";
+      buildLog.textContent = "[dashboard] starting build job...";
+      buildMetrics.innerHTML = "";
+      setProgress(buildBar, 0);
+      try {
+        const data = await startJob("/api/ai/build/start", {
+          step_minutes: Number(buildStepMinutes.value || 30),
+          horizon_minutes: Number(buildHorizonMinutes.value || 60),
+          workers: Number(buildWorkers.value || 1),
+          chunk_size: Number(buildChunkSize.value || 250)
+        });
+        buildJobId = data.job_id;
+        pollJob(data.job_id, buildState, buildLog, buildBar, buildMetrics, () => {
+          buildJobId = null;
+          runBuildBtn.disabled = false;
+        });
+      } catch (error) {
+        runBuildBtn.disabled = false;
+        buildState.textContent = `start failed: ${error.message}`;
+      }
+    });
+
+    stopBuildBtn.addEventListener("click", async () => {
+      if (!buildJobId) return;
+      try {
+        await stopJob(buildJobId);
+        buildState.textContent = `stopping (job: ${buildJobId})`;
+      } catch (error) {
+        buildState.textContent = `stop failed: ${error.message}`;
+      }
+    });
 
     runSplitBtn.addEventListener("click", async () => {
       runSplitBtn.disabled = true;
       splitState.textContent = "starting...";
       splitLog.textContent = "[dashboard] starting split job...";
       splitMetrics.innerHTML = "";
-      setProgress(splitProgressBar, 0);
-
+      setProgress(splitBar, 0);
       try {
         const data = await startJob("/api/ai/split/start", {
-          split_method: splitMethod.value,
           train_ratio: Number(splitTrainRatio.value || 0.8),
-          min_train_rows: Number(splitMinTrainRows.value || 1),
-          build_variant: splitBuildVariant.value,
-          build_rows_first: splitBuildFirst.value === "true",
-          input_dir: splitInputDir.value.trim(),
-          output_dir: splitOutputDir.value.trim(),
-          data_dir: splitDataDir.value.trim(),
-          step_minutes: Number(splitStepMinutes.value || 30),
-          horizon_minutes: Number(splitHorizonMinutes.value || 30),
-          before_minutes: Number(splitBeforeMinutes.value || 60),
-          after_minutes: Number(splitAfterMinutes.value || 60),
-          sample_minutes: 30
+          min_train_rows: 1,
+          chunk_size: Number(splitChunkSize.value || 200000),
+          workers: Number(splitWorkers.value || 1)
         });
         splitJobId = data.job_id;
-        splitState.textContent = `running (job: ${data.job_id})`;
-        pollJob(data.job_id, splitState, splitLog, splitProgressBar, splitMetrics, () => {
+        pollJob(data.job_id, splitState, splitLog, splitBar, splitMetrics, () => {
           splitJobId = null;
           runSplitBtn.disabled = false;
         });
       } catch (error) {
         runSplitBtn.disabled = false;
         splitState.textContent = `start failed: ${error.message}`;
-        appendLog(splitLog, [`[dashboard] start error: ${error.message}`]);
       }
     });
 
     stopSplitBtn.addEventListener("click", async () => {
-      if (!splitJobId) {
-        splitState.textContent = "no running split job";
-        return;
-      }
+      if (!splitJobId) return;
       try {
         await stopJob(splitJobId);
         splitState.textContent = `stopping (job: ${splitJobId})`;
       } catch (error) {
         splitState.textContent = `stop failed: ${error.message}`;
-        appendLog(splitLog, [`[dashboard] stop error: ${error.message}`]);
       }
     });
 
-    runFederatedBtn.addEventListener("click", async () => {
-      runFederatedBtn.disabled = true;
-      fedState.textContent = "starting...";
-      fedLog.textContent = "[dashboard] starting federated job...";
-      fedMetrics.innerHTML = "";
-      setProgress(fedProgressBar, 0);
-
+    runTrainBtn.addEventListener("click", async () => {
+      runTrainBtn.disabled = true;
+      trainState.textContent = "starting...";
+      trainLog.textContent = "[dashboard] starting training job...";
+      trainMetrics.innerHTML = "";
+      setProgress(trainBar, 0);
       try {
         const data = await startJob("/api/ai/federated/start", {
           model_type: modelType.value,
-          split_dir: flSplitDir.value.trim(),
-          rounds: Number(flRounds.value || 3),
+          rounds: Number(flRounds.value || 5),
           local_epochs: Number(flLocalEpochs.value || 1),
-          lstm_sequence_length: Number(flSeqLen.value || 4),
           lstm_batch_size: Number(flBatchSize.value || 32),
+          lstm_sequence_length: Number(flSeqLen.value || 4),
           max_rooms: Number(flMaxRooms.value || 20),
-          fraction_fit: Number(flFractionFit.value || 0.2),
-          fraction_evaluate: Number(flFractionEval.value || 0.2),
           min_fit_clients: Number(flMinFitClients.value || 2),
           min_evaluate_clients: Number(flMinEvalClients.value || 2),
           min_available_clients: Number(flMinAvailableClients.value || 2),
-          client_cpu: Number(flClientCpu.value || 0.5),
-          chunksize: Number(flChunkSize.value || 50000)
+          client_cpu: Number(flClientCpu.value || 1.0),
+          chunksize: Number(flChunkSize.value || 200000),
+          fraction_fit: Number(flFractionFit.value || 1.0),
+          fraction_evaluate: Number(flFractionEval.value || 1.0)
         });
-        fedJobId = data.job_id;
-        fedState.textContent = `running (job: ${data.job_id})`;
-        pollJob(data.job_id, fedState, fedLog, fedProgressBar, fedMetrics, () => {
-          fedJobId = null;
-          runFederatedBtn.disabled = false;
+        trainJobId = data.job_id;
+        pollJob(data.job_id, trainState, trainLog, trainBar, trainMetrics, async () => {
+          trainJobId = null;
+          runTrainBtn.disabled = false;
+          resultsModelType.value = modelType.value;
+          await loadResults();
         });
       } catch (error) {
-        runFederatedBtn.disabled = false;
-        fedState.textContent = `start failed: ${error.message}`;
-        appendLog(fedLog, [`[dashboard] start error: ${error.message}`]);
+        runTrainBtn.disabled = false;
+        trainState.textContent = `start failed: ${error.message}`;
       }
     });
 
-    stopFederatedBtn.addEventListener("click", async () => {
-      if (!fedJobId) {
-        fedState.textContent = "no running federated job";
-        return;
-      }
+    stopTrainBtn.addEventListener("click", async () => {
+      if (!trainJobId) return;
       try {
-        await stopJob(fedJobId);
-        fedState.textContent = `stopping (job: ${fedJobId})`;
+        await stopJob(trainJobId);
+        trainState.textContent = `stopping (job: ${trainJobId})`;
       } catch (error) {
-        fedState.textContent = `stop failed: ${error.message}`;
-        appendLog(fedLog, [`[dashboard] stop error: ${error.message}`]);
+        trainState.textContent = `stop failed: ${error.message}`;
       }
     });
 
-    splitMethod.addEventListener("change", applySplitDefaults);
-    splitBuildVariant.addEventListener("change", applySplitDefaults);
-
-    runPredictBtn.addEventListener("click", async () => {
-      runPredictBtn.disabled = true;
-      predState.textContent = "predicting...";
-      predMetrics.innerHTML = "";
-      try {
-        const response = await fetch("/api/ai/predict/mlp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            weights_path: predWeightsPath.value.trim(),
-            gender: predGender.value,
-            age: Number(predAge.value || 72),
-            height: Number(predHeight.value || 168),
-            weight: Number(predWeight.value || 74),
-            hour: Number(predHour.value || 12),
-            minute: Number(predMinute.value || 0),
-            diagnosis: predDiagnosis.value,
-            symptom: predSymptom.value,
-            medication: predMedication.value,
-            curr_temp_main: Number(predCurrTempMain.value || 22),
-            curr_temp_toilet: Number(predCurrTempToilet.value || 23),
-            curr_light: Number(predCurrLight.value || 58),
-            curr_sound: Number(predCurrSound.value || 34),
-            curr_airflow: predCurrAirflow.value === "true"
-          })
-        });
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText || `HTTP ${response.status}`);
-        }
-        const data = await response.json();
-        predState.textContent = "prediction completed";
-        const p = data.prediction || {};
-        renderMetrics(predMetrics, {
-          items: [
-            { key: "y_temp_main", label: "Pred Temp Main (+1h)", value: p.y_temp_main, explain: "Predicted main room temperature one hour ahead." },
-            { key: "y_temp_toilet", label: "Pred Temp Toilet (+1h)", value: p.y_temp_toilet, explain: "Predicted toilet temperature one hour ahead." },
-            { key: "y_light", label: "Pred Light (+1h)", value: p.y_light, explain: "Predicted light intensity one hour ahead." },
-            { key: "y_sound", label: "Pred Sound (+1h)", value: p.y_sound, explain: "Predicted sound level one hour ahead." },
-            { key: "y_airflow_score", label: "Pred Airflow Score", value: p.y_airflow_score, explain: "Probability-like airflow score (>=0.5 means true)." },
-            { key: "y_airflow", label: "Pred Airflow", value: p.y_airflow, explain: "Predicted airflow on/off." },
-            { key: "y_any_change", label: "Pred Any Change", value: p.y_any_change, explain: "Whether any comfort value changes vs current settings." }
-          ]
-        });
-      } catch (error) {
-        predState.textContent = `prediction failed: ${error.message}`;
-      } finally {
-        runPredictBtn.disabled = false;
-      }
+    modelType.addEventListener("change", updateModelText);
+    resultsScope.addEventListener("change", () => {
+      roomField.classList.toggle("hidden", resultsScope.value !== "local");
+      loadResults();
     });
+    resultsModelType.addEventListener("change", loadResults);
+    resultsRoomId.addEventListener("change", loadResults);
+    refreshResultsBtn.addEventListener("click", loadResults);
 
-    applySplitDefaults();
+    updateModelText();
+    roomField.classList.add("hidden");
+    loadResults();
   })();
 </script>
 {% endblock %}

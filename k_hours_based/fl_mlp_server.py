@@ -6,7 +6,10 @@ import flwr as fl
 import numpy as np
 import pandas as pd
 
-from fl_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
+try:
+    from k_hours_based.fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
+except ModuleNotFoundError:
+    from fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,16 +47,41 @@ def save_parameters(params: fl.common.Parameters, out_path: str) -> None:
     np.savez(out_path, **{f"param_{idx}": array for idx, array in enumerate(ndarrays)})
 
 
+def append_rows(out_path: str, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    df = pd.DataFrame(rows)
+    if os.path.exists(out_path):
+        df.to_csv(out_path, mode="a", header=False, index=False)
+    else:
+        df.to_csv(out_path, index=False)
+
+
 class TrackingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.weights_out_dir = weights_out_dir
         self.latest_parameters: fl.common.Parameters | None = None
         self.latest_eval_summary: dict[str, float] | None = None
+        self.latest_fit_summary: dict[str, float] | None = None
 
     def aggregate_fit(self, server_round, results, failures):
         # Flower averages the client-updated models here to form the next global model.
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
+        fit_examples = 0.0
+        train_loss_sum = 0.0
+        for _, fit_res in results:
+            metrics = fit_res.metrics or {}
+            count = float(fit_res.num_examples)
+            fit_examples += count
+            train_loss_sum += float(metrics.get("train_loss_sum", 0.0))
+        self.latest_fit_summary = {
+            "round": int(server_round),
+            "trained_examples": int(fit_examples),
+            "train_loss": train_loss_sum / max(fit_examples, 1.0),
+        }
+        append_rows(os.path.join(self.weights_out_dir, "train_metrics.csv"), [self.latest_fit_summary])
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
             round_weights_path = os.path.join(self.weights_out_dir, f"round_{server_round}_global_weights.npz")
@@ -61,6 +89,11 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             save_parameters(aggregated_parameters, round_weights_path)
             save_parameters(aggregated_parameters, latest_weights_path)
             print(f"saved_global_weights={round_weights_path}")
+        print(
+            f"[round {server_round}] training_summary "
+            f"train_loss={self.latest_fit_summary['train_loss']:.4f} "
+            f"trained_examples={self.latest_fit_summary['trained_examples']}"
+        )
         return aggregated_parameters, aggregated_metrics
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -100,7 +133,16 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "mse_sum_y_temp_toilet": 0.0,
             "mse_sum_y_light": 0.0,
             "mse_sum_y_sound": 0.0,
+            "threshold_correct_y_temp_main": 0.0,
+            "threshold_wrong_y_temp_main": 0.0,
+            "threshold_correct_y_temp_toilet": 0.0,
+            "threshold_wrong_y_temp_toilet": 0.0,
+            "threshold_correct_y_light": 0.0,
+            "threshold_wrong_y_light": 0.0,
+            "threshold_correct_y_sound": 0.0,
+            "threshold_wrong_y_sound": 0.0,
         }
+        room_rows: list[dict[str, Any]] = []
         for _, eval_res in results:
             metrics = eval_res.metrics or {}
             count = float(eval_res.num_examples)
@@ -109,17 +151,67 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
                 if key == "evaluated_examples":
                     continue
                 summary[key] += float(metrics.get(key, 0.0))
+            room_rows.append(
+                {
+                    "round": int(server_round),
+                    "room_id": str(metrics.get("room_id", "")),
+                    "num_examples": int(eval_res.num_examples),
+                    "local_loss": float(eval_res.loss),
+                    "mae_y_temp_main": float(metrics.get("mae_sum_y_temp_main", 0.0)) / max(count, 1.0),
+                    "mse_y_temp_main": float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0),
+                    "rmse_y_temp_main": (float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_temp_main": float(metrics.get("threshold_correct_y_temp_main", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_main", 0.0)) + float(metrics.get("threshold_wrong_y_temp_main", 0.0)), 1.0),
+                    "mae_y_temp_toilet": float(metrics.get("mae_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
+                    "mse_y_temp_toilet": float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
+                    "rmse_y_temp_toilet": (float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_temp_toilet": float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) + float(metrics.get("threshold_wrong_y_temp_toilet", 0.0)), 1.0),
+                    "mae_y_light": float(metrics.get("mae_sum_y_light", 0.0)) / max(count, 1.0),
+                    "mse_y_light": float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0),
+                    "rmse_y_light": (float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_light": float(metrics.get("threshold_correct_y_light", 0.0)) / max(float(metrics.get("threshold_correct_y_light", 0.0)) + float(metrics.get("threshold_wrong_y_light", 0.0)), 1.0),
+                    "mae_y_sound": float(metrics.get("mae_sum_y_sound", 0.0)) / max(count, 1.0),
+                    "mse_y_sound": float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0),
+                    "rmse_y_sound": (float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_sound": float(metrics.get("threshold_correct_y_sound", 0.0)) / max(float(metrics.get("threshold_correct_y_sound", 0.0)) + float(metrics.get("threshold_wrong_y_sound", 0.0)), 1.0),
+                    "airflow_accuracy": float(metrics.get("airflow_accuracy_sum", 0.0)) / max(count, 1.0),
+                    "airflow_precision": float(metrics.get("airflow_precision_sum", 0.0)) / max(count, 1.0),
+                    "airflow_recall": float(metrics.get("airflow_recall_sum", 0.0)) / max(count, 1.0),
+                    "airflow_f1": float(metrics.get("airflow_f1_sum", 0.0)) / max(count, 1.0),
+                    "airflow_tp": int(metrics.get("airflow_tp", 0)),
+                    "airflow_fp": int(metrics.get("airflow_fp", 0)),
+                    "airflow_tn": int(metrics.get("airflow_tn", 0)),
+                    "airflow_fn": int(metrics.get("airflow_fn", 0)),
+                    "change_accuracy": float(metrics.get("change_accuracy_sum", 0.0)) / max(count, 1.0),
+                    "change_precision": float(metrics.get("change_precision_sum", 0.0)) / max(count, 1.0),
+                    "change_recall": float(metrics.get("change_recall_sum", 0.0)) / max(count, 1.0),
+                    "change_f1": float(metrics.get("change_f1_sum", 0.0)) / max(count, 1.0),
+                    "change_tp": int(metrics.get("change_tp", 0)),
+                    "change_fp": int(metrics.get("change_fp", 0)),
+                    "change_tn": int(metrics.get("change_tn", 0)),
+                    "change_fn": int(metrics.get("change_fn", 0)),
+                }
+            )
 
         count = max(summary["evaluated_examples"], 1.0)
         self.latest_eval_summary = {
+            "round": int(server_round),
+            "global_loss": float(aggregated_loss) if aggregated_loss is not None else 0.0,
             "mae_y_temp_main": summary["mae_sum_y_temp_main"] / count,
+            "mse_y_temp_main": summary["mse_sum_y_temp_main"] / count,
             "mae_y_temp_toilet": summary["mae_sum_y_temp_toilet"] / count,
+            "mse_y_temp_toilet": summary["mse_sum_y_temp_toilet"] / count,
             "mae_y_light": summary["mae_sum_y_light"] / count,
+            "mse_y_light": summary["mse_sum_y_light"] / count,
             "mae_y_sound": summary["mae_sum_y_sound"] / count,
+            "mse_y_sound": summary["mse_sum_y_sound"] / count,
             "rmse_y_temp_main": (summary["mse_sum_y_temp_main"] / count) ** 0.5,
             "rmse_y_temp_toilet": (summary["mse_sum_y_temp_toilet"] / count) ** 0.5,
             "rmse_y_light": (summary["mse_sum_y_light"] / count) ** 0.5,
             "rmse_y_sound": (summary["mse_sum_y_sound"] / count) ** 0.5,
+            "threshold_accuracy_y_temp_main": summary["threshold_correct_y_temp_main"] / max(summary["threshold_correct_y_temp_main"] + summary["threshold_wrong_y_temp_main"], 1.0),
+            "threshold_accuracy_y_temp_toilet": summary["threshold_correct_y_temp_toilet"] / max(summary["threshold_correct_y_temp_toilet"] + summary["threshold_wrong_y_temp_toilet"], 1.0),
+            "threshold_accuracy_y_light": summary["threshold_correct_y_light"] / max(summary["threshold_correct_y_light"] + summary["threshold_wrong_y_light"], 1.0),
+            "threshold_accuracy_y_sound": summary["threshold_correct_y_sound"] / max(summary["threshold_correct_y_sound"] + summary["threshold_wrong_y_sound"], 1.0),
             "regression_correct": int(summary["regression_correct"]),
             "regression_wrong": int(summary["regression_wrong"]),
             "regression_correct_rate": summary["regression_correct"] / max(summary["regression_correct"] + summary["regression_wrong"], 1.0),
@@ -148,10 +240,9 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "change_fn": int(summary["change_fn"]),
             "evaluated_examples": int(summary["evaluated_examples"]),
         }
-        os.makedirs(self.weights_out_dir, exist_ok=True)
-        total_path = os.path.join(self.weights_out_dir, f"round_{server_round}_total_metrics.csv")
-        pd.DataFrame([self.latest_eval_summary]).to_csv(total_path, index=False)
-        print(f"saved_total_metrics={total_path}")
+        append_rows(os.path.join(self.weights_out_dir, "total_metrics.csv"), [self.latest_eval_summary])
+        append_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows)
+        print(f"saved_total_metrics={os.path.join(self.weights_out_dir, 'total_metrics.csv')}")
         print(
             f"[round {server_round}] evaluation_summary "
             f"regression_correct_rate={self.latest_eval_summary['regression_correct_rate']:.4f} "

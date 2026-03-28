@@ -7,14 +7,24 @@ import time
 import flwr as fl
 import pandas as pd
 
-from fl_client_lstm_mlp import (
-    RoomHybridClient,
-    TARGET_COLUMNS,
-    build_hybrid_arrays,
-    get_input_dim,
-    sanitize_targets,
-)
-from fl_server_lstm_mlp import TrackingFedAvg, make_initial_parameters
+try:
+    from k_hours_based.fl_lstm_mlp_client import (
+        RoomHybridClient,
+        TARGET_COLUMNS,
+        build_hybrid_arrays,
+        get_input_dim,
+        sanitize_targets,
+    )
+    from k_hours_based.fl_lstm_mlp_server import TrackingFedAvg, make_initial_parameters
+except ModuleNotFoundError:
+    from fl_lstm_mlp_client import (
+        RoomHybridClient,
+        TARGET_COLUMNS,
+        build_hybrid_arrays,
+        get_input_dim,
+        sanitize_targets,
+    )
+    from fl_lstm_mlp_server import TrackingFedAvg, make_initial_parameters
 
 
 def parse_args() -> argparse.Namespace:

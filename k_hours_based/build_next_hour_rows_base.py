@@ -1,17 +1,13 @@
-import argparse
 import csv
 import os
-import time
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import timedelta
 from typing import Any
 
 from next_hour_schema import (
-    CHANGE_METADATA_COLUMNS,
     DIAGNOSIS_COLUMNS,
     DIAGNOSIS_TO_INDEX,
-    INPUT_COLUMNS,
     MAX_MEDICATION_SLOTS,
     MEDICATION_NAMES,
     MEDICATION_SCHEDULE_COLUMNS,
@@ -19,17 +15,12 @@ from next_hour_schema import (
     MEDICATION_TYPE_COLUMNS,
     SYMPTOM_COLUMNS,
     SYMPTOM_TO_INDEX,
-    TARGET_COLUMNS,
     TIME_COLUMNS,
-    gender_to_binary,
     make_one_hot,
     make_time_vector,
     medication_slots_for_diagnosis,
     normalize_schedule,
 )
-
-DEFAULT_DATA_DIR = "filestorage"
-DEFAULT_OUT_DIR = "outputs_next_hour"
 
 
 def parse_ts(value: str | None):
@@ -245,8 +236,6 @@ def build_indices(data_dir: str) -> dict[str, Any]:
             {
                 "ts": ts,
                 "symptoms": (row.get("symptoms") or "").strip(),
-                "body_temperature": to_float(row.get("body_temperature")),
-                "blood_pressure": (row.get("blood_pressure") or "").strip(),
             }
         )
 
@@ -302,170 +291,3 @@ def resolve_input_path(path_value: str, project_root: str) -> str:
     if os.path.exists(candidate_cwd):
         return candidate_cwd
     return os.path.abspath(os.path.join(project_root, path_value))
-
-
-def build_rows(
-    indices: dict[str, Any],
-    out_dir: str,
-    step_minutes: int,
-    horizon_minutes: int,
-    max_assignments: int | None,
-) -> None:
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "next_hour_rows.csv")
-    fieldnames = [
-        "client_id",
-        "room_id",
-        "patient_id",
-        "t",
-        "diagnosis",
-        "symptom",
-        "primary_medication_count",
-        *CHANGE_METADATA_COLUMNS,
-        *INPUT_COLUMNS,
-        *TARGET_COLUMNS,
-    ]
-
-    patients_by_id = indices["patients_by_id"]
-    assignments = indices["assignments"]
-    admissions_by_patient = indices["admissions_by_patient"]
-    admitted_times_by_patient = indices["admitted_times_by_patient"]
-    visits_by_patient = indices["visits_by_patient"]
-    visit_times_by_patient = indices["visit_times_by_patient"]
-    comfort_by_room = indices["comfort_by_room"]
-    comfort_times_by_room = indices["comfort_times_by_room"]
-
-    step = timedelta(minutes=step_minutes)
-    horizon = timedelta(minutes=horizon_minutes)
-    assignment_count = 0
-    row_count = 0
-    time_feature_cache = build_time_feature_cache()
-    symptom_feature_cache = build_symptom_feature_cache()
-    diagnosis_feature_cache = build_diagnosis_feature_cache()
-
-    with open(out_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for assignment in assignments:
-            if max_assignments is not None and assignment_count >= max_assignments:
-                break
-            assignment_count += 1
-
-            pid = assignment["patient_id"]
-            room_id = assignment["room_id"]
-            t = assignment["start"]
-            end = assignment["end"]
-
-            patient_profile = patients_by_id.get(pid, {})
-            visit_rows = visits_by_patient.get(pid, [])
-            visit_times = visit_times_by_patient.get(pid, [])
-            comfort_rows = comfort_by_room.get(room_id, [])
-            comfort_times = comfort_times_by_room.get(room_id, [])
-
-            while t < end:
-                target_time = t + horizon
-                next_hour_comfort = latest_at_or_before(comfort_times, comfort_rows, target_time) if comfort_rows else None
-                if next_hour_comfort is None:
-                    t += step
-                    continue
-                current_comfort = latest_at_or_before(comfort_times, comfort_rows, t) if comfort_rows else None
-                if current_comfort is None:
-                    t += step
-                    continue
-
-                admission = choose_admission(admissions_by_patient, admitted_times_by_patient, pid, t)
-                if admission is None:
-                    t += step
-                    continue
-
-                diagnosis_value = admission.get("diagnosis") or ""
-                diagnosis_features = diagnosis_feature_cache.get(diagnosis_value)
-                if diagnosis_features is None:
-                    diagnosis_vector = make_one_hot(DIAGNOSIS_TO_INDEX.get(diagnosis_value), len(DIAGNOSIS_COLUMNS))
-                    diagnosis_features = {
-                        "diagnosis": dict(zip(DIAGNOSIS_COLUMNS, diagnosis_vector)),
-                        "medication": {},
-                        "med_slots": medication_slots_for_diagnosis(diagnosis_value),
-                    }
-                symptom_value = active_symptom_for_time(visit_times, visit_rows, t, window_minutes=60)
-                med_slots = diagnosis_features["med_slots"]
-
-                row: dict[str, Any] = {
-                    "client_id": room_id,
-                    "room_id": room_id,
-                    "patient_id": pid,
-                    "t": t.isoformat(),
-                    "diagnosis": diagnosis_value,
-                    "symptom": symptom_value,
-                    "primary_medication_count": len(med_slots),
-                    "age": admission.get("age"),
-                    "height": patient_profile.get("height"),
-                    "weight": admission.get("weight"),
-                    "gender_binary": gender_to_binary(patient_profile.get("gender", "")),
-                    "curr_temp_main_eval": current_comfort.get("temperature_main"),
-                    "curr_temp_toilet_eval": current_comfort.get("temperature_toilet"),
-                    "curr_light_eval": current_comfort.get("light_intensity"),
-                    "curr_sound_eval": current_comfort.get("sound_level"),
-                    "curr_airflow_eval": current_comfort.get("airflow"),
-                    "y_temp_main": next_hour_comfort.get("temperature_main"),
-                    "y_temp_toilet": next_hour_comfort.get("temperature_toilet"),
-                    "y_light": next_hour_comfort.get("light_intensity"),
-                    "y_sound": next_hour_comfort.get("sound_level"),
-                    "y_airflow": next_hour_comfort.get("airflow"),
-                }
-                row["y_any_change"] = int(
-                    row["curr_temp_main_eval"] != row["y_temp_main"]
-                    or row["curr_temp_toilet_eval"] != row["y_temp_toilet"]
-                    or row["curr_light_eval"] != row["y_light"]
-                    or row["curr_sound_eval"] != row["y_sound"]
-                    or int(row["curr_airflow_eval"]) != int(row["y_airflow"])
-                )
-
-                row.update(time_feature_cache[(t.hour, 30 if t.minute >= 30 else 0)])
-                row.update(diagnosis_features["diagnosis"])
-                row.update(symptom_feature_cache.get(symptom_value, symptom_feature_cache[""]))
-                row.update(diagnosis_features["medication"])
-
-                writer.writerow(row)
-                row_count += 1
-                t += step
-
-    print("build_next_hour_rows.py complete")
-    print(f"assignments_processed={assignment_count}")
-    print(f"next_hour_rows={row_count}")
-    print(f"next_hour_rows_path={out_path}")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build local next-hour environment rows from filestorage CSVs.")
-    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Path to source CSV directory.")
-    parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="Path to output directory.")
-    parser.add_argument("--step-minutes", type=int, default=30, help="Decision interval in minutes.")
-    parser.add_argument("--horizon-minutes", type=int, default=60, help="Prediction look-ahead window in minutes.")
-    parser.add_argument("--max-assignments", type=int, default=None, help="Optional cap for faster dry-runs.")
-    return parser.parse_args()
-
-
-def main() -> None:
-    started = time.perf_counter()
-    args = parse_args()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    data_dir = resolve_input_path(args.data_dir, project_root)
-    if os.path.isabs(args.out_dir):
-        out_dir = args.out_dir
-    elif args.out_dir == DEFAULT_OUT_DIR:
-        out_dir = os.path.join(script_dir, args.out_dir)
-    else:
-        out_dir = os.path.abspath(args.out_dir)
-
-    indices = build_indices(data_dir)
-    build_rows(indices, out_dir, args.step_minutes, args.horizon_minutes, args.max_assignments)
-    elapsed_seconds = time.perf_counter() - started
-    print(f"elapsed_seconds={elapsed_seconds:.1f}")
-    print(f"elapsed_minutes={elapsed_seconds / 60.0:.2f}")
-
-
-if __name__ == "__main__":
-    main()

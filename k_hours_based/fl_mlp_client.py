@@ -103,6 +103,16 @@ def target_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, 
     return correct, int(y_true.shape[0] - correct)
 
 
+def per_target_threshold_counts(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, tuple[int, int]]:
+    counts: dict[str, tuple[int, int]] = {}
+    for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX]):
+        threshold = DEFAULT_OUTPUT_THRESHOLDS[target]
+        within_threshold = np.abs(y_true[:, idx] - y_pred[:, idx]) <= threshold
+        correct = int(np.sum(within_threshold))
+        counts[target] = (correct, int(y_true.shape[0] - correct))
+    return counts
+
+
 def temperature_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, int]:
     thresholds = np.array(
         [
@@ -145,10 +155,16 @@ class RoomClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         # Each round starts from the current global model sent by the server.
         set_params(self.model, parameters)
+        train_loss_sum = 0.0
         for _ in range(self.local_epochs):
             # partial_fit runs one local optimization pass over this room's rows.
             self.model.partial_fit(self.x_train, self.y_train)
-        return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
+            train_pred = self.model.predict(self.x_train)
+            train_loss_sum += float(mean_squared_error(self.y_train, train_pred)) * float(self.y_train.shape[0])
+        return get_params(self.model), int(self.y_train.shape[0]), {
+            "room_id": self.room_id,
+            "train_loss_sum": train_loss_sum,
+        }
 
     def evaluate(self, parameters, config):
         set_params(self.model, parameters)
@@ -164,6 +180,14 @@ class RoomClient(fl.client.NumPyClient):
                 "mse_sum_y_sound": 0.0,
                 "regression_correct": 0,
                 "regression_wrong": 0,
+                "threshold_correct_y_temp_main": 0,
+                "threshold_wrong_y_temp_main": 0,
+                "threshold_correct_y_temp_toilet": 0,
+                "threshold_wrong_y_temp_toilet": 0,
+                "threshold_correct_y_light": 0,
+                "threshold_wrong_y_light": 0,
+                "threshold_correct_y_sound": 0,
+                "threshold_wrong_y_sound": 0,
                 "temperature_correct": 0,
                 "temperature_wrong": 0,
                 "airflow_accuracy_sum": 0.0,
@@ -206,6 +230,7 @@ class RoomClient(fl.client.NumPyClient):
             for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX])
         }
         regression_correct, regression_wrong = target_correct_counts(self.y_test, y_pred)
+        threshold_counts = per_target_threshold_counts(reg_true, reg_pred)
         temperature_correct, temperature_wrong = temperature_correct_counts(self.y_test, y_pred)
 
         tp = int(np.sum((airflow_true == 1) & (airflow_pred == 1)))
@@ -238,6 +263,14 @@ class RoomClient(fl.client.NumPyClient):
             "mse_sum_y_sound": regression_mse["y_sound"] * self.y_test.shape[0],
             "regression_correct": regression_correct,
             "regression_wrong": regression_wrong,
+            "threshold_correct_y_temp_main": threshold_counts["y_temp_main"][0],
+            "threshold_wrong_y_temp_main": threshold_counts["y_temp_main"][1],
+            "threshold_correct_y_temp_toilet": threshold_counts["y_temp_toilet"][0],
+            "threshold_wrong_y_temp_toilet": threshold_counts["y_temp_toilet"][1],
+            "threshold_correct_y_light": threshold_counts["y_light"][0],
+            "threshold_wrong_y_light": threshold_counts["y_light"][1],
+            "threshold_correct_y_sound": threshold_counts["y_sound"][0],
+            "threshold_wrong_y_sound": threshold_counts["y_sound"][1],
             "temperature_correct": temperature_correct,
             "temperature_wrong": temperature_wrong,
             "airflow_accuracy_sum": airflow_accuracy * self.y_test.shape[0],

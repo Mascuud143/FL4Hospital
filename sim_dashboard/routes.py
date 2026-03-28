@@ -20,19 +20,26 @@ from simulation_batch.config import DAYS, START_DATE
 
 sim_bp = Blueprint("sim_bp", __name__)
 _ROOT_DIR = Path(__file__).resolve().parents[1]
+_AI_FORECAST_DIR = _ROOT_DIR / "k_hours_based"
 _AI_JOBS: dict[str, dict] = {}
 _AI_JOBS_LOCK = threading.Lock()
 _MAX_LOG_LINES = 2000
+_BUILD_OUTPUT_DIR = _AI_FORECAST_DIR / "outputs_next_hour_dashboard"
+_SPLIT_OUTPUT_DIR = _AI_FORECAST_DIR / "splits_next_hour_dashboard"
+_MODEL_OUTPUT_DIRS = {
+    "mlp": _AI_FORECAST_DIR / "fl_weights_dashboard_mlp",
+    "lstm": _AI_FORECAST_DIR / "fl_weights_dashboard_lstm",
+    "mlp_lstm": _AI_FORECAST_DIR / "fl_weights_dashboard_mlp_lstm",
+}
 
 try:
-    _AI_DIR = str((_ROOT_DIR / "ai").resolve())
-    if _AI_DIR not in sys.path:
-        sys.path.insert(0, _AI_DIR)
+    if str(_AI_FORECAST_DIR) not in sys.path:
+        sys.path.insert(0, str(_AI_FORECAST_DIR))
 
-    from fl_client import get_input_dim as _mlp_get_input_dim
-    from fl_client import make_model as _mlp_make_model
-    from fl_client import set_params as _mlp_set_params
-    from next_hour_schema import (
+    from k_hours_based.fl_mlp_client import get_input_dim as _mlp_get_input_dim
+    from k_hours_based.fl_mlp_client import make_model as _mlp_make_model
+    from k_hours_based.fl_mlp_client import set_params as _mlp_set_params
+    from k_hours_based.next_hour_schema import (
         AIRFLOW_INDEX as _AIRFLOW_INDEX,
         DIAGNOSIS_NAMES as _DIAGNOSIS_NAMES,
         DIAGNOSIS_TO_INDEX as _DIAGNOSIS_TO_INDEX,
@@ -89,7 +96,12 @@ def _append_log(job_id: str, line: str) -> None:
         if len(job["logs"]) > _MAX_LOG_LINES:
             job["logs"] = job["logs"][-_MAX_LOG_LINES:]
 
-        if job["kind"] == "split":
+        if job["kind"] == "build":
+            if "chunk" in clean.lower():
+                job["progress"] = max(job["progress"], 35)
+            if "complete" in clean.lower():
+                job["progress"] = max(job["progress"], 95)
+        elif job["kind"] == "split":
             if "Step 1/2" in clean:
                 job["progress"] = max(job["progress"], 15)
             if "Step 2/2" in clean:
@@ -216,8 +228,202 @@ def _parse_kv_lines(lines: list[str]) -> dict[str, float | int | str]:
     return metrics
 
 
+def _ai_script(name: str) -> str:
+    return str((_AI_FORECAST_DIR / name).resolve())
+
+
+def _weights_dir_for_model(model_type: str) -> Path:
+    return _MODEL_OUTPUT_DIRS.get(model_type, _MODEL_OUTPUT_DIRS["mlp"])
+
+
+def _load_metrics_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+def _to_native(value):
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if pd.isna(value):
+        return None
+    return value
+
+
+def _target_line_series(frame: pd.DataFrame) -> list[dict[str, object]]:
+    round_values = [int(x) for x in frame.get("round", pd.Series(dtype=int)).tolist()]
+    labels = {
+        "temp_main": "Temp Main",
+        "temp_toilet": "Temp Toilet",
+        "light": "Light",
+        "sound": "Sound",
+    }
+    colors = {
+        "temp_main": "#1d4ed8",
+        "temp_toilet": "#0f766e",
+        "light": "#f59e0b",
+        "sound": "#b91c1c",
+    }
+    series: list[dict[str, object]] = []
+    for metric_key, metric_label in (("mae", "MAE"), ("rmse", "RMSE")):
+        chart_series = []
+        for suffix, target_label in labels.items():
+            column = f"{metric_key}_y_{suffix}"
+            if column not in frame.columns:
+                continue
+            chart_series.append(
+                {
+                    "name": f"{target_label} {metric_label}",
+                    "color": colors[suffix],
+                    "values": [float(x) if not pd.isna(x) else None for x in frame[column].tolist()],
+                }
+            )
+        series.append({"metric": metric_key, "label": metric_label, "rounds": round_values, "series": chart_series})
+    return series
+
+
+def _make_pie(title: str, slices: list[dict[str, object]]) -> dict[str, object]:
+    clean_slices = []
+    total = 0.0
+    for item in slices:
+        value = float(item.get("value", 0.0) or 0.0)
+        total += value
+        clean_slices.append(
+            {
+                "label": str(item.get("label", "")),
+                "value": value,
+                "color": str(item.get("color", "#94a3b8")),
+            }
+        )
+    return {"title": title, "total": total, "slices": clean_slices}
+
+
+def _global_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    latest = frame.sort_values("round").iloc[-1]
+    pies = []
+    for suffix, label, color in (
+        ("temp_main", "Temp Main Threshold", "#2563eb"),
+        ("temp_toilet", "Temp Toilet Threshold", "#0891b2"),
+        ("light", "Light Threshold", "#f59e0b"),
+        ("sound", "Sound Threshold", "#ef4444"),
+    ):
+        correct = float(latest.get(f"threshold_correct_y_{suffix}", 0.0) or 0.0)
+        wrong = float(latest.get(f"threshold_wrong_y_{suffix}", 0.0) or 0.0)
+        pies.append(
+            _make_pie(
+                label,
+                [
+                    {"label": "Correct", "value": correct, "color": color},
+                    {"label": "Wrong", "value": wrong, "color": "#e5e7eb"},
+                ],
+            )
+        )
+    pies.append(
+        _make_pie(
+            "Airflow Confusion",
+            [
+                {"label": "TP", "value": latest.get("airflow_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("airflow_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("airflow_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("airflow_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    )
+    pies.append(
+        _make_pie(
+            "Change Confusion",
+            [
+                {"label": "TP", "value": latest.get("change_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("change_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("change_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("change_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    )
+    return pies
+
+
+def _local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    latest = frame.sort_values("round").iloc[-1]
+    count = max(int(latest.get("num_examples", 0) or 0), 1)
+    pies = []
+    for suffix, label, color in (
+        ("temp_main", "Temp Main Threshold", "#2563eb"),
+        ("temp_toilet", "Temp Toilet Threshold", "#0891b2"),
+        ("light", "Light Threshold", "#f59e0b"),
+        ("sound", "Sound Threshold", "#ef4444"),
+    ):
+        accuracy = float(latest.get(f"threshold_accuracy_y_{suffix}", 0.0) or 0.0)
+        correct = max(0, min(count, int(round(accuracy * count))))
+        wrong = max(0, count - correct)
+        pies.append(
+            _make_pie(
+                label,
+                [
+                    {"label": "Correct", "value": correct, "color": color},
+                    {"label": "Wrong", "value": wrong, "color": "#e5e7eb"},
+                ],
+            )
+        )
+    pies.append(
+        _make_pie(
+            "Airflow Confusion",
+            [
+                {"label": "TP", "value": latest.get("airflow_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("airflow_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("airflow_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("airflow_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    )
+    pies.append(
+        _make_pie(
+            "Change Confusion",
+            [
+                {"label": "TP", "value": latest.get("change_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("change_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("change_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("change_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    )
+    return pies
+
+
 def _extract_job_metrics(job: dict) -> dict:
     raw = _parse_kv_lines(job.get("logs", []))
+    if job.get("kind") == "build":
+        items = [
+            {
+                "key": "assignments_processed",
+                "label": "Assignments Processed",
+                "value": raw.get("assignments_processed"),
+                "explain": "Number of patient-room assignments turned into training rows.",
+            },
+            {
+                "key": "next_hour_rows",
+                "label": "Rows Built",
+                "value": raw.get("next_hour_rows"),
+                "explain": "Total rows created for the k-hours based dataset.",
+            },
+            {
+                "key": "workers_used",
+                "label": "Workers Used",
+                "value": raw.get("workers_used"),
+                "explain": "Parallel worker processes used during row generation.",
+            },
+        ]
+        return {"raw": raw, "items": items}
+
     if job.get("kind") == "federated":
         items = [
             {
@@ -287,21 +493,27 @@ def _extract_job_metrics(job: dict) -> dict:
         items = [
             {
                 "key": "next_hour_total",
-                "label": "Next-hour Total Rows",
+                "label": "Total Rows",
                 "value": raw.get("next_hour_total"),
                 "explain": "Total rows available before train/test split.",
             },
             {
-                "key": "model_a_total",
-                "label": "Model A Total Rows",
-                "value": raw.get("model_a_total"),
-                "explain": "Total rows for Model A before split.",
+                "key": "train",
+                "label": "Train Rows",
+                "value": raw.get("train"),
+                "explain": "Rows assigned to the training split.",
             },
             {
-                "key": "model_b_total",
-                "label": "Model B Total Rows",
-                "value": raw.get("model_b_total"),
-                "explain": "Total rows for Model B before split.",
+                "key": "test",
+                "label": "Test Rows",
+                "value": raw.get("test"),
+                "explain": "Rows assigned to the evaluation split.",
+            },
+            {
+                "key": "workers_used",
+                "label": "Workers Used",
+                "value": raw.get("workers_used"),
+                "explain": "Parallel worker processes used for per-room splitting.",
             },
         ]
         return {"raw": raw, "items": items}
@@ -547,100 +759,61 @@ def ai_suggestion():
     )
 
 
+@sim_bp.route("/api/ai/build/start", methods=["POST"])
+def api_ai_build_start():
+    payload = request.get_json(silent=True) or {}
+    step_minutes = int(payload.get("step_minutes", 30))
+    horizon_minutes = int(payload.get("horizon_minutes", 60))
+    workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
+    chunk_size = int(payload.get("chunk_size", 250))
+
+    build_command = [
+        sys.executable,
+        "-u",
+        _ai_script("build_next_hour_rows.py"),
+        "--data-dir",
+        "filestorage",
+        "--out-dir",
+        str(_BUILD_OUTPUT_DIR),
+        "--step-minutes",
+        str(step_minutes),
+        "--horizon-minutes",
+        str(horizon_minutes),
+        "--workers",
+        str(workers),
+        "--chunk-size",
+        str(chunk_size),
+    ]
+    job_id = _start_ai_job("build", [build_command])
+    return jsonify({"job_id": job_id, "status": "running"})
+
+
 @sim_bp.route("/api/ai/split/start", methods=["POST"])
 def api_ai_split_start():
     payload = request.get_json(silent=True) or {}
-    split_method = str(payload.get("split_method", "split_by_room"))
-    input_dir = str(payload.get("input_dir", "ai/outputs")).strip() or "ai/outputs"
-    output_dir = str(payload.get("output_dir", "ai/splits")).strip() or "ai/splits"
     train_ratio = float(payload.get("train_ratio", 0.8))
     min_train_rows = int(payload.get("min_train_rows", 1))
-    build_rows_first = bool(payload.get("build_rows_first", True))
-    build_variant = str(payload.get("build_variant", "v1"))
-    data_dir = str(payload.get("data_dir", "filestorage")).strip() or "filestorage"
-    step_minutes = int(payload.get("step_minutes", 30))
-    horizon_minutes = int(payload.get("horizon_minutes", 30))
-    before_minutes = int(payload.get("before_minutes", 60))
-    after_minutes = int(payload.get("after_minutes", 60))
-    sample_minutes = int(payload.get("sample_minutes", 30))
-
-    script_map = {
-        "split_by_room": os.path.join("ai", "split_by_room.py"),
-        "split_by_y": os.path.join("ai", "split_by_y.py"),
-        "split_next_hour_by_room": os.path.join("ai", "split_next_hour_by_room.py"),
-    }
-    script_path = script_map.get(split_method)
-    if not script_path:
-        return jsonify({"error": f"Unsupported split method: {split_method}"}), 400
+    chunk_size = int(payload.get("chunk_size", 200000))
+    workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
 
     split_command = [
         sys.executable,
         "-u",
-        script_path,
+        _ai_script("split_next_hour_by_room.py"),
         "--input-dir",
-        input_dir,
+        str(_BUILD_OUTPUT_DIR),
         "--output-dir",
-        output_dir,
+        str(_SPLIT_OUTPUT_DIR),
         "--train-ratio",
         str(train_ratio),
         "--min-train-rows",
         str(min_train_rows),
+        "--chunk-size",
+        str(chunk_size),
+        "--workers",
+        str(workers),
     ]
-
-    commands: list[list[str]] = []
-    if build_rows_first:
-        if split_method == "split_next_hour_by_room":
-            variant_map = {
-                "v1": os.path.join("ai", "build_next_hour_rows.py"),
-                "v2": os.path.join("ai", "build_next_hour_rows_2.py"),
-                "v3": os.path.join("ai", "build_next_hour_rows_3.py"),
-            }
-            build_script = variant_map.get(build_variant)
-            if not build_script:
-                return jsonify({"error": f"Unsupported build variant: {build_variant}"}), 400
-        else:
-            build_script = os.path.join("ai", "build_row.py")
-
-        build_command = [
-            sys.executable,
-            "-u",
-            build_script,
-            "--data-dir",
-            data_dir,
-            "--out-dir",
-            input_dir,
-            "--horizon-minutes",
-            str(horizon_minutes),
-        ]
-        if split_method == "split_next_hour_by_room" and build_variant == "v1":
-            build_command.extend(
-                [
-                    "--step-minutes",
-                    str(step_minutes),
-                ]
-            )
-        if split_method == "split_next_hour_by_room" and build_variant in {"v2", "v3"}:
-            build_command.extend(
-                [
-                    "--before-minutes",
-                    str(before_minutes),
-                    "--after-minutes",
-                    str(after_minutes),
-                    "--sample-minutes",
-                    str(sample_minutes),
-                ]
-            )
-        elif split_method != "split_next_hour_by_room":
-            build_command.extend(
-                [
-                    "--step-minutes",
-                    str(step_minutes),
-                ]
-            )
-        commands.append(build_command)
-
-    commands.append(split_command)
-    job_id = _start_ai_job("split", commands)
+    job_id = _start_ai_job("split", [split_command])
     return jsonify({"job_id": job_id, "status": "running"})
 
 
@@ -648,64 +821,128 @@ def api_ai_split_start():
 def api_ai_federated_start():
     payload = request.get_json(silent=True) or {}
     model_type = str(payload.get("model_type", "mlp"))
-    split_dir = str(payload.get("split_dir", "ai/splits_next_hour")).strip() or "ai/splits_next_hour"
-    rounds = int(payload.get("rounds", 3))
+    rounds = int(payload.get("rounds", 5))
     local_epochs = int(payload.get("local_epochs", 1))
     lstm_sequence_length = int(payload.get("lstm_sequence_length", 4))
     lstm_batch_size = int(payload.get("lstm_batch_size", 32))
     max_rooms = int(payload.get("max_rooms", 20))
-    fraction_fit = float(payload.get("fraction_fit", 0.2))
-    fraction_evaluate = float(payload.get("fraction_evaluate", 0.2))
+    fraction_fit = float(payload.get("fraction_fit", 1.0))
+    fraction_evaluate = float(payload.get("fraction_evaluate", 1.0))
     min_fit_clients = int(payload.get("min_fit_clients", 2))
     min_evaluate_clients = int(payload.get("min_evaluate_clients", 2))
     min_available_clients = int(payload.get("min_available_clients", 2))
-    client_cpu = float(payload.get("client_cpu", 0.5))
-    chunksize = int(payload.get("chunksize", 50000))
+    client_cpu = float(payload.get("client_cpu", 1.0))
+    chunksize = int(payload.get("chunksize", 200000))
 
-    mode_map = {
-        "mlp": "ai_fl",
-        "lstm": "ai_fl_lstm",
-        "mlp_lstm": "ai_fl_lstm_MLP",
+    sim_map = {
+        "mlp": "fl_mlp_simulation.py",
+        "lstm": "fl_lstm_simulation.py",
+        "mlp_lstm": "fl_lstm_mlp_simulation.py",
     }
-    mode = mode_map.get(model_type)
-    if not mode:
+    sim_script = sim_map.get(model_type)
+    if not sim_script:
         return jsonify({"error": f"Unsupported model type: {model_type}"}), 400
+
+    weights_out_dir = _weights_dir_for_model(model_type)
+    summary_dir = weights_out_dir / "summaries"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_name = {
+        "mlp": "dashboard_summary.json",
+        "lstm": "dashboard_lstm_summary.json",
+        "mlp_lstm": "dashboard_mlp_lstm_summary.json",
+    }[model_type]
 
     command = [
         sys.executable,
         "-u",
-        "main.py",
-        "--mode",
-        mode,
-        "--ai-next-hour-split-dir",
-        split_dir,
-        "--ai-rounds",
+        _ai_script(sim_script),
+        "--split-dir",
+        str(_SPLIT_OUTPUT_DIR),
+        "--rounds",
         str(rounds),
-        "--ai-local-epochs",
+        "--local-epochs",
         str(local_epochs),
-        "--ai-lstm-sequence-length",
-        str(lstm_sequence_length),
-        "--ai-lstm-batch-size",
-        str(lstm_batch_size),
-        "--ai-max-rooms",
-        str(max_rooms),
-        "--ai-fraction-fit",
+        "--fraction-fit",
         str(fraction_fit),
-        "--ai-fraction-evaluate",
+        "--fraction-evaluate",
         str(fraction_evaluate),
-        "--ai-min-fit-clients",
+        "--min-fit-clients",
         str(min_fit_clients),
-        "--ai-min-evaluate-clients",
+        "--min-evaluate-clients",
         str(min_evaluate_clients),
-        "--ai-min-available-clients",
+        "--min-available-clients",
         str(min_available_clients),
-        "--ai-client-cpu",
+        "--weights-out-dir",
+        str(weights_out_dir),
+        "--summary-out",
+        str(summary_dir / summary_name),
+        "--client-cpu",
         str(client_cpu),
-        "--ai-chunksize",
+        "--chunksize",
         str(chunksize),
+        "--max-rooms",
+        str(max_rooms),
     ]
+    if model_type != "mlp":
+        command.extend(["--sequence-length", str(lstm_sequence_length), "--batch-size", str(lstm_batch_size)])
     job_id = _start_ai_job("federated", [command])
     return jsonify({"job_id": job_id, "status": "running"})
+
+
+@sim_bp.route("/api/ai/results", methods=["GET"])
+def api_ai_results():
+    model_type = str(request.args.get("model_type", "mlp") or "mlp")
+    scope = str(request.args.get("scope", "global") or "global")
+    requested_room_id = str(request.args.get("room_id", "") or "").strip()
+
+    weights_dir = _weights_dir_for_model(model_type)
+    total_frame = _load_metrics_csv(weights_dir / "total_metrics.csv")
+    room_frame = _load_metrics_csv(weights_dir / "room_metrics.csv")
+
+    if total_frame.empty and room_frame.empty:
+        return jsonify({"error": f"No metrics found for model '{model_type}' in {weights_dir}"}), 404
+
+    if not total_frame.empty and "round" in total_frame.columns:
+        total_frame = total_frame.sort_values("round").reset_index(drop=True)
+    if not room_frame.empty:
+        room_frame["room_id"] = room_frame["room_id"].astype(str)
+        if "round" in room_frame.columns:
+            room_frame = room_frame.sort_values(["room_id", "round"]).reset_index(drop=True)
+
+    room_ids = sorted(room_frame["room_id"].dropna().astype(str).unique().tolist()) if not room_frame.empty else []
+    active_room_id = requested_room_id
+    if scope == "local":
+        if not active_room_id and room_ids:
+            active_room_id = room_ids[0]
+        if active_room_id:
+            room_frame = room_frame[room_frame["room_id"] == active_room_id].copy()
+
+    source_frame = room_frame if scope == "local" else total_frame
+    if source_frame.empty:
+        return jsonify({"error": f"No metrics available for scope '{scope}'"}), 404
+
+    latest_row = source_frame.sort_values("round").iloc[-1].to_dict()
+    cards = [
+        {"label": "Round", "value": _to_native(latest_row.get("round")), "explain": "Latest completed federated round."},
+        {"label": "MAE Temp Main", "value": _to_native(latest_row.get("mae_y_temp_main")), "explain": "Average absolute error for main temperature."},
+        {"label": "RMSE Temp Main", "value": _to_native(latest_row.get("rmse_y_temp_main")), "explain": "Root mean squared error for main temperature."},
+        {"label": "Regression Correct Rate", "value": _to_native(latest_row.get("regression_correct_rate")), "explain": "Share of samples meeting the regression correctness criterion."},
+        {"label": "Airflow F1", "value": _to_native(latest_row.get("airflow_f1")), "explain": "Balance between airflow precision and recall."},
+        {"label": "Change F1", "value": _to_native(latest_row.get("change_f1")), "explain": "Balance between change precision and recall."},
+    ]
+
+    return jsonify(
+        {
+            "model_type": model_type,
+            "scope": scope,
+            "room_id": active_room_id or None,
+            "room_ids": room_ids,
+            "weights_dir": str(weights_dir),
+            "latest_cards": cards,
+            "line_charts": _target_line_series(source_frame),
+            "pie_charts": _local_pies(source_frame) if scope == "local" else _global_pies(source_frame),
+        }
+    )
 
 
 def _safe_int(value: object, default: int) -> int:

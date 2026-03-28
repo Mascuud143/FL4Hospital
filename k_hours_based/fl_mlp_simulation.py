@@ -3,25 +3,37 @@ import json
 import os
 
 import flwr as fl
+import numpy as np
 import pandas as pd
 
-from fl_client_lstm import (
-    RoomLSTMClient,
-    TARGET_COLUMNS,
-    build_sequence_arrays,
-    get_input_dim,
-    sanitize_targets,
-)
-from fl_server_lstm import TrackingFedAvg, make_initial_parameters
+try:
+    from k_hours_based.fl_mlp_client import (
+        CHANGE_BASELINE_COLUMNS,
+        RoomClient,
+        TARGET_COLUMNS,
+        get_input_dim,
+        row_to_input_vector,
+        sanitize_targets,
+    )
+    from k_hours_based.fl_mlp_server import TrackingFedAvg, make_initial_parameters
+except ModuleNotFoundError:
+    from fl_mlp_client import (
+        CHANGE_BASELINE_COLUMNS,
+        RoomClient,
+        TARGET_COLUMNS,
+        get_input_dim,
+        row_to_input_vector,
+        sanitize_targets,
+    )
+    from fl_mlp_server import TrackingFedAvg, make_initial_parameters
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Flower simulation mode for next-hour LSTM training.")
+    parser = argparse.ArgumentParser(description="Flower simulation mode for next-hour environment training.")
     parser.add_argument("--split-dir", default="ai/splits_next_hour", help="Directory with next_hour train and test CSV files")
     parser.add_argument("--rounds", type=int, default=5, help="Federated rounds")
+    parser.add_argument("--n-features", type=int, default=256, help="Unused compatibility flag kept for compatibility")
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per round")
-    parser.add_argument("--sequence-length", type=int, default=4, help="Number of historical rows per LSTM sample")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
     parser.add_argument("--stats-path", default=None, help="Optional path to split_stats_by_room.csv")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
@@ -29,8 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-evaluate-clients", type=int, default=2, help="Minimum clients for evaluate")
     parser.add_argument("--min-available-clients", type=int, default=2, help="Minimum connected clients")
     parser.add_argument("--max-rooms", type=int, default=None, help="Optional cap on number of rooms")
-    parser.add_argument("--room-id", default=None, help="Optional specific room/client id to simulate")
-    parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour_lstm", help="Directory to write global weights per round")
+    parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour", help="Directory to write global weights per round")
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
@@ -53,34 +64,35 @@ def room_ids_from_stats(stats_path: str) -> list[str]:
 
 
 def load_filtered(path: str, room_ids: set[str], chunksize: int) -> pd.DataFrame:
+    keep_cols = ["client_id", *TARGET_COLUMNS]
     parts: list[pd.DataFrame] = []
     for chunk in pd.read_csv(path, usecols=lambda c: True, chunksize=chunksize):
         filtered = chunk[chunk["client_id"].astype(str).isin(room_ids)]
         if not filtered.empty:
             parts.append(filtered)
     if not parts:
-        return pd.DataFrame(columns=["client_id", "t", "y_any_change", *TARGET_COLUMNS])
+        return pd.DataFrame(columns=keep_cols)
     df = pd.concat(parts, ignore_index=True)
     df["client_id"] = df["client_id"].astype(str)
     return df.loc[:, ~df.columns.duplicated()]
 
 
-def build_room_sequences(
-    train_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-    room_ids: list[str],
-    sequence_length: int,
-) -> dict[str, tuple]:
+def build_room_datasets(train_df: pd.DataFrame, test_df: pd.DataFrame, room_ids: list[str]) -> dict[str, tuple]:
     room_data: dict[str, tuple] = {}
     for rid in room_ids:
-        room_train_df = train_df[train_df["client_id"] == rid]
-        room_test_df = test_df[test_df["client_id"] == rid]
-        x_train, y_train, _, _ = build_sequence_arrays(room_train_df, sequence_length)
-        x_test, y_test, current_test, change_true = build_sequence_arrays(room_test_df, sequence_length)
-        if len(y_train) == 0:
+        room_train = train_df[train_df["client_id"] == rid]
+        if len(room_train) == 0:
             continue
-        # Each room contributes overlapping sequence windows rather than flat rows.
-        room_data[rid] = (x_train, y_train, x_test, y_test, current_test, change_true)
+        room_test = test_df[test_df["client_id"] == rid]
+        # Each room becomes one federated client with its own local train/test arrays.
+        room_data[rid] = (
+            row_to_input_vector(room_train),
+            room_train[TARGET_COLUMNS].to_numpy(dtype=np.float64),
+            row_to_input_vector(room_test),
+            room_test[TARGET_COLUMNS].to_numpy(dtype=np.float64),
+            room_test[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
+            room_test["y_any_change"].to_numpy(dtype=np.int64),
+        )
     return room_data
 
 
@@ -100,25 +112,20 @@ def main() -> None:
     if not room_ids:
         room_ids = unique_room_ids(train_path, chunksize=args.chunksize)
         room_source = "next_hour_train.csv"
-    if args.room_id is not None:
-        requested_room_id = str(args.room_id)
-        room_ids = [rid for rid in room_ids if str(rid) == requested_room_id]
-        room_source = f"requested_room_id={requested_room_id}"
     if args.max_rooms is not None:
         room_ids = room_ids[: max(1, args.max_rooms)]
-
     room_set = set(room_ids)
+
     print("[load] reading train split...")
     train_df = sanitize_targets(load_filtered(train_path, room_set, chunksize=args.chunksize))
     print("[load] reading test split...")
     test_df = sanitize_targets(load_filtered(test_path, room_set, chunksize=args.chunksize))
     print(f"[load] train_rows={len(train_df)} test_rows={len(test_df)}")
 
-    print("[load] preparing room sequences...")
-    room_data = build_room_sequences(train_df, test_df, room_ids, args.sequence_length)
+    room_data = build_room_datasets(train_df, test_df, room_ids)
     room_ids = sorted(room_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
     if not room_ids:
-        raise RuntimeError("No room sequence training data loaded for LSTM simulation.")
+        raise RuntimeError("No room training data loaded for simulation.")
 
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
@@ -129,14 +136,14 @@ def main() -> None:
         min_fit_clients=min(args.min_fit_clients, len(room_ids)),
         min_evaluate_clients=min(args.min_evaluate_clients, len(room_ids)),
         min_available_clients=min(args.min_available_clients, len(room_ids)),
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(args.n_features),
     )
 
     def client_fn(cid: str):
-        # Flower client ids are positional; here we map them back to actual room ids.
+        # Flower identifies clients as "0", "1", ...; we map those ids back to room ids.
         rid = room_ids[int(cid)]
         x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
-        return RoomLSTMClient(
+        return RoomClient(
             room_id=rid,
             x_train=x_train,
             y_train=y_train,
@@ -146,19 +153,15 @@ def main() -> None:
             change_true=change_true,
             input_dim=input_dim,
             local_epochs=args.local_epochs,
-            batch_size=args.batch_size,
         ).to_client()
 
-    print("fl_simulation_lstm.py starting")
+    print("fl_simulation.py starting")
     print(f"split_dir={split_dir}")
     print(f"targets={','.join(TARGET_COLUMNS)}")
     print(f"room_source={room_source}")
-    if args.room_id is not None:
-        print(f"requested_room_id={args.room_id}")
     print(f"stats_path={stats_path}")
     print(f"rooms_simulated={len(room_ids)}")
     print(f"rounds={args.rounds}")
-    print(f"sequence_length={args.sequence_length}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
     history = fl.simulation.start_simulation(
@@ -179,7 +182,6 @@ def main() -> None:
             "targets": TARGET_COLUMNS,
             "rounds": args.rounds,
             "rooms_simulated": len(room_ids),
-            "sequence_length": args.sequence_length,
             "weights_out_dir": weights_out_dir,
             **strategy.latest_eval_summary,
         }

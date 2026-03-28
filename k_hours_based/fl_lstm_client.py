@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize for room filtering")
     parser.add_argument("--sequence-length", type=int, default=4, help="Number of historical rows per LSTM sample")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--predictions-out-dir", default=None, help="Optional directory to write per-room evaluation predictions")
     return parser.parse_args()
 
 
@@ -157,6 +158,16 @@ def target_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, 
     return correct, int(y_true.shape[0] - correct)
 
 
+def per_target_threshold_counts(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, tuple[int, int]]:
+    counts: dict[str, tuple[int, int]] = {}
+    for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX]):
+        threshold = DEFAULT_OUTPUT_THRESHOLDS[target]
+        within_threshold = np.abs(y_true[:, idx] - y_pred[:, idx]) <= threshold
+        correct = int(np.sum(within_threshold))
+        counts[target] = (correct, int(y_true.shape[0] - correct))
+    return counts
+
+
 class RoomLSTMClient(fl.client.NumPyClient):
     def __init__(
         self,
@@ -170,6 +181,7 @@ class RoomLSTMClient(fl.client.NumPyClient):
         input_dim: int,
         local_epochs: int,
         batch_size: int,
+        predictions_out_dir: str | None = None,
     ):
         self.room_id = room_id
         self.x_train = x_train
@@ -180,6 +192,7 @@ class RoomLSTMClient(fl.client.NumPyClient):
         self.change_true = change_true
         self.local_epochs = local_epochs
         self.batch_size = batch_size
+        self.predictions_out_dir = predictions_out_dir
         self.device = torch.device("cpu")
         self.model = make_model(input_dim).to(self.device)
 
@@ -199,6 +212,7 @@ class RoomLSTMClient(fl.client.NumPyClient):
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
         loss_fn = nn.MSELoss()
+        train_loss_sum = 0.0
 
         for _ in range(self.local_epochs):
             for batch_x, batch_y in loader:
@@ -211,7 +225,11 @@ class RoomLSTMClient(fl.client.NumPyClient):
                 loss.backward()
                 # Adam updates the local room model before the round finishes.
                 optimizer.step()
-        return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
+                train_loss_sum += float(loss.item()) * float(batch_y.shape[0])
+        return get_params(self.model), int(self.y_train.shape[0]), {
+            "room_id": self.room_id,
+            "train_loss_sum": train_loss_sum,
+        }
 
     def evaluate(self, parameters, config):
         set_params(self.model, parameters)
@@ -227,6 +245,14 @@ class RoomLSTMClient(fl.client.NumPyClient):
                 "mse_sum_y_sound": 0.0,
                 "regression_correct": 0,
                 "regression_wrong": 0,
+                "threshold_correct_y_temp_main": 0,
+                "threshold_wrong_y_temp_main": 0,
+                "threshold_correct_y_temp_toilet": 0,
+                "threshold_wrong_y_temp_toilet": 0,
+                "threshold_correct_y_light": 0,
+                "threshold_wrong_y_light": 0,
+                "threshold_correct_y_sound": 0,
+                "threshold_wrong_y_sound": 0,
                 "airflow_accuracy_sum": 0.0,
                 "airflow_precision_sum": 0.0,
                 "airflow_recall_sum": 0.0,
@@ -268,6 +294,7 @@ class RoomLSTMClient(fl.client.NumPyClient):
             for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX])
         }
         regression_correct, regression_wrong = target_correct_counts(self.y_test, y_pred)
+        threshold_counts = per_target_threshold_counts(reg_true, reg_pred)
 
         tp = int(np.sum((airflow_true == 1) & (airflow_pred == 1)))
         tn = int(np.sum((airflow_true == 0) & (airflow_pred == 0)))
@@ -288,6 +315,28 @@ class RoomLSTMClient(fl.client.NumPyClient):
         change_fp = int(np.sum((self.change_true == 0) & (change_pred == 1)))
         change_fn = int(np.sum((self.change_true == 1) & (change_pred == 0)))
 
+        if self.predictions_out_dir:
+            os.makedirs(self.predictions_out_dir, exist_ok=True)
+            prediction_frame = pd.DataFrame(
+                {
+                    "room_id": self.room_id,
+                    "y_temp_main_true": reg_true[:, 0],
+                    "y_temp_main_pred": reg_pred[:, 0],
+                    "y_temp_toilet_true": reg_true[:, 1],
+                    "y_temp_toilet_pred": reg_pred[:, 1],
+                    "y_light_true": reg_true[:, 2],
+                    "y_light_pred": reg_pred[:, 2],
+                    "y_sound_true": reg_true[:, 3],
+                    "y_sound_pred": reg_pred[:, 3],
+                    "y_airflow_true": airflow_true,
+                    "y_airflow_pred": airflow_pred,
+                    "y_any_change_true": self.change_true,
+                    "y_any_change_pred": change_pred,
+                }
+            )
+            prediction_path = os.path.join(self.predictions_out_dir, f"room_{self.room_id}_predictions.csv")
+            prediction_frame.to_csv(prediction_path, index=False)
+
         overall_loss = float(np.mean(list(regression_mae.values())))
         return overall_loss, int(self.y_test.shape[0]), {
             "mae_sum_y_temp_main": regression_mae["y_temp_main"] * self.y_test.shape[0],
@@ -300,6 +349,14 @@ class RoomLSTMClient(fl.client.NumPyClient):
             "mse_sum_y_sound": regression_mse["y_sound"] * self.y_test.shape[0],
             "regression_correct": regression_correct,
             "regression_wrong": regression_wrong,
+            "threshold_correct_y_temp_main": threshold_counts["y_temp_main"][0],
+            "threshold_wrong_y_temp_main": threshold_counts["y_temp_main"][1],
+            "threshold_correct_y_temp_toilet": threshold_counts["y_temp_toilet"][0],
+            "threshold_wrong_y_temp_toilet": threshold_counts["y_temp_toilet"][1],
+            "threshold_correct_y_light": threshold_counts["y_light"][0],
+            "threshold_wrong_y_light": threshold_counts["y_light"][1],
+            "threshold_correct_y_sound": threshold_counts["y_sound"][0],
+            "threshold_wrong_y_sound": threshold_counts["y_sound"][1],
             "airflow_accuracy_sum": airflow_accuracy * self.y_test.shape[0],
             "airflow_precision_sum": airflow_precision * self.y_test.shape[0],
             "airflow_recall_sum": airflow_recall * self.y_test.shape[0],
@@ -353,6 +410,7 @@ def main() -> None:
         input_dim=get_input_dim(),
         local_epochs=args.local_epochs,
         batch_size=args.batch_size,
+        predictions_out_dir=os.path.abspath(args.predictions_out_dir) if args.predictions_out_dir else None,
     )
 
     print("fl_client_lstm.py starting")
