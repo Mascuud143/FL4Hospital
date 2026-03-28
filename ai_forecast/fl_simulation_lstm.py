@@ -1,7 +1,6 @@
 import argparse
+import json
 import os
-import threading
-import time
 
 import flwr as fl
 import pandas as pd
@@ -35,10 +34,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
-    parser.add_argument("--server-address", default="127.0.0.1:8091", help="Used for threaded fallback mode")
-    parser.add_argument("--server-start-wait", type=float, default=2.0, help="Seconds to wait before starting fallback clients")
-    parser.add_argument("--client-retries", type=int, default=60, help="Retries for fallback client connections")
-    parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between fallback client retries")
     return parser.parse_args()
 
 
@@ -70,24 +65,23 @@ def load_filtered(path: str, room_ids: set[str], chunksize: int) -> pd.DataFrame
     return df.loc[:, ~df.columns.duplicated()]
 
 
-class VerboseTrackingFedAvg(TrackingFedAvg):
-    def configure_fit(self, server_round, parameters, client_manager):
-        fit_cfg = super().configure_fit(server_round, parameters, client_manager)
-        print(f"[round {server_round}] configure_fit sampled_clients={len(fit_cfg)}")
-        return fit_cfg
-
-    def aggregate_fit(self, server_round, results, failures):
-        print(f"[round {server_round}] aggregate_fit received_results={len(results)} failures={len(failures)}")
-        return super().aggregate_fit(server_round, results, failures)
-
-    def configure_evaluate(self, server_round, parameters, client_manager):
-        eval_cfg = super().configure_evaluate(server_round, parameters, client_manager)
-        print(f"[round {server_round}] configure_evaluate sampled_clients={len(eval_cfg)}")
-        return eval_cfg
-
-    def aggregate_evaluate(self, server_round, results, failures):
-        print(f"[round {server_round}] aggregate_evaluate received_results={len(results)} failures={len(failures)}")
-        return super().aggregate_evaluate(server_round, results, failures)
+def build_room_sequences(
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    room_ids: list[str],
+    sequence_length: int,
+) -> dict[str, tuple]:
+    room_data: dict[str, tuple] = {}
+    for rid in room_ids:
+        room_train_df = train_df[train_df["client_id"] == rid]
+        room_test_df = test_df[test_df["client_id"] == rid]
+        x_train, y_train, _, _ = build_sequence_arrays(room_train_df, sequence_length)
+        x_test, y_test, current_test, change_true = build_sequence_arrays(room_test_df, sequence_length)
+        if len(y_train) == 0:
+            continue
+        # Each room contributes overlapping sequence windows rather than flat rows.
+        room_data[rid] = (x_train, y_train, x_test, y_test, current_test, change_true)
+    return room_data
 
 
 def main() -> None:
@@ -121,25 +115,14 @@ def main() -> None:
     print(f"[load] train_rows={len(train_df)} test_rows={len(test_df)}")
 
     print("[load] preparing room sequences...")
-    room_data: dict[str, tuple] = {}
-    for idx, rid in enumerate(room_ids, start=1):
-        room_train_df = train_df[train_df["client_id"] == rid]
-        room_test_df = test_df[test_df["client_id"] == rid]
-        x_train, y_train, _, _ = build_sequence_arrays(room_train_df, args.sequence_length)
-        x_test, y_test, current_test, change_true = build_sequence_arrays(room_test_df, args.sequence_length)
-        if len(y_train) == 0:
-            continue
-        room_data[rid] = (x_train, y_train, x_test, y_test, current_test, change_true)
-        if idx % 25 == 0:
-            print(f"[prep] rooms_prepared={idx}/{len(room_ids)}")
-
+    room_data = build_room_sequences(train_df, test_df, room_ids, args.sequence_length)
     room_ids = sorted(room_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
     if not room_ids:
         raise RuntimeError("No room sequence training data loaded for LSTM simulation.")
 
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
-    strategy = VerboseTrackingFedAvg(
+    strategy = TrackingFedAvg(
         weights_out_dir=weights_out_dir,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
@@ -150,6 +133,7 @@ def main() -> None:
     )
 
     def client_fn(cid: str):
+        # Flower client ids are positional; here we map them back to actual room ids.
         rid = room_ids[int(cid)]
         x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
         return RoomLSTMClient(
@@ -177,81 +161,16 @@ def main() -> None:
     print(f"sequence_length={args.sequence_length}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
-
-    try:
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=len(room_ids),
-            config=fl.server.ServerConfig(num_rounds=args.rounds),
-            strategy=strategy,
-            client_resources={"num_cpus": args.client_cpu},
-        )
-        print("[done] simulation finished (ray backend)")
-        if history.losses_distributed:
-            print(f"[done] distributed_losses={history.losses_distributed}")
-    except ImportError as exc:
-        print(f"[fallback] ray simulation backend unavailable: {exc}")
-        print("[fallback] starting local threaded Flower server+clients")
-
-        server_errors: list[Exception] = []
-        client_errors: list[tuple[str, str]] = []
-
-        def server_target() -> None:
-            try:
-                fl.server.start_server(
-                    server_address=args.server_address,
-                    config=fl.server.ServerConfig(num_rounds=args.rounds),
-                    strategy=strategy,
-                )
-            except Exception as e:
-                server_errors.append(e)
-
-        def client_target(rid: str) -> None:
-            x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
-            client = RoomLSTMClient(
-                room_id=rid,
-                x_train=x_train,
-                y_train=y_train,
-                x_test=x_test,
-                y_test=y_test,
-                current_test=current_test,
-                change_true=change_true,
-                input_dim=input_dim,
-                local_epochs=args.local_epochs,
-                batch_size=args.batch_size,
-            )
-            tries = 0
-            while tries < args.client_retries:
-                tries += 1
-                try:
-                    fl.client.start_client(server_address=args.server_address, client=client.to_client())
-                    return
-                except Exception as e:
-                    if tries >= args.client_retries:
-                        client_errors.append((rid, str(e)))
-                        return
-                    time.sleep(args.retry_wait)
-
-        server_thread = threading.Thread(target=server_target, name="fl_lstm_server")
-        server_thread.start()
-        time.sleep(args.server_start_wait)
-
-        client_threads: list[threading.Thread] = []
-        for rid in room_ids:
-            thread = threading.Thread(target=client_target, args=(rid,), name=f"fl_lstm_client_{rid}")
-            thread.start()
-            client_threads.append(thread)
-
-        for thread in client_threads:
-            thread.join()
-        server_thread.join()
-
-        if server_errors:
-            raise RuntimeError(f"Threaded fallback server failed: {server_errors[0]}")
-        if client_errors:
-            sample = ", ".join([f"{rid}: {err}" for rid, err in client_errors[:3]])
-            raise RuntimeError(f"Threaded fallback had {len(client_errors)} client failures. Sample: {sample}")
-        print("[done] simulation finished (threaded fallback)")
+    history = fl.simulation.start_simulation(
+        client_fn=client_fn,
+        num_clients=len(room_ids),
+        config=fl.server.ServerConfig(num_rounds=args.rounds),
+        strategy=strategy,
+        client_resources={"num_cpus": args.client_cpu},
+    )
+    print("[done] simulation finished")
+    if history.losses_distributed:
+        print(f"[done] distributed_losses={history.losses_distributed}")
 
     if strategy.latest_eval_summary is not None and args.summary_out:
         summary_out = os.path.abspath(args.summary_out)
@@ -265,8 +184,6 @@ def main() -> None:
             **strategy.latest_eval_summary,
         }
         with open(summary_out, "w", encoding="utf-8") as f:
-            import json
-
             json.dump(payload, f, indent=2)
 
 

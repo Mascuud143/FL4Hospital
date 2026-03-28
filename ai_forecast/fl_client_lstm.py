@@ -49,6 +49,8 @@ def get_input_dim() -> int:
 class NextHourLSTM(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 1, output_dim: int = len(TARGET_COLUMNS)):
         super().__init__()
+        # The LSTM reads a short sequence of past rows and compresses them into
+        # one hidden representation, which the head maps to the next-hour targets.
         self.lstm = nn.LSTM(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -123,6 +125,8 @@ def build_sequence_arrays(df: pd.DataFrame, sequence_length: int) -> tuple[np.nd
     y_seq = []
     current_seq = []
     change_seq = []
+    # Turn ordered room rows into overlapping windows:
+    # [row1,row2,row3,row4] -> target from row4, then slide one step forward.
     for idx in range(sequence_length - 1, len(df)):
         start_idx = idx - sequence_length + 1
         x_seq.append(x_rows[start_idx : idx + 1])
@@ -199,9 +203,13 @@ class RoomLSTMClient(fl.client.NumPyClient):
         for _ in range(self.local_epochs):
             for batch_x, batch_y in loader:
                 optimizer.zero_grad()
+                # Forward pass: predict the next-hour targets from one sequence window.
                 preds = self.model(batch_x)
+                # MSE measures how far all predicted target values are from the true ones.
                 loss = loss_fn(preds, batch_y)
+                # Backprop computes gradients for every trainable weight in the LSTM and head.
                 loss.backward()
+                # Adam updates the local room model before the round finishes.
                 optimizer.step()
         return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
 

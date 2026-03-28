@@ -19,12 +19,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-available-clients", type=int, default=2, help="Minimum connected clients")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
-    parser.add_argument("--n-features", type=int, default=256, help="Unused compatibility flag")
+    parser.add_argument("--n-features", type=int, default=256, help="Unused compatibility flag kept for compatibility")
     parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour", help="Directory to write global weights per round")
     return parser.parse_args()
 
 
 def make_initial_parameters(_: int) -> fl.common.Parameters:
+    # Server round 1 starts from the same fresh MLP architecture used by every client.
     model = make_model(get_input_dim())
     return fl.common.ndarrays_to_parameters(get_params(model))
 
@@ -43,23 +44,6 @@ def save_parameters(params: fl.common.Parameters, out_path: str) -> None:
     np.savez(out_path, **{f"param_{idx}": array for idx, array in enumerate(ndarrays)})
 
 
-def save_parameters_readable(params: fl.common.Parameters, out_prefix: str) -> None:
-    ndarrays = fl.common.parameters_to_ndarrays(params)
-    summary_txt = f"{out_prefix}_summary.txt"
-    os.makedirs(os.path.dirname(summary_txt), exist_ok=True)
-    with open(summary_txt, "w", encoding="utf-8") as f:
-        f.write(f"param_count={len(ndarrays)}\n")
-        for idx, array in enumerate(ndarrays):
-            flat = array.reshape(-1)
-            csv_path = f"{out_prefix}_param_{idx}.csv"
-            pd.DataFrame({"value": flat}).to_csv(csv_path, index=False)
-            f.write(f"param_{idx}_shape={array.shape}\n")
-            f.write(f"param_{idx}_min={float(np.min(flat))}\n")
-            f.write(f"param_{idx}_max={float(np.max(flat))}\n")
-            f.write(f"param_{idx}_mean={float(np.mean(flat))}\n")
-            f.write(f"param_{idx}_std={float(np.std(flat))}\n")
-
-
 class TrackingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -68,6 +52,7 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         self.latest_eval_summary: dict[str, float] | None = None
 
     def aggregate_fit(self, server_round, results, failures):
+        # Flower averages the client-updated models here to form the next global model.
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
@@ -79,11 +64,14 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         return aggregated_parameters, aggregated_metrics
 
     def aggregate_evaluate(self, server_round, results, failures):
+        # Clients send sums and counts, and the server turns them into dataset-wide metrics.
         aggregated_loss, aggregated_metrics = super().aggregate_evaluate(server_round, results, failures)
         summary = {
             "evaluated_examples": 0.0,
             "regression_correct": 0.0,
             "regression_wrong": 0.0,
+            "temperature_correct": 0.0,
+            "temperature_wrong": 0.0,
             "airflow_correct": 0.0,
             "airflow_incorrect": 0.0,
             "airflow_tp": 0.0,
@@ -135,6 +123,9 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "regression_correct": int(summary["regression_correct"]),
             "regression_wrong": int(summary["regression_wrong"]),
             "regression_correct_rate": summary["regression_correct"] / max(summary["regression_correct"] + summary["regression_wrong"], 1.0),
+            "temperature_correct": int(summary["temperature_correct"]),
+            "temperature_wrong": int(summary["temperature_wrong"]),
+            "temperature_correct_rate": summary["temperature_correct"] / max(summary["temperature_correct"] + summary["temperature_wrong"], 1.0),
             "airflow_accuracy": summary["airflow_accuracy_sum"] / count,
             "airflow_precision": summary["airflow_precision_sum"] / count,
             "airflow_recall": summary["airflow_recall_sum"] / count,
@@ -164,6 +155,7 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         print(
             f"[round {server_round}] evaluation_summary "
             f"regression_correct_rate={self.latest_eval_summary['regression_correct_rate']:.4f} "
+            f"temperature_correct_rate={self.latest_eval_summary['temperature_correct_rate']:.4f} "
             f"airflow_f1={self.latest_eval_summary['airflow_f1']:.4f} "
             f"change_f1={self.latest_eval_summary['change_f1']:.4f} "
             f"mae_y_temp_main={self.latest_eval_summary['mae_y_temp_main']:.4f} "
@@ -178,6 +170,7 @@ def main() -> None:
     weights_out_dir = os.path.abspath(args.weights_out_dir)
     rooms = count_rooms(split_dir)
 
+    # FedAvg is the core FL rule: sample clients, collect local updates, average them.
     strategy = TrackingFedAvg(
         weights_out_dir=weights_out_dir,
         fraction_fit=args.fraction_fit,

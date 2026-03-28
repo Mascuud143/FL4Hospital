@@ -61,6 +61,7 @@ def get_input_dim() -> int:
 class ChangeMLP(nn.Module):
     def __init__(self, input_dim: int):
         super().__init__()
+        # This branch answers: "do we need any comfort change at all?"
         self.net = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.ReLU(),
@@ -76,6 +77,8 @@ class ChangeMLP(nn.Module):
 class TargetLSTM(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 1, output_dim: int = len(TARGET_COLUMNS)):
         super().__init__()
+        # This branch answers: "if we predict the next state, what should the
+        # actual comfort values be after looking at recent history?"
         self.lstm = nn.LSTM(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -97,6 +100,7 @@ class TargetLSTM(nn.Module):
 class HybridNextHourModel(nn.Module):
     def __init__(self, input_dim: int):
         super().__init__()
+        # The model keeps the change-decision task separate from the target-value task.
         self.change_mlp = ChangeMLP(input_dim=input_dim)
         self.target_lstm = TargetLSTM(input_dim=input_dim)
 
@@ -164,6 +168,10 @@ def build_hybrid_arrays(
     y_seq = []
     current_seq = []
     change_seq = []
+    # Every sample contains:
+    # - one flat row for the change classifier
+    # - one sequence window for the target predictor
+    # - the target values from the last row in that window
     for idx in range(sequence_length - 1, len(df)):
         start_idx = idx - sequence_length + 1
         x_seq.append(x_rows[start_idx : idx + 1])
@@ -331,6 +339,7 @@ class RoomHybridClient(fl.client.NumPyClient):
         for _ in range(self.local_epochs):
             for batch_flat, batch_seq, batch_change, batch_targets in loader:
                 optimizer_mlp.zero_grad()
+                # Branch 1: classify whether any comfort change should happen.
                 change_logits = self.model.change_mlp(batch_flat)
                 change_loss = _balanced_binary_loss(
                     change_logits,
@@ -342,11 +351,14 @@ class RoomHybridClient(fl.client.NumPyClient):
                 optimizer_mlp.step()
 
                 optimizer_lstm.zero_grad()
+                # Branch 2: predict the concrete next-hour settings from recent history.
                 target_preds = self.model.target_lstm(batch_seq)
                 reg_loss = torch.nn.functional.mse_loss(
                     target_preds[:, :AIRFLOW_INDEX],
                     batch_targets[:, :AIRFLOW_INDEX],
                 )
+                # Airflow is treated like a binary target, so we train it with
+                # a weighted binary loss instead of plain regression.
                 airflow_loss = _balanced_binary_loss(
                     target_preds[:, AIRFLOW_INDEX],
                     batch_targets[:, AIRFLOW_INDEX],
@@ -357,7 +369,8 @@ class RoomHybridClient(fl.client.NumPyClient):
                 target_loss.backward()
                 optimizer_lstm.step()
 
-        # Calibrate thresholds using local training predictions after each round.
+        # After local training we re-estimate thresholds from local predictions,
+        # because class balance differs from room to room.
         with torch.no_grad():
             train_change_logits = self.model.change_mlp(
                 torch.tensor(self.x_train_flat, dtype=torch.float32, device=self.device)
@@ -418,6 +431,8 @@ class RoomHybridClient(fl.client.NumPyClient):
 
         self.model.eval()
         with torch.no_grad():
+            # We evaluate both branches and then derive change metrics from the
+            # calibrated change probabilities.
             y_pred = self.model.target_lstm(torch.tensor(self.x_test_seq, dtype=torch.float32, device=self.device)).cpu().numpy()
             change_logits = self.model.change_mlp(torch.tensor(self.x_test_flat, dtype=torch.float32, device=self.device)).cpu().numpy()
 

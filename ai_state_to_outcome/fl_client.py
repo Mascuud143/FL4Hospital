@@ -43,6 +43,8 @@ def get_input_dim() -> int:
 class StateOutcomeMLP(nn.Module):
     def __init__(self, input_dim: int, output_dim: int = len(TARGET_COLUMNS)):
         super().__init__()
+        # This MLP maps one event-state snapshot directly to the predicted
+        # comfort outcome after that event.
         self.net = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.ReLU(),
@@ -89,6 +91,7 @@ def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
 
 
 def sanitize_rows(df: pd.DataFrame) -> pd.DataFrame:
+    # The federated client expects numeric features and complete target labels.
     for col in [*FEATURE_COLUMNS, *TARGET_COLUMNS]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -156,7 +159,10 @@ class RoomClient(fl.client.NumPyClient):
         for _ in range(self.local_epochs):
             for batch_x, batch_y in loader:
                 optimizer.zero_grad()
+                # One forward pass predicts all outcome targets for this event batch.
                 preds = self.model(batch_x)
+                # Continuous comfort targets use MSE, while airflow is trained as
+                # a weighted binary classification problem.
                 reg_loss = reg_loss_fn(preds[:, :4], batch_y[:, :4])
                 airflow_loss = airflow_loss_fn(preds[:, AIRFLOW_OUTPUT_INDEX], batch_y[:, AIRFLOW_OUTPUT_INDEX])
                 (reg_loss + airflow_loss).backward()
@@ -190,6 +196,8 @@ class RoomClient(fl.client.NumPyClient):
 
         self.model.eval()
         with torch.no_grad():
+            # The network returns raw airflow logits, so we convert them to
+            # probabilities with the sigmoid formula before thresholding at 0.5.
             logits = self.model(torch.tensor(self.x_test, dtype=torch.float32, device=self.device)).cpu().numpy()
 
         reg_pred = logits[:, :4]

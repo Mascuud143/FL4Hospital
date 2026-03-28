@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_initial_parameters() -> fl.common.Parameters:
+    # Round 1 starts from a fresh LSTM with the same shape every client uses.
     model = make_model(get_input_dim())
     return fl.common.ndarrays_to_parameters(get_params(model))
 
@@ -42,23 +43,6 @@ def save_parameters(params: fl.common.Parameters, out_path: str) -> None:
     np.savez(out_path, **{f"param_{idx}": array for idx, array in enumerate(ndarrays)})
 
 
-def save_parameters_readable(params: fl.common.Parameters, out_prefix: str) -> None:
-    ndarrays = fl.common.parameters_to_ndarrays(params)
-    summary_txt = f"{out_prefix}_summary.txt"
-    os.makedirs(os.path.dirname(summary_txt), exist_ok=True)
-    with open(summary_txt, "w", encoding="utf-8") as f:
-        f.write(f"param_count={len(ndarrays)}\n")
-        for idx, array in enumerate(ndarrays):
-            flat = array.reshape(-1)
-            csv_path = f"{out_prefix}_param_{idx}.csv"
-            pd.DataFrame({"value": flat}).to_csv(csv_path, index=False)
-            f.write(f"param_{idx}_shape={array.shape}\n")
-            f.write(f"param_{idx}_min={float(np.min(flat))}\n")
-            f.write(f"param_{idx}_max={float(np.max(flat))}\n")
-            f.write(f"param_{idx}_mean={float(np.mean(flat))}\n")
-            f.write(f"param_{idx}_std={float(np.std(flat))}\n")
-
-
 class TrackingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -67,6 +51,7 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         self.latest_eval_summary: dict[str, float] | None = None
 
     def aggregate_fit(self, server_round, results, failures):
+        # FedAvg combines the locally trained LSTM weights into the next global model.
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
@@ -78,6 +63,7 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         return aggregated_parameters, aggregated_metrics
 
     def aggregate_evaluate(self, server_round, results, failures):
+        # Clients report metric sums; the server converts them into overall averages.
         aggregated_loss, aggregated_metrics = super().aggregate_evaluate(server_round, results, failures)
         summary = {
             "evaluated_examples": 0.0,
@@ -177,6 +163,7 @@ def main() -> None:
     weights_out_dir = os.path.abspath(args.weights_out_dir)
     rooms = count_rooms(split_dir)
 
+    # FedAvg is still the FL strategy; only the client-side model changed from MLP to LSTM.
     strategy = TrackingFedAvg(
         weights_out_dir=weights_out_dir,
         fraction_fit=args.fraction_fit,

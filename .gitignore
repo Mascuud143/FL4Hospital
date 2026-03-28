@@ -100,4 +100,6 @@ ai/splits_next_hour/
 ai/splits_next_hour_2/
 ai/splits_next_hour_3/
 ai_forecast/outputs_next_hour_3/
+ai_forecast/outputs_next_hour/
+ai_forecast/outputs_next_hour_parallel/
 ai_forecast/splits_next_hour_3/

@@ -47,6 +47,8 @@ def make_model(input_dim: int) -> MLPRegressor:
         max_iter=1,
         shuffle=False,
     )
+    # sklearn's MLPRegressor creates weight arrays only after an initial fit.
+    # We bootstrap it with one dummy sample so Flower can exchange parameters.
     x0 = np.zeros((1, input_dim), dtype=np.float64)
     y0 = np.zeros((1, len(TARGET_COLUMNS)), dtype=np.float64)
     model.partial_fit(x0, y0)
@@ -77,6 +79,7 @@ def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
 
 
 def sanitize_targets(df: pd.DataFrame) -> pd.DataFrame:
+    # The FL clients expect a fully numeric matrix with no missing targets.
     for col in CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS).copy()
@@ -97,6 +100,19 @@ def target_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, 
     regression_true = y_true[:, :AIRFLOW_INDEX]
     regression_pred = y_pred[:, :AIRFLOW_INDEX]
     correct = int(np.sum(np.all(np.abs(regression_true - regression_pred) <= thresholds, axis=1)))
+    return correct, int(y_true.shape[0] - correct)
+
+
+def temperature_correct_counts(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[int, int]:
+    thresholds = np.array(
+        [
+            DEFAULT_OUTPUT_THRESHOLDS["y_temp_main"],
+        ],
+        dtype=np.float64,
+    )
+    temp_true = y_true[:, :2]
+    temp_pred = y_pred[:, :2]
+    correct = int(np.sum(np.all(np.abs(temp_true - temp_pred) <= thresholds, axis=1)))
     return correct, int(y_true.shape[0] - correct)
 
 
@@ -127,8 +143,10 @@ class RoomClient(fl.client.NumPyClient):
         return get_params(self.model)
 
     def fit(self, parameters, config):
+        # Each round starts from the current global model sent by the server.
         set_params(self.model, parameters)
         for _ in range(self.local_epochs):
+            # partial_fit runs one local optimization pass over this room's rows.
             self.model.partial_fit(self.x_train, self.y_train)
         return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
 
@@ -146,6 +164,8 @@ class RoomClient(fl.client.NumPyClient):
                 "mse_sum_y_sound": 0.0,
                 "regression_correct": 0,
                 "regression_wrong": 0,
+                "temperature_correct": 0,
+                "temperature_wrong": 0,
                 "airflow_accuracy_sum": 0.0,
                 "airflow_precision_sum": 0.0,
                 "airflow_recall_sum": 0.0,
@@ -170,6 +190,8 @@ class RoomClient(fl.client.NumPyClient):
             }
 
         y_pred = self.model.predict(self.x_test)
+        # The network predicts all next-hour targets at once, then we score
+        # regression accuracy, airflow classification, and change detection.
         reg_true = self.y_test[:, :AIRFLOW_INDEX]
         reg_pred = y_pred[:, :AIRFLOW_INDEX]
         airflow_true = self.y_test[:, AIRFLOW_INDEX].round().astype(int)
@@ -184,6 +206,7 @@ class RoomClient(fl.client.NumPyClient):
             for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX])
         }
         regression_correct, regression_wrong = target_correct_counts(self.y_test, y_pred)
+        temperature_correct, temperature_wrong = temperature_correct_counts(self.y_test, y_pred)
 
         tp = int(np.sum((airflow_true == 1) & (airflow_pred == 1)))
         tn = int(np.sum((airflow_true == 0) & (airflow_pred == 0)))
@@ -215,6 +238,8 @@ class RoomClient(fl.client.NumPyClient):
             "mse_sum_y_sound": regression_mse["y_sound"] * self.y_test.shape[0],
             "regression_correct": regression_correct,
             "regression_wrong": regression_wrong,
+            "temperature_correct": temperature_correct,
+            "temperature_wrong": temperature_wrong,
             "airflow_accuracy_sum": airflow_accuracy * self.y_test.shape[0],
             "airflow_precision_sum": airflow_precision * self.y_test.shape[0],
             "airflow_recall_sum": airflow_recall * self.y_test.shape[0],
