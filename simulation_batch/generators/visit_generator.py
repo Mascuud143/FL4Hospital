@@ -128,15 +128,14 @@ class VisitGenerator:
                             return round(self.rng.uniform(36.0, 38.5), 1)
                         
                     for ts in visit_times:
+                        symptom = generate_a_symptom_or_none(adm.current_diagnosis)
                         row = Visit(
                             patient_id=adm.patient_id,
                             visit_time=ts,
-                            body_temperature=round(
-                                self.rng.uniform(36.0, 38.5), 1
-                            ),
-                            blood_pressure=f"{self.rng.randint(110,140)}/{self.rng.randint(70,90)}",
+                            body_temperature=generate_body_temperature_based_on_symptom(symptom),
+                            blood_pressure=generate_blood_pressure_based_on_symptom(symptom),
                             # get random symptoms from diagnosis, some times empty, some times one sytom only no multiple symptoms for simplicity
-                            symptoms=generate_a_symptom_or_none(adm.current_diagnosis),
+                            symptoms=symptom,
                         )
                         write_model_row(row)
                         session.add(row)

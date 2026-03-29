@@ -18,6 +18,7 @@ DEFAULT_OUTPUT_THRESHOLDS = {
     "y_sound": 5.0,
 }
 MODEL_HIDDEN_LAYER_SIZES = (128, 64, 32)
+DEFAULT_BATCH_SIZE = 32
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--connect-retries", type=int, default=60, help="Connection retries")
     parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between retries")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize for room filtering")
+    parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated MLP hidden layer sizes")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for local training")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     return parser.parse_args()
 
 
@@ -36,14 +42,29 @@ def get_input_dim() -> int:
     return len(INPUT_COLUMNS)
 
 
-def make_model(input_dim: int) -> MLPRegressor:
+def parse_hidden_layers(spec: str) -> tuple[int, ...]:
+    values = [part.strip() for part in str(spec).split(",")]
+    layers = tuple(int(part) for part in values if part)
+    if not layers or any(size <= 0 for size in layers):
+        raise ValueError(f"Invalid hidden layer specification: {spec}")
+    return layers
+
+
+def make_model(
+    input_dim: int,
+    hidden_layer_sizes: tuple[int, ...] = MODEL_HIDDEN_LAYER_SIZES,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    learning_rate: float = 1e-3,
+    optimizer: str = "adam",
+    activation: str = "relu",
+) -> MLPRegressor:
     model = MLPRegressor(
-        hidden_layer_sizes=MODEL_HIDDEN_LAYER_SIZES,
-        activation="relu",
-        solver="adam",
+        hidden_layer_sizes=hidden_layer_sizes,
+        activation=activation,
+        solver=optimizer,
         random_state=42,
-        learning_rate_init=1e-3,
-        batch_size=32,
+        learning_rate_init=learning_rate,
+        batch_size=batch_size,
         max_iter=1,
         shuffle=False,
     )
@@ -79,10 +100,16 @@ def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
 
 
 def sanitize_targets(df: pd.DataFrame) -> pd.DataFrame:
-    # The FL clients expect a fully numeric matrix with no missing targets.
-    for col in CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS:
+    # Older generated splits may not include newer optional input columns.
+    # For backward compatibility we materialize missing feature columns and
+    # default them to zero before building the numeric matrix.
+    required_columns = CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS
+    for col in required_columns:
+        if col not in df.columns:
+            df[col] = 0.0 if col in INPUT_COLUMNS else np.nan
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=CHANGE_BASELINE_COLUMNS + ["y_any_change"] + INPUT_COLUMNS + TARGET_COLUMNS).copy()
+    df[INPUT_COLUMNS] = df[INPUT_COLUMNS].fillna(0.0)
+    df = df.dropna(subset=CHANGE_BASELINE_COLUMNS + ["y_any_change"] + TARGET_COLUMNS).copy()
     df["y_airflow"] = df["y_airflow"].clip(0.0, 1.0)
     return df
 
@@ -138,6 +165,11 @@ class RoomClient(fl.client.NumPyClient):
         change_true: np.ndarray,
         input_dim: int,
         local_epochs: int,
+        hidden_layer_sizes: tuple[int, ...] = MODEL_HIDDEN_LAYER_SIZES,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        learning_rate: float = 1e-3,
+        optimizer: str = "adam",
+        activation: str = "relu",
     ):
         self.room_id = room_id
         self.x_train = x_train
@@ -147,7 +179,14 @@ class RoomClient(fl.client.NumPyClient):
         self.current_test = current_test
         self.change_true = change_true
         self.local_epochs = local_epochs
-        self.model = make_model(input_dim)
+        self.model = make_model(
+            input_dim,
+            hidden_layer_sizes=hidden_layer_sizes,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            optimizer=optimizer,
+            activation=activation,
+        )
 
     def get_parameters(self, config: dict[str, Any]):
         return get_params(self.model)
@@ -155,10 +194,19 @@ class RoomClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         # Each round starts from the current global model sent by the server.
         set_params(self.model, parameters)
+        initial_parameters = [np.asarray(param, dtype=np.float64).copy() for param in parameters]
+        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
         train_loss_sum = 0.0
         for _ in range(self.local_epochs):
             # partial_fit runs one local optimization pass over this room's rows.
             self.model.partial_fit(self.x_train, self.y_train)
+            if proximal_mu > 0.0:
+                current_parameters = get_params(self.model)
+                blended_parameters = [
+                    (current + proximal_mu * initial) / (1.0 + proximal_mu)
+                    for current, initial in zip(current_parameters, initial_parameters)
+                ]
+                set_params(self.model, blended_parameters)
             train_pred = self.model.predict(self.x_train)
             train_loss_sum += float(mean_squared_error(self.y_train, train_pred)) * float(self.y_train.shape[0])
         return get_params(self.model), int(self.y_train.shape[0]), {
@@ -314,6 +362,7 @@ def main() -> None:
         raise RuntimeError(f"No training rows for room_id={room_id}")
 
     input_dim = get_input_dim()
+    hidden_layer_sizes = parse_hidden_layers(args.hidden_layers)
     x_train = row_to_input_vector(train_df)
     y_train = train_df[TARGET_COLUMNS].to_numpy(dtype=np.float64)
     x_test = row_to_input_vector(test_df)
@@ -331,12 +380,22 @@ def main() -> None:
         change_true=change_true,
         input_dim=input_dim,
         local_epochs=args.local_epochs,
+        hidden_layer_sizes=hidden_layer_sizes,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        optimizer=args.optimizer,
+        activation=args.activation,
     )
 
     print("fl_client.py starting")
     print(f"room_id={room_id}")
     print(f"split_dir={split_dir}")
     print(f"server_address={args.server_address}")
+    print(f"hidden_layers={','.join(str(size) for size in hidden_layer_sizes)}")
+    print(f"batch_size={args.batch_size}")
+    print(f"learning_rate={args.learning_rate}")
+    print(f"optimizer={args.optimizer}")
+    print(f"activation={args.activation}")
     print(f"train_rows={len(y_train)} test_rows={len(y_test)}")
 
     attempts = 0

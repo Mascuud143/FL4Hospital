@@ -23,9 +23,9 @@ class ToiletUsagePolicy:
 
     # Visits per day-part (inclusive randint ranges)
     visits_night_range: Tuple[int, int] = (0, 1)      # 00-06 (rare)
-    visits_morning_range: Tuple[int, int] = (1, 3)    # 06-12
-    visits_afternoon_range: Tuple[int, int] = (2, 5)  # 12-18 (most)
-    visits_evening_range: Tuple[int, int] = (1, 4)    # 18-24
+    visits_morning_range: Tuple[int, int] = (1, 2)    # 06-12
+    visits_afternoon_range: Tuple[int, int] = (1, 3)  # 12-18
+    visits_evening_range: Tuple[int, int] = (1, 2)    # 18-24
 
     # Water per toilet visit (liters)
     flush_l_range: Tuple[float, float] = (4.0, 9.0)
@@ -33,10 +33,10 @@ class ToiletUsagePolicy:
     night_sink_multiplier: float = 0.8
 
     # Shower behavior
-    shower_probability: float = 0.50
+    shower_probability: float = 0.20
     shower_window_hours: Tuple[int, int] = (6, 10)  # morning only
-    shower_duration_s_range: Tuple[int, int] = (5 * 60, 12 * 60)  # 5–12 min
-    shower_flow_l_per_min_range: Tuple[float, float] = (6.0, 12.0)  # liters/min
+    shower_duration_s_range: Tuple[int, int] = (4 * 60, 8 * 60)  # 4-8 min
+    shower_flow_l_per_min_range: Tuple[float, float] = (5.0, 8.0)  # liters/min
 
 
 def _day_start(t: datetime) -> datetime:
@@ -54,6 +54,14 @@ def _random_times_in_window(rng: random.Random, w0: datetime, w1: datetime, k: i
     times = [w0 + timedelta(seconds=rng.randint(0, span - 1)) for _ in range(k)]
     times.sort()
     return times
+
+
+def _window_fraction(w0: datetime, w1: datetime, full0: datetime, full1: datetime) -> float:
+    overlap_start = max(w0, full0)
+    overlap_end = min(w1, full1)
+    overlap_s = max(0.0, (overlap_end - overlap_start).total_seconds())
+    full_s = max(1.0, (full1 - full0).total_seconds())
+    return min(1.0, overlap_s / full_s)
 
 
 class ToiletUsageGenerator:
@@ -111,7 +119,7 @@ class ToiletUsageGenerator:
                         ss0 = max(s0, w0)
                         ss1 = min(s1, w1)
 
-                        if ss0 < ss1:
+                        if ss0 < ss1 and self.rng.random() < _window_fraction(w0, w1, s0, s1):
                             t_shower = _random_times_in_window(self.rng, ss0, ss1, k=1)[0]
                             dur_s = self.rng.randint(*self.policy.shower_duration_s_range)
                             t_shower_end = min(t_shower + timedelta(seconds=dur_s), w1)
@@ -137,7 +145,8 @@ class ToiletUsageGenerator:
                         if pp0 >= pp1:
                             continue
 
-                        k = self.rng.randint(k_range[0], k_range[1])
+                        sampled_k = self.rng.randint(k_range[0], k_range[1])
+                        k = min(sampled_k, max(0, round(sampled_k * _window_fraction(w0, w1, p0, p1))))
                         visit_times = _random_times_in_window(self.rng, pp0, pp1, k)
 
                         for _t in visit_times:

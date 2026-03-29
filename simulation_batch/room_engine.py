@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
 
 from persistence.database import session_scope
@@ -34,6 +33,8 @@ class EngineConfig:
     hvac_power_w: float = 1500.0
     ventilation_power_w: float = 80.0
     toilet_heater_power_w: float = 600.0
+    toilet_heater_run_s: int = 15 * 60
+    enable_utility_usage: bool = False
 
     # Stabilization logic
     temp_tolerance_c: float = 0.4          # wider tolerance prevents "runs forever"
@@ -49,14 +50,14 @@ class RoomState:
         self.room_id = room_id
 
         # Current state
-        self.temperature = 0
+        self.temperature = 21.0
         self.humidity = 45.0
         self.co2 = 600.0
         self.light = 100.0
         self.sound = 30.0
 
         # Targets
-        self.target_temperature = 0
+        self.target_temperature = 21.0
         self.target_light = 100.0
         self.target_sound = 30.0
 
@@ -81,6 +82,8 @@ class RoomState:
 
         # Toilet heater energy session tracking
         self._toilet_heater_session_start: Optional[datetime] = None
+        self._toilet_heater_active_until: Optional[datetime] = None
+        self._last_toilet_heater_pref_ts: Optional[datetime] = None
 
         # Avoid duplicate actuator history inserts
         self._last_vent_mode: Optional[str] = None
@@ -155,6 +158,8 @@ class RoomEngine:
           - airflow ON
         Do NOT log OFF rows (airflow level 0) and do NOT log baseline.
         """
+        if not self.cfg.enable_utility_usage:
+            return
         when = _as_utc(when)
         mode, level = self._compute_vent_mode(room)
 
@@ -183,6 +188,8 @@ class RoomEngine:
     # Toilet heater state logging
     # -------------------------
     def _log_toilet_heater_if_changed(self, room: RoomState, *, when: datetime, state: bool) -> None:
+        if not self.cfg.enable_utility_usage:
+            return
         when = _as_utc(when)
 
         if room._last_toilet_heater_state == state:
@@ -287,6 +294,11 @@ class RoomEngine:
                             room._hvac_stable_ticks = 0
 
                     # If temperature_main is None: Option A (do nothing)
+                    if toilet_heater_req and room._last_toilet_heater_pref_ts != pref_ts:
+                        room._last_toilet_heater_pref_ts = pref_ts
+                        room._toilet_heater_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
+                        if room._toilet_heater_session_start is None:
+                            room._toilet_heater_session_start = pref_ts
 
                 # ON/OFF energy sessions (airflow + toilet heater)
                 self._update_onoff_utilities(
@@ -325,6 +337,12 @@ class RoomEngine:
         for room in self.rooms.values():
             room.step_dynamics()
             self._check_hvac_stabilization(room, now=now)
+            if (
+                room._toilet_heater_session_start is not None
+                and room._toilet_heater_active_until is not None
+                and now >= room._toilet_heater_active_until
+            ):
+                self._close_toilet_heater_session(room, end_time=room._toilet_heater_active_until)
 
             # If airflow is ON, we still want ventilation rows only on changes,
             # so no need to log here every tick.
@@ -334,20 +352,18 @@ class RoomEngine:
     # -------------------------
     def _update_onoff_utilities(self, room: RoomState, *, when: datetime, airflow: bool, toilet_heater: bool) -> None:
         when = _as_utc(when)
+        hvac_active = room._hvac_session_start is not None and room._hvac_session_target is not None
 
-        # airflow session (fan-only)
-        if airflow:
+        # Airflow is billed only in fan-only mode, not while HVAC is actively heating/cooling.
+        if airflow and not hvac_active:
             if room._airflow_session_start is None:
                 room._airflow_session_start = when
         else:
             if room._airflow_session_start is not None:
                 self._close_airflow_session(room, end_time=when)
 
-        # toilet heater session
-        if toilet_heater:
-            if room._toilet_heater_session_start is None:
-                room._toilet_heater_session_start = when
-        else:
+        if not toilet_heater:
+            room._toilet_heater_active_until = None
             if room._toilet_heater_session_start is not None:
                 self._close_toilet_heater_session(room, end_time=when)
 
@@ -386,14 +402,15 @@ class RoomEngine:
         hours = max(0.0, (end_time - start).total_seconds() / 3600.0)
         kwh = calculate_energy_usage_kwh(self.cfg.hvac_power_w, hours)
 
-        insert_utility_usage(
-            room_id=room.room_id,
-            category="hvac",
-            start_time=start,
-            end_time=end_time,
-            power_kwh=kwh,
-            water_liters=None,
-        )
+        if self.cfg.enable_utility_usage:
+            insert_utility_usage(
+                room_id=room.room_id,
+                category="hvac",
+                start_time=start,
+                end_time=end_time,
+                power_kwh=kwh,
+                water_liters=None,
+            )
 
         room._hvac_session_start = None
         room._hvac_session_target = None
@@ -411,14 +428,15 @@ class RoomEngine:
         kwh = calculate_energy_usage_kwh(self.cfg.ventilation_power_w, hours)
 
         # ✅ Separate category so HVAC rows match temperature sessions
-        insert_utility_usage(
-            room_id=room.room_id,
-            category="airflow",
-            start_time=start,
-            end_time=end_time,
-            power_kwh=kwh,
-            water_liters=None,
-        )
+        if self.cfg.enable_utility_usage:
+            insert_utility_usage(
+                room_id=room.room_id,
+                category="airflow",
+                start_time=start,
+                end_time=end_time,
+                power_kwh=kwh,
+                water_liters=None,
+            )
 
         room._airflow_session_start = None
 
@@ -433,16 +451,18 @@ class RoomEngine:
         hours = max(0.0, (end_time - start).total_seconds() / 3600.0)
         kwh = calculate_energy_usage_kwh(self.cfg.toilet_heater_power_w, hours)
 
-        insert_utility_usage(
-            room_id=room.room_id,
-            category="toilet_heater",
-            start_time=start,
-            end_time=end_time,
-            power_kwh=kwh,
-            water_liters=None,
-        )
+        if self.cfg.enable_utility_usage:
+            insert_utility_usage(
+                room_id=room.room_id,
+                category="toilet_heater",
+                start_time=start,
+                end_time=end_time,
+                power_kwh=kwh,
+                water_liters=None,
+            )
 
         room._toilet_heater_session_start = None
+        room._toilet_heater_active_until = None
 
     def _close_all_open_sessions(self, room: RoomState, *, end_time: datetime) -> None:
         end_time = _as_utc(end_time)

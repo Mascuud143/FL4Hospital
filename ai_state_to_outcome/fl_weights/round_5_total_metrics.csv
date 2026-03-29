@@ -1,2 +1,0 @@
-mae_y_target_temp_main,mae_y_target_temp_toilet,mae_y_target_light,mae_y_target_sound,rmse_y_target_temp_main,rmse_y_target_temp_toilet,rmse_y_target_light,rmse_y_target_sound,airflow_accuracy,airflow_precision,airflow_recall,airflow_f1,airflow_correct,airflow_incorrect,airflow_tp,airflow_tn,airflow_fp,airflow_fn,evaluated_examples
-2.8225016513567294,11.244414286667041,17.065332584166796,9.891986954078245,3.1073278563590496,11.32168425657838,20.06026081692418,12.439417960561716,0.34269662921348315,0.34269662921348315,1.0,0.5091175946033845,61,117,61,0,117,0,178

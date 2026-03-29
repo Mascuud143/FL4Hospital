@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 
 try:
-    from k_hours_based.fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
+    from k_hours_based.fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model, parse_hidden_layers
 except ModuleNotFoundError:
-    from fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
+    from fl_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model, parse_hidden_layers
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,12 +24,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--n-features", type=int, default=256, help="Unused compatibility flag kept for compatibility")
     parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour", help="Directory to write global weights per round")
+    parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated MLP hidden layer sizes")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
+    parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
+    parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
     return parser.parse_args()
 
 
-def make_initial_parameters(_: int) -> fl.common.Parameters:
+def make_initial_parameters(
+    _: int,
+    hidden_layers: str = "128,64,32",
+    batch_size: int = 32,
+    learning_rate: float = 1e-3,
+    optimizer: str = "adam",
+    activation: str = "relu",
+) -> fl.common.Parameters:
     # Server round 1 starts from the same fresh MLP architecture used by every client.
-    model = make_model(get_input_dim())
+    model = make_model(
+        get_input_dim(),
+        hidden_layer_sizes=parse_hidden_layers(hidden_layers),
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        optimizer=optimizer,
+        activation=activation,
+    )
     return fl.common.ndarrays_to_parameters(get_params(model))
 
 
@@ -58,6 +79,35 @@ def append_rows(out_path: str, rows: list[dict[str, Any]]) -> None:
         df.to_csv(out_path, index=False)
 
 
+def upsert_rows(out_path: str, rows: list[dict[str, Any]], key_cols: list[str]) -> None:
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    new_df = pd.DataFrame(rows)
+    if os.path.exists(out_path):
+        existing = pd.read_csv(out_path)
+        for key in key_cols:
+            if key in existing.columns and key in new_df.columns:
+                existing[key] = existing[key].astype(str)
+                new_df[key] = new_df[key].astype(str)
+        existing_keys = set(existing.columns)
+        new_keys = set(new_df.columns)
+        all_cols = list(existing.columns)
+        for col in new_df.columns:
+            if col not in existing_keys:
+                all_cols.append(col)
+        for col in all_cols:
+            if col not in existing.columns:
+                existing[col] = np.nan
+            if col not in new_df.columns:
+                new_df[col] = np.nan
+        merged = pd.concat([existing[all_cols], new_df[all_cols]], ignore_index=True)
+        merged = merged.drop_duplicates(subset=key_cols, keep="last")
+        merged.to_csv(out_path, index=False)
+    else:
+        new_df.to_csv(out_path, index=False)
+
+
 class TrackingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -81,7 +131,7 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "trained_examples": int(fit_examples),
             "train_loss": train_loss_sum / max(fit_examples, 1.0),
         }
-        append_rows(os.path.join(self.weights_out_dir, "train_metrics.csv"), [self.latest_fit_summary])
+        upsert_rows(os.path.join(self.weights_out_dir, "train_metrics.csv"), [self.latest_fit_summary], ["round"])
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
             round_weights_path = os.path.join(self.weights_out_dir, f"round_{server_round}_global_weights.npz")
@@ -240,8 +290,8 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
             "change_fn": int(summary["change_fn"]),
             "evaluated_examples": int(summary["evaluated_examples"]),
         }
-        append_rows(os.path.join(self.weights_out_dir, "total_metrics.csv"), [self.latest_eval_summary])
-        append_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows)
+        upsert_rows(os.path.join(self.weights_out_dir, "total_metrics.csv"), [self.latest_eval_summary], ["round"])
+        upsert_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows, ["round", "room_id"])
         print(f"saved_total_metrics={os.path.join(self.weights_out_dir, 'total_metrics.csv')}")
         print(
             f"[round {server_round}] evaluation_summary "
@@ -255,21 +305,47 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         return aggregated_loss, aggregated_metrics
 
 
+class TrackingFedProx(fl.server.strategy.FedProx):
+    def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.weights_out_dir = weights_out_dir
+        self.latest_parameters: fl.common.Parameters | None = None
+        self.latest_eval_summary: dict[str, float] | None = None
+        self.latest_fit_summary: dict[str, float] | None = None
+
+    aggregate_fit = TrackingFedAvg.aggregate_fit
+    aggregate_evaluate = TrackingFedAvg.aggregate_evaluate
+
+
+def make_strategy(aggregation_method: str, weights_out_dir: str, proximal_mu: float, **kwargs: Any):
+    if aggregation_method == "fedprox":
+        return TrackingFedProx(weights_out_dir=weights_out_dir, proximal_mu=proximal_mu, **kwargs)
+    return TrackingFedAvg(weights_out_dir=weights_out_dir, **kwargs)
+
+
 def main() -> None:
     args = parse_args()
     split_dir = os.path.abspath(args.split_dir)
     weights_out_dir = os.path.abspath(args.weights_out_dir)
     rooms = count_rooms(split_dir)
 
-    # FedAvg is the core FL rule: sample clients, collect local updates, average them.
-    strategy = TrackingFedAvg(
+    strategy = make_strategy(
+        aggregation_method=args.aggregation_method,
         weights_out_dir=weights_out_dir,
+        proximal_mu=args.proximal_mu,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=args.min_fit_clients,
         min_evaluate_clients=args.min_evaluate_clients,
         min_available_clients=args.min_available_clients,
-        initial_parameters=make_initial_parameters(args.n_features),
+        initial_parameters=make_initial_parameters(
+            args.n_features,
+            hidden_layers=args.hidden_layers,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            optimizer=args.optimizer,
+            activation=args.activation,
+        ),
     )
 
     print("fl_server.py starting")
@@ -278,6 +354,8 @@ def main() -> None:
     print(f"rooms_detected={rooms}")
     print(f"server_address={args.server_address}")
     print(f"rounds={args.rounds}")
+    print(f"aggregation_method={args.aggregation_method}")
+    print(f"proximal_mu={args.proximal_mu}")
     print(f"weights_out_dir={weights_out_dir}")
     print("waiting_for_room_clients...")
 

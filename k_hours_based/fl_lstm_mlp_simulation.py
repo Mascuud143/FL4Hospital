@@ -15,7 +15,7 @@ try:
         get_input_dim,
         sanitize_targets,
     )
-    from k_hours_based.fl_lstm_mlp_server import TrackingFedAvg, make_initial_parameters
+    from k_hours_based.fl_lstm_mlp_server import TrackingFedAvg, TrackingFedProx, make_initial_parameters
 except ModuleNotFoundError:
     from fl_lstm_mlp_client import (
         RoomHybridClient,
@@ -24,7 +24,7 @@ except ModuleNotFoundError:
         get_input_dim,
         sanitize_targets,
     )
-    from fl_lstm_mlp_server import TrackingFedAvg, make_initial_parameters
+    from fl_lstm_mlp_server import TrackingFedAvg, TrackingFedProx, make_initial_parameters
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +46,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
+    parser.add_argument("--change-hidden-layers", default="128,64", help="Comma-separated hidden layer sizes for the change MLP branch")
+    parser.add_argument("--lstm-hidden-dim", type=int, default=64, help="Hidden dimension size for the target LSTM branch")
+    parser.add_argument("--lstm-num-layers", type=int, default=1, help="Number of stacked LSTM layers in the target branch")
+    parser.add_argument("--lstm-head-hidden-dim", type=int, default=64, help="Dense head hidden dimension after the target LSTM")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd", "rmsprop"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--change-activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the hybrid change MLP branch")
+    parser.add_argument("--lstm-activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the hybrid LSTM dense head")
+    parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
+    parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
     parser.add_argument("--server-address", default="127.0.0.1:8093", help="Used for threaded fallback mode")
     parser.add_argument("--server-start-wait", type=float, default=2.0, help="Seconds to wait before starting fallback clients")
     parser.add_argument("--client-retries", type=int, default=60, help="Retries for fallback client connections")
@@ -101,7 +111,27 @@ class VerboseTrackingFedAvg(TrackingFedAvg):
         return super().aggregate_evaluate(server_round, results, failures)
 
 
-def run_threaded_fallback(args: argparse.Namespace, strategy: TrackingFedAvg, room_ids: list[str], room_data: dict[str, tuple], input_dim: int) -> None:
+class VerboseTrackingFedProx(TrackingFedProx):
+    def configure_fit(self, server_round, parameters, client_manager):
+        fit_cfg = super().configure_fit(server_round, parameters, client_manager)
+        print(f"[round {server_round}] configure_fit sampled_clients={len(fit_cfg)}")
+        return fit_cfg
+
+    def aggregate_fit(self, server_round, results, failures):
+        print(f"[round {server_round}] aggregate_fit received_results={len(results)} failures={len(failures)}")
+        return super().aggregate_fit(server_round, results, failures)
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        eval_cfg = super().configure_evaluate(server_round, parameters, client_manager)
+        print(f"[round {server_round}] configure_evaluate sampled_clients={len(eval_cfg)}")
+        return eval_cfg
+
+    def aggregate_evaluate(self, server_round, results, failures):
+        print(f"[round {server_round}] aggregate_evaluate received_results={len(results)} failures={len(failures)}")
+        return super().aggregate_evaluate(server_round, results, failures)
+
+
+def run_threaded_fallback(args: argparse.Namespace, strategy: TrackingFedAvg | TrackingFedProx, room_ids: list[str], room_data: dict[str, tuple], input_dim: int) -> None:
     print("[fallback] starting local threaded Flower server+clients")
 
     server_errors: list[Exception] = []
@@ -143,6 +173,14 @@ def run_threaded_fallback(args: argparse.Namespace, strategy: TrackingFedAvg, ro
             input_dim=input_dim,
             local_epochs=args.local_epochs,
             batch_size=args.batch_size,
+            change_hidden_layers=tuple(int(part.strip()) for part in args.change_hidden_layers.split(",") if part.strip()),
+            lstm_hidden_dim=args.lstm_hidden_dim,
+            lstm_num_layers=args.lstm_num_layers,
+            lstm_head_hidden_dim=args.lstm_head_hidden_dim,
+            learning_rate=args.learning_rate,
+            optimizer=args.optimizer,
+            change_activation=args.change_activation,
+            lstm_activation=args.lstm_activation,
         )
         tries = 0
         while tries < args.client_retries:
@@ -237,14 +275,21 @@ def main() -> None:
 
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
-    strategy = VerboseTrackingFedAvg(
+    strategy_cls = VerboseTrackingFedProx if args.aggregation_method == "fedprox" else VerboseTrackingFedAvg
+    strategy = strategy_cls(
         weights_out_dir=weights_out_dir,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=min(args.min_fit_clients, len(room_ids)),
         min_evaluate_clients=min(args.min_evaluate_clients, len(room_ids)),
         min_available_clients=min(args.min_available_clients, len(room_ids)),
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(
+            change_hidden_layers=args.change_hidden_layers,
+            lstm_hidden_dim=args.lstm_hidden_dim,
+            lstm_num_layers=args.lstm_num_layers,
+            lstm_head_hidden_dim=args.lstm_head_hidden_dim,
+        ),
+        **({"proximal_mu": args.proximal_mu} if args.aggregation_method == "fedprox" else {}),
     )
 
     def client_fn(cid: str):
@@ -274,6 +319,14 @@ def main() -> None:
             input_dim=input_dim,
             local_epochs=args.local_epochs,
             batch_size=args.batch_size,
+            change_hidden_layers=tuple(int(part.strip()) for part in args.change_hidden_layers.split(",") if part.strip()),
+            lstm_hidden_dim=args.lstm_hidden_dim,
+            lstm_num_layers=args.lstm_num_layers,
+            lstm_head_hidden_dim=args.lstm_head_hidden_dim,
+            learning_rate=args.learning_rate,
+            optimizer=args.optimizer,
+            change_activation=args.change_activation,
+            lstm_activation=args.lstm_activation,
         ).to_client()
 
     print("fl_simulation_lstm_mlp.py starting")
@@ -286,6 +339,16 @@ def main() -> None:
     print(f"rooms_simulated={len(room_ids)}")
     print(f"rounds={args.rounds}")
     print(f"sequence_length={args.sequence_length}")
+    print(f"change_hidden_layers={args.change_hidden_layers}")
+    print(f"lstm_hidden_dim={args.lstm_hidden_dim}")
+    print(f"lstm_num_layers={args.lstm_num_layers}")
+    print(f"lstm_head_hidden_dim={args.lstm_head_hidden_dim}")
+    print(f"learning_rate={args.learning_rate}")
+    print(f"optimizer={args.optimizer}")
+    print(f"change_activation={args.change_activation}")
+    print(f"lstm_activation={args.lstm_activation}")
+    print(f"aggregation_method={args.aggregation_method}")
+    print(f"proximal_mu={args.proximal_mu}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
 

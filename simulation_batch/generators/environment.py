@@ -18,7 +18,7 @@ def generate_environment_for_day(
         readings.append({
             "room_id": room_id,
             "timestamp": ts,
-            "temperature": round(random.uniform(*temp_range), 2),
+            "temperature": round(random.uniform(*temp_range), 1),
             "humidity": round(random.uniform(*humidity_range), 2),
         })
 

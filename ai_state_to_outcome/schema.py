@@ -38,7 +38,7 @@ BASE_NUMERIC_COLUMNS = [
     "prev_target_airflow",
 ]
 
-EVENT_TYPE_COLUMNS = ["event_is_medication", "event_is_symptom"]
+EVENT_TYPE_COLUMNS = ["event_is_medication", "event_is_visit"]
 DIAGNOSIS_COLUMNS = [f"diagnosis_{idx}" for idx, _ in enumerate(DIAGNOSIS_NAMES)]
 SYMPTOM_COLUMNS = [f"symptom_{idx}" for idx, _ in enumerate(SYMPTOM_NAMES)]
 ACTIVE_MEDICATION_COLUMNS = [f"active_med_{idx}" for idx, _ in enumerate(MEDICATION_NAMES)]

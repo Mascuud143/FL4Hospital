@@ -1,14 +1,14 @@
 {
-  "patients": 10000,
-  "rooms": 522,
-  "admissions": 12160,
-  "room_assignments": 15811,
-  "medications": 660335,
-  "visits": 798403,
-  "comfort_preferences": 228197,
-  "utility_usages": 181329,
+  "patients": 500,
+  "rooms": 31,
+  "admissions": 602,
+  "room_assignments": 764,
+  "medications": 32738,
+  "visits": 39970,
+  "comfort_preferences": 22511,
+  "utility_usages": 0,
   "toilet_lights": 0,
-  "toilet_heaters": 5089,
-  "data": 11190013,
-  "ventilations": 9937
+  "toilet_heaters": 0,
+  "data": 0,
+  "ventilations": 0
 }

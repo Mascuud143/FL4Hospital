@@ -73,6 +73,10 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def _round_temp(value: float) -> float:
+    return round(float(value), 1)
+
+
 def _symptom_flags(symptoms: Optional[str]) -> Dict[str, bool]:
     """
     Very simple NLP: look for keywords in Visit.symptoms.
@@ -118,22 +122,18 @@ def _apply_visit_symptom_bias(
     out = dict(base_targets)
 
     if fever:
-        out["temperature_main"] = round(
-            rng.uniform(*policy.fever_cool_target_range), 2
-        )
+        out["temperature_main"] = _round_temp(rng.uniform(*policy.fever_cool_target_range))
         # Often want airflow when feverish
         out["airflow"] = True
 
     elif chills:
-        out["temperature_main"] = round(
-            rng.uniform(*policy.chills_warm_target_range), 2
-        )
+        out["temperature_main"] = _round_temp(rng.uniform(*policy.chills_warm_target_range))
         # airflow typically OFF when cold
         out["airflow"] = False
 
     # Always clamp
-    out["temperature_main"] = round(
-        _clamp(out["temperature_main"], policy.min_main_temp_c, policy.max_main_temp_c), 2
+    out["temperature_main"] = _round_temp(
+        _clamp(out["temperature_main"], policy.min_main_temp_c, policy.max_main_temp_c)
     )
 
     return out
@@ -181,7 +181,7 @@ def _pick_targets_for_time(rng: random.Random, t: datetime, policy: ComfortPolic
         sound = rng.randint(0, 25)
 
     t_main = t_main_base + rng.gauss(0.0, policy.temp_adjust_sigma_c)
-    t_main = round(_clamp(t_main, policy.min_main_temp_c, policy.max_main_temp_c), 2)
+    t_main = _round_temp(_clamp(t_main, policy.min_main_temp_c, policy.max_main_temp_c))
 
     light = round(light, 2)
     sound = round(sound, 2)
@@ -190,7 +190,7 @@ def _pick_targets_for_time(rng: random.Random, t: datetime, policy: ComfortPolic
     if rng.random() < policy.p_set_toilet_temp:
         t_toilet = rng.uniform(19.0, 23.0)
         t_toilet += rng.gauss(0.0, 0.2)
-        t_toilet = round(_clamp(t_toilet, 18.0, 24.0), 2)
+        t_toilet = _round_temp(_clamp(t_toilet, 18.0, 24.0))
 
     return dict(
         temperature_main=t_main,

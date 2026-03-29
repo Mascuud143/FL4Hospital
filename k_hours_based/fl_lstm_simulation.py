@@ -13,7 +13,7 @@ try:
         get_input_dim,
         sanitize_targets,
     )
-    from k_hours_based.fl_lstm_server import TrackingFedAvg, make_initial_parameters
+    from k_hours_based.fl_lstm_server import make_initial_parameters, make_strategy
 except ModuleNotFoundError:
     from fl_lstm_client import (
         RoomLSTMClient,
@@ -22,7 +22,7 @@ except ModuleNotFoundError:
         get_input_dim,
         sanitize_targets,
     )
-    from fl_lstm_server import TrackingFedAvg, make_initial_parameters
+    from fl_lstm_server import make_initial_parameters, make_strategy
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +45,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--predictions-out-dir", default=None, help="Optional directory to write per-room evaluation predictions")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
+    parser.add_argument("--hidden-dim", type=int, default=64, help="LSTM hidden dimension size")
+    parser.add_argument("--num-layers", type=int, default=1, help="Number of stacked LSTM layers")
+    parser.add_argument("--head-hidden-dim", type=int, default=64, help="Dense head hidden dimension after the LSTM")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd", "rmsprop"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the dense head")
+    parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
+    parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
     return parser.parse_args()
 
 
@@ -133,14 +141,20 @@ def main() -> None:
 
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
-    strategy = TrackingFedAvg(
+    strategy = make_strategy(
+        aggregation_method=args.aggregation_method,
         weights_out_dir=weights_out_dir,
+        proximal_mu=args.proximal_mu,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=min(args.min_fit_clients, len(room_ids)),
         min_evaluate_clients=min(args.min_evaluate_clients, len(room_ids)),
         min_available_clients=min(args.min_available_clients, len(room_ids)),
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            head_hidden_dim=args.head_hidden_dim,
+        ),
     )
 
     def client_fn(cid: str):
@@ -158,6 +172,12 @@ def main() -> None:
             input_dim=input_dim,
             local_epochs=args.local_epochs,
             batch_size=args.batch_size,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            head_hidden_dim=args.head_hidden_dim,
+            learning_rate=args.learning_rate,
+            optimizer=args.optimizer,
+            activation=args.activation,
             predictions_out_dir=os.path.abspath(args.predictions_out_dir) if args.predictions_out_dir else None,
         ).to_client()
 
@@ -171,6 +191,14 @@ def main() -> None:
     print(f"rooms_simulated={len(room_ids)}")
     print(f"rounds={args.rounds}")
     print(f"sequence_length={args.sequence_length}")
+    print(f"hidden_dim={args.hidden_dim}")
+    print(f"num_layers={args.num_layers}")
+    print(f"head_hidden_dim={args.head_hidden_dim}")
+    print(f"learning_rate={args.learning_rate}")
+    print(f"optimizer={args.optimizer}")
+    print(f"activation={args.activation}")
+    print(f"aggregation_method={args.aggregation_method}")
+    print(f"proximal_mu={args.proximal_mu}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
     history = fl.simulation.start_simulation(
@@ -192,6 +220,14 @@ def main() -> None:
             "rounds": args.rounds,
             "rooms_simulated": len(room_ids),
             "sequence_length": args.sequence_length,
+            "hidden_dim": args.hidden_dim,
+            "num_layers": args.num_layers,
+            "head_hidden_dim": args.head_hidden_dim,
+            "learning_rate": args.learning_rate,
+            "optimizer": args.optimizer,
+            "activation": args.activation,
+            "aggregation_method": args.aggregation_method,
+            "proximal_mu": args.proximal_mu,
             "weights_out_dir": weights_out_dir,
             **strategy.latest_eval_summary,
         }

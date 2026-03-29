@@ -35,6 +35,14 @@ DEFAULT_OUTPUT_THRESHOLDS = {
 }
 
 
+def make_activation(name: str) -> nn.Module:
+    return {
+        "relu": nn.ReLU(),
+        "tanh": nn.Tanh(),
+        "gelu": nn.GELU(),
+    }[name]
+
+
 def _safe_logit(p: float) -> float:
     clipped = min(max(float(p), 1e-6), 1.0 - 1e-6)
     return float(np.log(clipped / (1.0 - clipped)))
@@ -51,6 +59,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize for room filtering")
     parser.add_argument("--sequence-length", type=int, default=4, help="Number of historical rows per LSTM sample")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--change-hidden-layers", default="128,64", help="Comma-separated hidden layer sizes for the change MLP branch")
+    parser.add_argument("--lstm-hidden-dim", type=int, default=64, help="Hidden dimension size for the target LSTM branch")
+    parser.add_argument("--lstm-num-layers", type=int, default=1, help="Number of stacked LSTM layers in the target branch")
+    parser.add_argument("--lstm-head-hidden-dim", type=int, default=64, help="Dense head hidden dimension after the target LSTM")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd", "rmsprop"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--change-activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the hybrid change MLP branch")
+    parser.add_argument("--lstm-activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the hybrid LSTM dense head")
     return parser.parse_args()
 
 
@@ -58,24 +74,41 @@ def get_input_dim() -> int:
     return len(INPUT_COLUMNS)
 
 
+def parse_hidden_layers(spec: str) -> tuple[int, ...]:
+    values = [part.strip() for part in str(spec).split(",")]
+    layers = tuple(int(part) for part in values if part)
+    if not layers or any(size <= 0 for size in layers):
+        raise ValueError(f"Invalid hidden layer specification: {spec}")
+    return layers
+
+
 class ChangeMLP(nn.Module):
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, hidden_layers: tuple[int, ...] = (128, 64), activation: str = "relu"):
         super().__init__()
         # This branch answers: "do we need any comfort change at all?"
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-        )
+        layers: list[nn.Module] = []
+        prev_dim = input_dim
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(make_activation(activation))
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, 1))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x).squeeze(-1)
 
 
 class TargetLSTM(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 1, output_dim: int = len(TARGET_COLUMNS)):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 64,
+        num_layers: int = 1,
+        head_hidden_dim: int = 64,
+        activation: str = "relu",
+        output_dim: int = len(TARGET_COLUMNS),
+    ):
         super().__init__()
         # This branch answers: "if we predict the next state, what should the
         # actual comfort values be after looking at recent history?"
@@ -86,9 +119,9 @@ class TargetLSTM(nn.Module):
             batch_first=True,
         )
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, output_dim),
+            nn.Linear(hidden_dim, head_hidden_dim),
+            make_activation(activation),
+            nn.Linear(head_hidden_dim, output_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -98,15 +131,50 @@ class TargetLSTM(nn.Module):
 
 
 class HybridNextHourModel(nn.Module):
-    def __init__(self, input_dim: int):
+    def __init__(
+        self,
+        input_dim: int,
+        change_hidden_layers: tuple[int, ...] = (128, 64),
+        lstm_hidden_dim: int = 64,
+        lstm_num_layers: int = 1,
+        lstm_head_hidden_dim: int = 64,
+        change_activation: str = "relu",
+        lstm_activation: str = "relu",
+    ):
         super().__init__()
         # The model keeps the change-decision task separate from the target-value task.
-        self.change_mlp = ChangeMLP(input_dim=input_dim)
-        self.target_lstm = TargetLSTM(input_dim=input_dim)
+        self.change_mlp = ChangeMLP(
+            input_dim=input_dim,
+            hidden_layers=change_hidden_layers,
+            activation=change_activation,
+        )
+        self.target_lstm = TargetLSTM(
+            input_dim=input_dim,
+            hidden_dim=lstm_hidden_dim,
+            num_layers=lstm_num_layers,
+            head_hidden_dim=lstm_head_hidden_dim,
+            activation=lstm_activation,
+        )
 
 
-def make_model(input_dim: int) -> HybridNextHourModel:
-    return HybridNextHourModel(input_dim=input_dim)
+def make_model(
+    input_dim: int,
+    change_hidden_layers: tuple[int, ...] = (128, 64),
+    lstm_hidden_dim: int = 64,
+    lstm_num_layers: int = 1,
+    lstm_head_hidden_dim: int = 64,
+    change_activation: str = "relu",
+    lstm_activation: str = "relu",
+) -> HybridNextHourModel:
+    return HybridNextHourModel(
+        input_dim=input_dim,
+        change_hidden_layers=change_hidden_layers,
+        lstm_hidden_dim=lstm_hidden_dim,
+        lstm_num_layers=lstm_num_layers,
+        lstm_head_hidden_dim=lstm_head_hidden_dim,
+        change_activation=change_activation,
+        lstm_activation=lstm_activation,
+    )
 
 
 def get_params(model: HybridNextHourModel) -> list[np.ndarray]:
@@ -289,6 +357,14 @@ class RoomHybridClient(fl.client.NumPyClient):
         input_dim: int,
         local_epochs: int,
         batch_size: int,
+        change_hidden_layers: tuple[int, ...] = (128, 64),
+        lstm_hidden_dim: int = 64,
+        lstm_num_layers: int = 1,
+        lstm_head_hidden_dim: int = 64,
+        learning_rate: float = 1e-3,
+        optimizer: str = "adam",
+        change_activation: str = "relu",
+        lstm_activation: str = "relu",
     ):
         self.room_id = room_id
         self.x_train_seq = x_train_seq
@@ -302,8 +378,18 @@ class RoomHybridClient(fl.client.NumPyClient):
         self.change_true = change_true.astype(np.int64)
         self.local_epochs = local_epochs
         self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.optimizer_name = optimizer
         self.device = torch.device("cpu")
-        self.model = make_model(input_dim).to(self.device)
+        self.model = make_model(
+            input_dim,
+            change_hidden_layers=change_hidden_layers,
+            lstm_hidden_dim=lstm_hidden_dim,
+            lstm_num_layers=lstm_num_layers,
+            lstm_head_hidden_dim=lstm_head_hidden_dim,
+            change_activation=change_activation,
+            lstm_activation=lstm_activation,
+        ).to(self.device)
         change_pos_weight, change_neg_weight = _class_weights(self.change_train)
         self.change_pos_weight = float(change_pos_weight)
         self.change_neg_weight = float(change_neg_weight)
@@ -335,6 +421,7 @@ class RoomHybridClient(fl.client.NumPyClient):
         if self.y_train.size == 0:
             return get_params(self.model), 0, {"room_id": self.room_id}
 
+        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
         self.model.train()
         dataset = TensorDataset(
             torch.tensor(self.x_train_flat, dtype=torch.float32, device=self.device),
@@ -343,9 +430,15 @@ class RoomHybridClient(fl.client.NumPyClient):
             torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
         )
         loader = DataLoader(dataset, batch_size=max(1, min(self.batch_size, len(dataset))), shuffle=True)
-        optimizer_mlp = torch.optim.Adam(self.model.change_mlp.parameters(), lr=1e-3)
-        optimizer_lstm = torch.optim.Adam(self.model.target_lstm.parameters(), lr=1e-3)
+        optimizer_cls = {
+            "adam": torch.optim.Adam,
+            "sgd": torch.optim.SGD,
+            "rmsprop": torch.optim.RMSprop,
+        }[self.optimizer_name]
+        optimizer_mlp = optimizer_cls(self.model.change_mlp.parameters(), lr=self.learning_rate)
+        optimizer_lstm = optimizer_cls(self.model.target_lstm.parameters(), lr=self.learning_rate)
         train_loss_sum = 0.0
+        global_params = [param.detach().clone() for param in self.model.parameters()]
 
         for _ in range(self.local_epochs):
             for batch_flat, batch_seq, batch_change, batch_targets in loader:
@@ -358,6 +451,11 @@ class RoomHybridClient(fl.client.NumPyClient):
                     pos_weight=self.change_pos_weight,
                     neg_weight=self.change_neg_weight,
                 )
+                if proximal_mu > 0.0:
+                    prox_reg = torch.zeros((), device=self.device)
+                    for param, global_param in zip(self.model.parameters(), global_params):
+                        prox_reg = prox_reg + torch.sum((param - global_param) ** 2)
+                    change_loss = change_loss + (proximal_mu / 2.0) * prox_reg
                 change_loss.backward()
                 optimizer_mlp.step()
 
@@ -377,6 +475,11 @@ class RoomHybridClient(fl.client.NumPyClient):
                     neg_weight=self.airflow_neg_weight,
                 )
                 target_loss = reg_loss + airflow_loss
+                if proximal_mu > 0.0:
+                    prox_reg = torch.zeros((), device=self.device)
+                    for param, global_param in zip(self.model.parameters(), global_params):
+                        prox_reg = prox_reg + torch.sum((param - global_param) ** 2)
+                    target_loss = target_loss + (proximal_mu / 2.0) * prox_reg
                 target_loss.backward()
                 optimizer_lstm.step()
                 train_loss_sum += float(change_loss.item() + target_loss.item()) * float(batch_targets.shape[0])
@@ -574,6 +677,14 @@ def main() -> None:
         input_dim=get_input_dim(),
         local_epochs=args.local_epochs,
         batch_size=args.batch_size,
+        change_hidden_layers=parse_hidden_layers(args.change_hidden_layers),
+        lstm_hidden_dim=args.lstm_hidden_dim,
+        lstm_num_layers=args.lstm_num_layers,
+        lstm_head_hidden_dim=args.lstm_head_hidden_dim,
+        learning_rate=args.learning_rate,
+        optimizer=args.optimizer,
+        change_activation=args.change_activation,
+        lstm_activation=args.lstm_activation,
     )
 
     print("fl_client_lstm_mlp.py starting")
@@ -581,6 +692,14 @@ def main() -> None:
     print(f"split_dir={split_dir}")
     print(f"server_address={args.server_address}")
     print(f"sequence_length={args.sequence_length}")
+    print(f"change_hidden_layers={args.change_hidden_layers}")
+    print(f"lstm_hidden_dim={args.lstm_hidden_dim}")
+    print(f"lstm_num_layers={args.lstm_num_layers}")
+    print(f"lstm_head_hidden_dim={args.lstm_head_hidden_dim}")
+    print(f"learning_rate={args.learning_rate}")
+    print(f"optimizer={args.optimizer}")
+    print(f"change_activation={args.change_activation}")
+    print(f"lstm_activation={args.lstm_activation}")
     print(f"train_sequences={len(y_train)} test_sequences={len(y_test)}")
 
     attempts = 0

@@ -103,6 +103,9 @@ def seed_simulated_world(
     patient_count: int = PATIENT_COUNT,
     days: int = DAYS,
     start_date: date | datetime = START_DATE,
+    change_room_prob: float = CHANGE_ROOM_PROB,
+    min_days_before_transfer: int = MIN_DAYS_BEFORE_TRANSFER,
+    min_days_after_transfer: int = MIN_DAYS_AFTER_TRANSFER,
     include_speaker: bool = True,
 ) -> List[BLEDevice]:
     """
@@ -384,13 +387,13 @@ def seed_simulated_world(
         # ============================================================
         # TRANSFER PHASE: ROOM CHANGE WHILE ADMITTED (per admission)
         # ============================================================
-        print(f">>> TRANSFER PHASE START (prob={CHANGE_ROOM_PROB}) <<<")
+        print(f">>> TRANSFER PHASE START (prob={change_room_prob}) <<<")
 
         transfer_rooms = list(rooms)
         max_room_number = max(int(r.room_number) for r in rooms) if rooms else 100
 
         for adm_info in admissions_created:
-            if rng.random() > CHANGE_ROOM_PROB:
+            if rng.random() > change_room_prob:
                 continue
 
             admit = adm_info["admitted_at"]
@@ -399,12 +402,12 @@ def seed_simulated_world(
             pid = adm_info["patient_id"]
 
             total_days = (discharge - admit).days
-            if total_days < MIN_DAYS_BEFORE_TRANSFER + MIN_DAYS_AFTER_TRANSFER + 1:
+            if total_days < min_days_before_transfer + min_days_after_transfer + 1:
                 continue
 
             transfer_day = rng.randint(
-                MIN_DAYS_BEFORE_TRANSFER,
-                max(MIN_DAYS_BEFORE_TRANSFER, total_days - MIN_DAYS_AFTER_TRANSFER),
+                min_days_before_transfer,
+                max(min_days_before_transfer, total_days - min_days_after_transfer),
             )
             transfer_time = admit + timedelta(days=transfer_day)
             if transfer_time <= admit or transfer_time >= discharge:

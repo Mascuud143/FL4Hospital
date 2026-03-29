@@ -5,20 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from .room_engine import RoomEngine, RoomState, _as_utc
+from .room_engine import EngineConfig, RoomEngine, RoomState, _as_utc
 from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
 from .toilet_usage_generator import ToiletUsageGenerator
 from persistence.models.data import Data
 from simulation_batch.csv_filestorage import write_model_row
-from simulation_batch.config import (
-    ENABLE_COMFORT,
-    ENABLE_MEDICATION,
-    ENABLE_VISITS,
-    ENABLE_TOILET_USAGE,
-    ENABLE_SENSOR_EMIT,
-)
-
 # NEW: clinical generators
 from simulation_batch.generators.medication_generator import MedicationGenerator
 from simulation_batch.generators.visit_generator import VisitGenerator
@@ -35,6 +27,12 @@ class OrchestratorConfig:
     sample_every_s: int = 300
     wall_sleep_s: float = 0.0
     comfort_max_changes_per_day: int = 3
+    enable_comfort: bool = True
+    enable_medication: bool = True
+    enable_visits: bool = True
+    enable_toilet_usage: bool = False
+    enable_sensor_emit: bool = False
+    enable_utility_usage: bool = False
 
 
 class SimulationOrchestrator:
@@ -75,7 +73,10 @@ class SimulationOrchestrator:
         self.rooms = {i: RoomState(i) for i in range(1, 101)}
 
         # Simulation engine
-        self.engine = RoomEngine(self.rooms)
+        self.engine = RoomEngine(
+            self.rooms,
+            config=EngineConfig(enable_utility_usage=self.config.enable_utility_usage),
+        )
 
         # Sensor sampler
         self.sampler = SensorSampler(seed)
@@ -115,7 +116,7 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 2️⃣ Medication events
         # ---------------------------------------------------
-        if ENABLE_MEDICATION:
+        if self.config.enable_medication:
             med_gen = MedicationGenerator(seed=self.seed, diagnoses=DIAGNOSES)
             inserted = med_gen.generate_for_horizon(
                 self.start_time,
@@ -128,7 +129,7 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 3️⃣ Visit events
         # ---------------------------------------------------
-        if ENABLE_VISITS:
+        if self.config.enable_visits:
             visit_gen = VisitGenerator(seed=self.seed)
             inserted = visit_gen.generate_for_horizon(
                 self.start_time,
@@ -142,7 +143,7 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 1️⃣ Comfort preferences
         # ---------------------------------------------------
-        if ENABLE_COMFORT:
+        if self.config.enable_comfort:
             inserted = self.comfort.generate_for_horizon(
                 self.start_time,
                 self.end_time,
@@ -154,7 +155,7 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 4️⃣ Toilet usage
         # ---------------------------------------------------
-        if ENABLE_TOILET_USAGE:
+        if self.config.enable_toilet_usage:
             toilet_gen = ToiletUsageGenerator(seed=self.seed)
             inserted = toilet_gen.generate_for_horizon(
                 self.start_time,
@@ -169,10 +170,15 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 5️⃣ Run simulation loop
         # ---------------------------------------------------
+        if not self.config.enable_sensor_emit and not self.config.enable_utility_usage:
+            print("[orchestrator] skipping simulation loop (no sensor emit and no utility usage)")
+            print("[orchestrator] SIMULATION COMPLETE")
+            return
+
         await self._run()
 
-        # Close open utility sessions (important)
-        self.engine.close_all_sessions(self.end_time)
+        if self.config.enable_utility_usage:
+            self.engine.close_all_sessions(self.end_time)
 
         print("[orchestrator] SIMULATION COMPLETE")
 
@@ -203,7 +209,7 @@ class SimulationOrchestrator:
             self.engine.step(now, step_s=self.config.step_s)
 
             # Emit sensor readings
-            if ENABLE_SENSOR_EMIT and (now - last_sample).total_seconds() >= self.config.sample_every_s:
+            if self.config.enable_sensor_emit and (now - last_sample).total_seconds() >= self.config.sample_every_s:
                 await self.sampler.emit(
                     now,
                     room_engine=self.engine,

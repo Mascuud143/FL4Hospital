@@ -103,3 +103,18 @@ ai_forecast/outputs_next_hour_3/
 ai_forecast/outputs_next_hour/
 ai_forecast/outputs_next_hour_parallel/
 ai_forecast/splits_next_hour_3/
+
+# Generated dashboard/model datasets
+k_hours_based/outputs_next_hour/
+k_hours_based/outputs_next_hour_dashboard/
+k_hours_based/outputs_next_hour_parallel/
+k_hours_based/splits_next_hour/
+k_hours_based/splits_next_hour_dashboard/
+ai_state_to_outcome/rows/
+ai_state_to_outcome/rows_dashboard/
+ai_state_to_outcome/splits/
+ai_state_to_outcome/splits_dashboard/
+ai_state_to_outcome/fl_weights/
+ai_state_to_outcome/fl_weights_dashboard_mlp/
+ai_state_to_outcome/fl_predictions/
+k_hours_based/fl_weights_dashboard_mlp/

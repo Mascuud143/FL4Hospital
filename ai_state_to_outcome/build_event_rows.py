@@ -118,6 +118,13 @@ def _admission_for_time(admissions: list[dict[str, Any]], t: datetime) -> dict[s
     return None
 
 
+def _assignment_for_time(assignments: list[dict[str, Any]], t: datetime) -> dict[str, Any] | None:
+    for assignment in assignments:
+        if assignment["start"] <= t < assignment["end"]:
+            return assignment
+    return None
+
+
 def _active_medication_vector(med_rows: list[dict[str, Any]], t: datetime, active_hours: int) -> list[int]:
     start = t - timedelta(hours=active_hours)
     values = [0] * len(MEDICATION_NAMES)
@@ -173,7 +180,6 @@ def build_indices(data_dir: str) -> dict[str, Any]:
         admissions.sort(key=lambda item: item["admitted_at"])
 
     assignments_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    room_counts_by_admission: dict[int, set[int]] = defaultdict(set)
     for row in assignments_raw:
         admission_id = to_int(row.get("admission_id"))
         patient_id = to_int(row.get("patient_id"))
@@ -191,15 +197,10 @@ def build_indices(data_dir: str) -> dict[str, Any]:
                 "end": end,
             }
         )
-        room_counts_by_admission[admission_id].add(room_id)
     for assignments in assignments_by_admission.values():
         assignments.sort(key=lambda item: item["start"])
 
-    eligible_admission_ids = {
-        admission_id
-        for admission_id, room_ids in room_counts_by_admission.items()
-        if len(room_ids) == 1
-    }
+    eligible_admission_ids = set(assignments_by_admission.keys())
 
     meds_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
     med_times_by_admission: dict[int, list[datetime]] = {}
@@ -226,7 +227,7 @@ def build_indices(data_dir: str) -> dict[str, Any]:
 
     visits_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
     visit_times_by_admission: dict[int, list[datetime]] = {}
-    symptom_events_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    visit_events_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in visits_raw:
         patient_id = to_int(row.get("patient_id"))
         ts = parse_ts(row.get("visit_time"))
@@ -246,14 +247,10 @@ def build_indices(data_dir: str) -> dict[str, Any]:
     for admission_id, rows in visits_by_admission.items():
         rows.sort(key=lambda item: item["ts"])
         visit_times_by_admission[admission_id] = [row["ts"] for row in rows]
-        previous_symptom = ""
         for row in rows:
-            symptom = row["symptoms"]
-            if symptom and symptom != previous_symptom:
-                symptom_events_by_admission[admission_id].append(
-                    {"ts": row["ts"], "event_type": "symptom", "detail": symptom}
-                )
-                previous_symptom = symptom
+            visit_events_by_admission[admission_id].append(
+                {"ts": row["ts"], "event_type": "visit", "detail": (row["symptoms"] or "").strip()}
+            )
 
     comfort_by_admission: dict[int, list[dict[str, Any]]] = defaultdict(list)
     comfort_times_by_admission: dict[int, list[datetime]] = {}
@@ -289,7 +286,7 @@ def build_indices(data_dir: str) -> dict[str, Any]:
             events_by_admission[admission_id].append(
                 {"ts": med_row["ts"], "event_type": "medication", "detail": med_row["drug_name"]}
             )
-        events_by_admission[admission_id].extend(symptom_events_by_admission.get(admission_id, []))
+        events_by_admission[admission_id].extend(visit_events_by_admission.get(admission_id, []))
         events_by_admission[admission_id].sort(key=lambda item: (item["ts"], item["event_type"], item["detail"]))
         event_times_by_admission[admission_id] = [row["ts"] for row in events_by_admission[admission_id]]
 
@@ -313,7 +310,6 @@ def build_rows(
     indices: dict[str, Any],
     out_dir: str,
     medication_effect_minutes: int,
-    symptom_effect_minutes: int,
     medication_active_hours: int,
 ) -> tuple[int, int]:
     os.makedirs(out_dir, exist_ok=True)
@@ -330,11 +326,9 @@ def build_rows(
         for admission_id in sorted(indices["eligible_admission_ids"]):
             admission = indices["admissions_by_id"].get(admission_id)
             assignments = indices["assignments_by_admission"].get(admission_id, [])
-            if admission is None or len(assignments) != 1:
+            if admission is None or not assignments:
                 continue
-            assignment = assignments[0]
             patient_id = admission["patient_id"]
-            room_id = assignment["room_id"]
             patient = indices["patients_by_id"].get(patient_id, {})
             med_rows = indices["meds_by_admission"].get(admission_id, [])
             med_times = indices["med_times_by_admission"].get(admission_id, [])
@@ -350,25 +344,29 @@ def build_rows(
 
             for idx, event in enumerate(events):
                 event_time = event["ts"]
-                if not (assignment["start"] <= event_time < assignment["end"]):
+                assignment = _assignment_for_time(assignments, event_time)
+                if assignment is None:
                     continue
+                room_id = assignment["room_id"]
 
                 next_change_time = assignment["end"]
                 if idx + 1 < len(event_times):
                     next_change_time = min(next_change_time, event_times[idx + 1])
 
-                effect_minutes = medication_effect_minutes if event["event_type"] == "medication" else symptom_effect_minutes
+                effect_minutes = medication_effect_minutes if event["event_type"] == "medication" else 0
                 effect_window_start = event_time + timedelta(minutes=effect_minutes)
                 if effect_window_start >= next_change_time:
                     filtered_events += 1
                     continue
 
+                prev_target = latest_at_or_before(comfort_times, comfort_rows, event_time)
                 target_row = first_in_window(comfort_times, comfort_rows, effect_window_start, next_change_time)
+                if target_row is None:
+                    target_row = prev_target
                 if target_row is None:
                     filtered_events += 1
                     continue
 
-                prev_target = latest_at_or_before(comfort_times, comfort_rows, event_time)
                 latest_visit = latest_at_or_before(visit_times, visit_rows, event_time)
                 latest_med = latest_at_or_before(med_times, med_rows, event_time)
                 current_symptom = latest_visit["symptoms"] if latest_visit else ""
@@ -412,7 +410,7 @@ def build_rows(
                     "prev_target_sound": prev_target["sound_level"] if prev_target else None,
                     "prev_target_airflow": prev_target["airflow"] if prev_target else None,
                     "event_is_medication": 1 if event["event_type"] == "medication" else 0,
-                    "event_is_symptom": 1 if event["event_type"] == "symptom" else 0,
+                    "event_is_visit": 1 if event["event_type"] == "visit" else 0,
                     "y_target_temp_main": target_row["temperature_main"],
                     "y_target_temp_toilet": target_row["temperature_toilet"],
                     "y_target_light": target_row["light_intensity"],
@@ -450,8 +448,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build state-to-outcome event rows from meaningful medication and symptom changes.")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Directory containing source CSV files.")
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="Directory for Task #2 event rows.")
-    parser.add_argument("--medication-effect-minutes", type=int, default=60, help="Delay before medication events can receive a label.")
-    parser.add_argument("--symptom-effect-minutes", type=int, default=0, help="Delay before symptom events can receive a label.")
+    parser.add_argument("--medication-effect-minutes", type=int, default=5, help="Delay before medication events can receive a label.")
     parser.add_argument("--medication-active-hours", type=int, default=24, help="Lookback window used to mark active medications.")
     return parser.parse_args()
 
@@ -467,7 +464,6 @@ def main() -> None:
         indices=indices,
         out_dir=out_dir,
         medication_effect_minutes=args.medication_effect_minutes,
-        symptom_effect_minutes=args.symptom_effect_minutes,
         medication_active_hours=args.medication_active_hours,
     )
     print("build_event_rows.py complete")

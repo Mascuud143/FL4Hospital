@@ -21,6 +21,12 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 from schema import FEATURE_COLUMNS, REGRESSION_TARGET_COLUMNS, TARGET_COLUMNS, row_to_input_vector
 
 AIRFLOW_OUTPUT_INDEX = 4
+DEFAULT_OUTPUT_THRESHOLDS = {
+    "y_target_temp_main": 1.0,
+    "y_target_temp_toilet": 1.0,
+    "y_target_light": 5.0,
+    "y_target_sound": 5.0,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--connect-retries", type=int, default=60, help="Connection retries")
     parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between retries")
     parser.add_argument("--chunksize", type=int, default=100000, help="CSV chunksize for room filtering")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
     return parser.parse_args()
 
 
@@ -115,6 +121,16 @@ def _pos_weight_from_targets(values: np.ndarray) -> torch.Tensor:
     return torch.tensor(max(negatives / positives, 1.0), dtype=torch.float32)
 
 
+def target_threshold_counts(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, tuple[int, int]]:
+    counts: dict[str, tuple[int, int]] = {}
+    for idx, target in enumerate(REGRESSION_TARGET_COLUMNS):
+        threshold = DEFAULT_OUTPUT_THRESHOLDS[target]
+        correct = int(np.sum(np.abs(y_true[:, idx] - y_pred[:, idx]) <= threshold))
+        wrong = int(y_true.shape[0] - correct)
+        counts[target] = (correct, wrong)
+    return counts
+
+
 class RoomClient(fl.client.NumPyClient):
     def __init__(
         self,
@@ -182,6 +198,14 @@ class RoomClient(fl.client.NumPyClient):
                 "mse_sum_y_target_temp_toilet": 0.0,
                 "mse_sum_y_target_light": 0.0,
                 "mse_sum_y_target_sound": 0.0,
+                "threshold_correct_y_target_temp_main": 0,
+                "threshold_wrong_y_target_temp_main": 0,
+                "threshold_correct_y_target_temp_toilet": 0,
+                "threshold_wrong_y_target_temp_toilet": 0,
+                "threshold_correct_y_target_light": 0,
+                "threshold_wrong_y_target_light": 0,
+                "threshold_correct_y_target_sound": 0,
+                "threshold_wrong_y_target_sound": 0,
                 "airflow_accuracy_sum": 0.0,
                 "airflow_precision_sum": 0.0,
                 "airflow_recall_sum": 0.0,
@@ -214,6 +238,7 @@ class RoomClient(fl.client.NumPyClient):
             target: float(mean_squared_error(reg_true[:, idx], reg_pred[:, idx]))
             for idx, target in enumerate(REGRESSION_TARGET_COLUMNS)
         }
+        threshold_counts = target_threshold_counts(reg_true, reg_pred)
         airflow_tp = int(np.sum((airflow_true == 1) & (airflow_pred == 1)))
         airflow_tn = int(np.sum((airflow_true == 0) & (airflow_pred == 0)))
         airflow_fp = int(np.sum((airflow_true == 0) & (airflow_pred == 1)))
@@ -231,6 +256,14 @@ class RoomClient(fl.client.NumPyClient):
             "mse_sum_y_target_temp_toilet": regression_mse["y_target_temp_toilet"] * count,
             "mse_sum_y_target_light": regression_mse["y_target_light"] * count,
             "mse_sum_y_target_sound": regression_mse["y_target_sound"] * count,
+            "threshold_correct_y_target_temp_main": threshold_counts["y_target_temp_main"][0],
+            "threshold_wrong_y_target_temp_main": threshold_counts["y_target_temp_main"][1],
+            "threshold_correct_y_target_temp_toilet": threshold_counts["y_target_temp_toilet"][0],
+            "threshold_wrong_y_target_temp_toilet": threshold_counts["y_target_temp_toilet"][1],
+            "threshold_correct_y_target_light": threshold_counts["y_target_light"][0],
+            "threshold_wrong_y_target_light": threshold_counts["y_target_light"][1],
+            "threshold_correct_y_target_sound": threshold_counts["y_target_sound"][0],
+            "threshold_wrong_y_target_sound": threshold_counts["y_target_sound"][1],
             "airflow_accuracy_sum": float(accuracy_score(airflow_true, airflow_pred)) * count,
             "airflow_precision_sum": float(precision_score(airflow_true, airflow_pred, zero_division=0)) * count,
             "airflow_recall_sum": float(recall_score(airflow_true, airflow_pred, zero_division=0)) * count,

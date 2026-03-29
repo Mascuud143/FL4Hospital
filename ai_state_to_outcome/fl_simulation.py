@@ -16,7 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-dir", default="ai_state_to_outcome/splits", help="Directory with state_to_outcome train and test CSV files")
     parser.add_argument("--rounds", type=int, default=5, help="Federated rounds")
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per round")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--min-fit-clients", type=int, default=2, help="Minimum clients for fit")

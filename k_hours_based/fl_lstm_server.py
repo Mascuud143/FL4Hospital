@@ -23,12 +23,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour_lstm", help="Directory to write global weights per round")
+    parser.add_argument("--hidden-dim", type=int, default=64, help="LSTM hidden dimension size")
+    parser.add_argument("--num-layers", type=int, default=1, help="Number of stacked LSTM layers")
+    parser.add_argument("--head-hidden-dim", type=int, default=64, help="Dense head hidden dimension after the LSTM")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the dense head")
+    parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
+    parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
     return parser.parse_args()
 
 
-def make_initial_parameters() -> fl.common.Parameters:
+def make_initial_parameters(
+    hidden_dim: int = 64,
+    num_layers: int = 1,
+    head_hidden_dim: int = 64,
+    activation: str = "relu",
+) -> fl.common.Parameters:
     # Round 1 starts from a fresh LSTM with the same shape every client uses.
-    model = make_model(get_input_dim())
+    model = make_model(
+        get_input_dim(),
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        head_hidden_dim=head_hidden_dim,
+        activation=activation,
+    )
     return fl.common.ndarrays_to_parameters(get_params(model))
 
 
@@ -256,21 +274,45 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         return aggregated_loss, aggregated_metrics
 
 
+class TrackingFedProx(fl.server.strategy.FedProx):
+    def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.weights_out_dir = weights_out_dir
+        self.latest_parameters: fl.common.Parameters | None = None
+        self.latest_eval_summary: dict[str, float] | None = None
+        self.latest_fit_summary: dict[str, float] | None = None
+
+    aggregate_fit = TrackingFedAvg.aggregate_fit
+    aggregate_evaluate = TrackingFedAvg.aggregate_evaluate
+
+
+def make_strategy(aggregation_method: str, weights_out_dir: str, proximal_mu: float, **kwargs: Any):
+    if aggregation_method == "fedprox":
+        return TrackingFedProx(weights_out_dir=weights_out_dir, proximal_mu=proximal_mu, **kwargs)
+    return TrackingFedAvg(weights_out_dir=weights_out_dir, **kwargs)
+
+
 def main() -> None:
     args = parse_args()
     split_dir = os.path.abspath(args.split_dir)
     weights_out_dir = os.path.abspath(args.weights_out_dir)
     rooms = count_rooms(split_dir)
 
-    # FedAvg is still the FL strategy; only the client-side model changed from MLP to LSTM.
-    strategy = TrackingFedAvg(
+    strategy = make_strategy(
+        aggregation_method=args.aggregation_method,
         weights_out_dir=weights_out_dir,
+        proximal_mu=args.proximal_mu,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=args.min_fit_clients,
         min_evaluate_clients=args.min_evaluate_clients,
         min_available_clients=args.min_available_clients,
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            head_hidden_dim=args.head_hidden_dim,
+            activation=args.activation,
+        ),
     )
 
     print("fl_server_lstm.py starting")
@@ -279,6 +321,8 @@ def main() -> None:
     print(f"rooms_detected={rooms}")
     print(f"server_address={args.server_address}")
     print(f"rounds={args.rounds}")
+    print(f"aggregation_method={args.aggregation_method}")
+    print(f"proximal_mu={args.proximal_mu}")
     print(f"weights_out_dir={weights_out_dir}")
     print("waiting_for_room_clients...")
 

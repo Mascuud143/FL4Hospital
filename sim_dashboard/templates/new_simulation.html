@@ -1,0 +1,538 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .page-grid { display: grid; gap: 16px; }
+  .section-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  .field input, .field select {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: #fff;
+    font: inherit;
+  }
+  .hint { color: var(--muted); font-size: 0.9rem; line-height: 1.45; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .summary-box, .metric-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 12px;
+  }
+  .summary-box strong, .metric-k {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .summary-box code { display: block; font-size: 0.95rem; word-break: break-word; }
+  .metric-v { font-size: 1.1rem; font-weight: 700; margin-top: 4px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .btn {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    background: #fff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .btn.primary {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+  }
+  .progress {
+    width: 100%;
+    height: 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  .bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #1d4ed8, #0f766e);
+    transition: width 0.25s ease;
+  }
+  .state { margin-top: 6px; color: var(--muted); font-size: 0.84rem; }
+  .log {
+    margin-top: 10px;
+    height: 260px;
+    overflow: auto;
+    border-radius: 12px;
+    border: 1px solid #0f172a;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 10px;
+    font: 0.78rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+  .history-table-wrap {
+    margin-top: 12px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.84rem;
+  }
+  .history-table th, .history-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  .history-table th {
+    color: var(--muted);
+    background: #f8fafc;
+    font-weight: 700;
+  }
+  .history-table code {
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.56);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 1000;
+  }
+  .modal.hidden { display: none; }
+  .modal-panel {
+    width: min(1200px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-body {
+    padding: 16px;
+    overflow: auto;
+  }
+  @media (max-width: 900px) {
+    .section-grid, .summary-grid, .field-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="page-grid">
+  <section class="card">
+    <h2 style="margin:0;">New Simulation</h2>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Last Run Time Summary</h3>
+    <div class="summary-grid">
+    
+      <div class="summary-box">
+        <strong>Simulation Runtime</strong>
+        <div id="simSummaryRuntime" class="metric-v">{{ runtime_summary.simulation_runtime }}</div>
+      </div>
+  
+      
+      <div class="summary-box">
+        <strong>CPU</strong>
+        <div id="simSummaryCpu" class="metric-v">{{ pc_spec.cpu }}</div>
+      </div>
+      <div class="summary-box">
+        <strong>RAM</strong>
+        <div id="simSummaryRam" class="metric-v">{{ pc_spec.ram }}</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="startSimulationBtn" class="btn primary" type="button">Start Simulation</button>
+      <button id="stopSimulationBtn" class="btn" type="button">Stop Simulation</button>
+      <button id="toggleSimRuntimeHistoryBtn" class="btn" type="button">Show Runtime History</button>
+    </div>
+    <div class="progress"><div id="simulationBar" class="bar"></div></div>
+    <div id="simulationState" class="state">Idle</div>
+    <div id="simulationLog" class="log">[dashboard] waiting...</div>
+  </section>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Simulation Horizon</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="startDate">Start date</label>
+          <input id="startDate" type="date" value="{{ config_defaults.start_date.isoformat() if config_defaults.start_date else '' }}" />
+        </div>
+        <div class="field">
+          <label for="days">Days</label>
+          <input id="days" type="number" min="1" step="1" value="{{ config_defaults.days }}" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">Population</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="patientCount">Patient count</label>
+          <input id="patientCount" type="number" min="1" step="1" value="{{ config_defaults.patient_count }}" />
+        </div>
+        <div class="field">
+          <label for="randomSeed">Random seed</label>
+          <input id="randomSeed" type="number" step="1" value="{{ config_defaults.random_seed }}" />
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Room Transfers</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="changeRoomProb">Change room probability</label>
+          <input id="changeRoomProb" type="number" min="0" max="1" step="0.01" value="{{ config_defaults.change_room_prob }}" />
+        </div>
+        <div class="field">
+          <label for="minDaysBeforeTransfer">Min days before transfer</label>
+          <input id="minDaysBeforeTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_before_transfer }}" />
+        </div>
+        <div class="field">
+          <label for="minDaysAfterTransfer">Min days after transfer</label>
+          <input id="minDaysAfterTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_after_transfer }}" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">Comfort Behavior</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="comfortMaxChangesPerDay">Max comfort changes per day</label>
+          <input id="comfortMaxChangesPerDay" type="number" min="0" step="1" value="{{ config_defaults.comfort_max_changes_per_day }}" />
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Simulation Timing</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="simStepS">Simulation step (seconds)</label>
+          <input id="simStepS" type="number" min="1" step="1" value="{{ config_defaults.sim_step_s }}" />
+        </div>
+        <div class="field">
+          <label for="sensorSampleEveryS">Sensor sample every (seconds)</label>
+          <input id="sensorSampleEveryS" type="number" min="1" step="1" value="{{ config_defaults.sensor_sample_every_s }}" />
+        </div>
+        <div class="field">
+          <label for="wallSleepS">Wall sleep (seconds)</label>
+          <input id="wallSleepS" type="number" min="0" step="0.01" value="{{ config_defaults.wall_sleep_s }}" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin-top:0;">Generation Toggles</h3>
+      <div class="field-grid">
+        <div class="field">
+          <label for="enableComfort">Comfort</label>
+          <select id="enableComfort">
+            <option value="true" {% if config_defaults.enable_comfort %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_comfort %}selected{% endif %}>False</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="enableMedication">Medication</label>
+          <select id="enableMedication">
+            <option value="true" {% if config_defaults.enable_medication %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_medication %}selected{% endif %}>False</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="enableVisits">Visits</label>
+          <select id="enableVisits">
+            <option value="true" {% if config_defaults.enable_visits %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_visits %}selected{% endif %}>False</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="enableToiletUsage">Toilet usage</label>
+          <select id="enableToiletUsage">
+            <option value="true" {% if config_defaults.enable_toilet_usage %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_toilet_usage %}selected{% endif %}>False</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="enableSensorEmit">Sensor emit</label>
+          <select id="enableSensorEmit">
+            <option value="true" {% if config_defaults.enable_sensor_emit %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_sensor_emit %}selected{% endif %}>False</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="enableUtilityUsage">Utility usage</label>
+          <select id="enableUtilityUsage">
+            <option value="true" {% if config_defaults.enable_utility_usage %}selected{% endif %}>True</option>
+            <option value="false" {% if not config_defaults.enable_utility_usage %}selected{% endif %}>False</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="simRuntimeHistoryModal" class="modal hidden" aria-hidden="true">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 style="margin:0;">Runtime History</h3>
+      <button id="closeSimRuntimeHistoryBtn" class="btn" type="button">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="history-table-wrap" style="margin-top:0;">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Duration</th>
+              <th>Started</th>
+              <th>PC Specs</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="simRuntimeHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  (() => {
+    const initialRuntimeSummary = {{ runtime_summary|tojson }};
+    const initialPcSpec = {{ pc_spec|tojson }};
+    const startBtn = document.getElementById("startSimulationBtn");
+    const stopBtn = document.getElementById("stopSimulationBtn");
+    const toggleHistoryBtn = document.getElementById("toggleSimRuntimeHistoryBtn");
+    const closeHistoryBtn = document.getElementById("closeSimRuntimeHistoryBtn");
+    const stateEl = document.getElementById("simulationState");
+    const barEl = document.getElementById("simulationBar");
+    const logEl = document.getElementById("simulationLog");
+    const historyModal = document.getElementById("simRuntimeHistoryModal");
+    const historyBody = document.getElementById("simRuntimeHistoryBody");
+
+    let currentJobId = null;
+
+    function appendLog(lines) {
+      if (!Array.isArray(lines) || !lines.length) return;
+      const existing = logEl.textContent === "[dashboard] waiting..." ? "" : `${logEl.textContent}\n`;
+      logEl.textContent = `${existing}${lines.join("\n")}`.trim();
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setProgress(value) {
+      barEl.style.width = `${Math.max(0, Math.min(100, Number(value || 0)))}%`;
+    }
+
+    function updateRuntimeSummary(summary, pcSpec) {
+      if (summary) {
+        const totalEl = document.getElementById("simSummaryTotalRuntime");
+        const runtimeEl = document.getElementById("simSummaryRuntime");
+        const seedEl = document.getElementById("simSummarySeedRuntime");
+        const writeEl = document.getElementById("simSummaryWriteRuntime");
+        if (totalEl) totalEl.textContent = summary.simulation_total_runtime ?? "Pending";
+        if (runtimeEl) runtimeEl.textContent = summary.simulation_runtime ?? "Pending";
+        if (seedEl) seedEl.textContent = summary.simulation_seed_runtime ?? "Pending";
+        if (writeEl) writeEl.textContent = summary.simulation_write_runtime ?? "Pending";
+      }
+      if (pcSpec) {
+        const cpuEl = document.getElementById("simSummaryCpu");
+        const ramEl = document.getElementById("simSummaryRam");
+        if (cpuEl) cpuEl.textContent = pcSpec.cpu ?? "Pending";
+        if (ramEl) ramEl.textContent = pcSpec.ram ?? "Pending";
+      }
+      const history = Array.isArray(summary?.history) ? summary.history : [];
+      function compactPairs(cfg, allowKeys) {
+        const blocked = new Set([
+          "command",
+          "split_dir",
+          "summary_out",
+          "weights_out_dir",
+          "out_dir",
+          "output_dir",
+          "input_dir",
+          "stats_path",
+          "data_dir",
+        ]);
+        return Object.entries(cfg || {})
+          .filter(([key, value]) => !blocked.has(key) && value !== null && value !== undefined && value !== "")
+          .filter(([key]) => !allowKeys || allowKeys.includes(key))
+          .map(([key, value]) => `${key}=${value}`)
+          .join(" | ");
+      }
+      function detailText(item) {
+        const cfg = item.config || {};
+        if (item.kind === "simulation") {
+          return `patients=${cfg.patient_count ?? "-"} | days=${cfg.days ?? "-"} | start=${cfg.start_date ?? "-"} | room_change=${cfg.change_room_prob ?? "-"} | comfort/day=${cfg.comfort_max_changes_per_day ?? "-"} | sensor_emit=${cfg.enable_sensor_emit ?? "-"} | utility=${cfg.enable_utility_usage ?? "-"}`;
+        }
+        if (item.kind === "build") {
+          if (cfg.mode === "event") return `event | effect=${cfg.medication_effect_minutes ?? "-"}m | active=${cfg.medication_active_hours ?? "-"}h`;
+          return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+        }
+        if (item.kind === "split") {
+          if (cfg.mode === "event") return `event | test=${cfg.test_fraction ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+          return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+        }
+        if (item.kind === "federated" || item.kind === "training") {
+          const agg = cfg.aggregation_method ?? "FedAvg";
+          const base = `${agg} | ${cfg.mode ?? "-"} ${cfg.model_type ?? "-"} | ${cfg.rounds ?? "-"} rounds | ${cfg.local_epochs ?? "-"} epoch(s)`;
+          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | client cpu ${cfg.client_cpu ?? "-"}`;
+          if (cfg.model_type === "mlp") return `${base} | batch ${cfg.batch_size ?? "-"} | lr ${cfg.learning_rate ?? "-"} | ${cfg.optimizer ?? "-"} | ${cfg.activation ?? "-"} | ${cfg.max_rooms ?? "-"} rooms`;
+          if (cfg.model_type === "lstm") return `${base} | seq ${cfg.sequence_length ?? "-"} | batch ${cfg.batch_size ?? "-"} | hidden ${cfg.hidden_dim ?? "-"} | layers ${cfg.num_layers ?? "-"} | lr ${cfg.learning_rate ?? "-"}`;
+          return `${base} | seq ${cfg.sequence_length ?? "-"} | lstm batch ${cfg.lstm_batch_size ?? "-"} | mlp batch ${cfg.mlp_batch_size ?? "-"} | hidden ${cfg.lstm_hidden_dim ?? "-"} | lr ${cfg.lstm_learning_rate ?? "-"}`;
+        }
+        return compactPairs(cfg);
+      }
+      if (historyBody) {
+        historyBody.innerHTML = history.length
+          ? history.map((item) => `
+              <tr>
+                <td>${item.kind ?? "-"}</td>
+                <td>${item.status ?? "-"}</td>
+                <td>${item.duration ?? "-"}</td>
+                <td>${item.started_at ?? "-"}</td>
+                <td><code>${pcSpec?.cpu ?? "Pending"} | ${pcSpec?.ram ?? "Pending"} | ${pcSpec?.gpu ?? "Pending"} | ${pcSpec?.os ?? "Pending"}</code></td>
+                <td><code>${detailText(item)}</code></td>
+              </tr>
+            `).join("")
+          : `<tr><td colspan="6">No runtime history yet.</td></tr>`;
+      }
+    }
+
+    updateRuntimeSummary(initialRuntimeSummary, initialPcSpec);
+
+    function boolValue(id) {
+      return document.getElementById(id).value === "true";
+    }
+
+    function buildPayload() {
+      return {
+        start_date: document.getElementById("startDate").value,
+        days: Number(document.getElementById("days").value || 1),
+        patient_count: Number(document.getElementById("patientCount").value || 1),
+        random_seed: Number(document.getElementById("randomSeed").value || 42),
+        change_room_prob: Number(document.getElementById("changeRoomProb").value || 0.3),
+        min_days_before_transfer: Number(document.getElementById("minDaysBeforeTransfer").value || 1),
+        min_days_after_transfer: Number(document.getElementById("minDaysAfterTransfer").value || 1),
+        comfort_max_changes_per_day: Number(document.getElementById("comfortMaxChangesPerDay").value || 6),
+        sim_step_s: Number(document.getElementById("simStepS").value || 60),
+        sensor_sample_every_s: Number(document.getElementById("sensorSampleEveryS").value || 300),
+        wall_sleep_s: Number(document.getElementById("wallSleepS").value || 0),
+        enable_comfort: boolValue("enableComfort"),
+        enable_medication: boolValue("enableMedication"),
+        enable_visits: boolValue("enableVisits"),
+        enable_toilet_usage: boolValue("enableToiletUsage"),
+        enable_sensor_emit: boolValue("enableSensorEmit"),
+        enable_utility_usage: boolValue("enableUtilityUsage"),
+      };
+    }
+
+    async function startJob() {
+      const response = await fetch("/api/simulation/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload()),
+      });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return response.json();
+    }
+
+    async function stopJob(jobId) {
+      const response = await fetch(`/api/ai/jobs/${jobId}/stop`, { method: "POST" });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return response.json();
+    }
+
+    function pollJob(jobId) {
+      let cursor = 0;
+      const timer = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
+          if (!response.ok) throw new Error(`status ${response.status}`);
+          const data = await response.json();
+          appendLog(data.logs || []);
+          cursor = data.next_cursor || cursor;
+          setProgress(data.progress);
+          stateEl.textContent = `${data.status} (${data.progress}%)`;
+          updateRuntimeSummary(data.runtime_summary, data.pc_spec);
+          if (["completed", "failed", "stopped"].includes(data.status)) {
+            clearInterval(timer);
+            currentJobId = null;
+          }
+        } catch (error) {
+          clearInterval(timer);
+          stateEl.textContent = `poll failed: ${error.message}`;
+          appendLog([`[dashboard] polling error: ${error.message}`]);
+          currentJobId = null;
+        }
+      }, 1000);
+    }
+
+    startBtn.addEventListener("click", async () => {
+      try {
+        logEl.textContent = "[dashboard] waiting...";
+        stateEl.textContent = "starting...";
+        setProgress(0);
+        const data = await startJob();
+        currentJobId = data.job_id;
+        pollJob(currentJobId);
+      } catch (error) {
+        stateEl.textContent = `start failed: ${error.message}`;
+      }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+      if (!currentJobId) return;
+      try {
+        await stopJob(currentJobId);
+      } catch (error) {
+        appendLog([`[dashboard] stop failed: ${error.message}`]);
+      }
+    });
+    toggleHistoryBtn?.addEventListener("click", () => {
+      historyModal.classList.remove("hidden");
+    });
+    closeHistoryBtn?.addEventListener("click", () => {
+      historyModal.classList.add("hidden");
+    });
+    historyModal?.addEventListener("click", (event) => {
+      if (event.target === historyModal) historyModal.classList.add("hidden");
+    });
+  })();
+</script>
+{% endblock %}

@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta, timezone
 from statistics import mean, pstdev
 import math
+import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -17,24 +19,45 @@ from flask import Blueprint, jsonify, render_template, request
 
 from sim_dashboard.csv_store import load_data
 from simulation_batch.config import DAYS, START_DATE
+import simulation_batch.config as sim_config
 
 sim_bp = Blueprint("sim_bp", __name__)
 _ROOT_DIR = Path(__file__).resolve().parents[1]
-_AI_FORECAST_DIR = _ROOT_DIR / "k_hours_based"
+_K_HOURS_DIR = _ROOT_DIR / "k_hours_based"
+_EVENT_DIR = _ROOT_DIR / "ai_state_to_outcome"
 _AI_JOBS: dict[str, dict] = {}
 _AI_JOBS_LOCK = threading.Lock()
 _MAX_LOG_LINES = 2000
-_BUILD_OUTPUT_DIR = _AI_FORECAST_DIR / "outputs_next_hour_dashboard"
-_SPLIT_OUTPUT_DIR = _AI_FORECAST_DIR / "splits_next_hour_dashboard"
+_RUN_METADATA_DIR = _ROOT_DIR / "sim_dashboard" / "run_metadata"
+_LAST_RUNTIME_SUMMARY_PATH = _RUN_METADATA_DIR / "last_run_time_summary.json"
+_PC_SPEC_PATH = _RUN_METADATA_DIR / "pc_specification.json"
+_RUNTIME_HISTORY_LIMIT = 50
+_TASK_DIRS = {
+    "k_hours": _K_HOURS_DIR,
+    "event": _EVENT_DIR,
+}
+_BUILD_OUTPUT_DIRS = {
+    "k_hours": _K_HOURS_DIR / "outputs_next_hour_dashboard",
+    "event": _EVENT_DIR / "rows_dashboard",
+}
+_SPLIT_OUTPUT_DIRS = {
+    "k_hours": _K_HOURS_DIR / "splits_next_hour_dashboard",
+    "event": _EVENT_DIR / "splits_dashboard",
+}
 _MODEL_OUTPUT_DIRS = {
-    "mlp": _AI_FORECAST_DIR / "fl_weights_dashboard_mlp",
-    "lstm": _AI_FORECAST_DIR / "fl_weights_dashboard_lstm",
-    "mlp_lstm": _AI_FORECAST_DIR / "fl_weights_dashboard_mlp_lstm",
+    "k_hours": {
+        "mlp": _K_HOURS_DIR / "fl_weights_dashboard_mlp",
+        "lstm": _K_HOURS_DIR / "fl_weights_dashboard_lstm",
+        "mlp_lstm": _K_HOURS_DIR / "fl_weights_dashboard_mlp_lstm",
+    },
+    "event": {
+        "mlp": _EVENT_DIR / "fl_weights_dashboard_mlp",
+    },
 }
 
 try:
-    if str(_AI_FORECAST_DIR) not in sys.path:
-        sys.path.insert(0, str(_AI_FORECAST_DIR))
+    if str(_K_HOURS_DIR) not in sys.path:
+        sys.path.insert(0, str(_K_HOURS_DIR))
 
     from k_hours_based.fl_mlp_client import get_input_dim as _mlp_get_input_dim
     from k_hours_based.fl_mlp_client import make_model as _mlp_make_model
@@ -79,6 +102,7 @@ def _new_job(kind: str, command: list[str]) -> str:
             "stop_requested": False,
             "pid": None,
             "current_process": None,
+            "metadata": {},
         }
     return job_id
 
@@ -119,9 +143,19 @@ def _append_log(job_id: str, line: str) -> None:
                 total_rounds = max(1, int(match.group(2)))
                 pct = 10 + int((current_round / total_rounds) * 80)
                 job["progress"] = max(job["progress"], min(90, pct))
+        elif job["kind"] == "simulation":
+            if "PRE-GENERATION START" in clean:
+                job["progress"] = max(job["progress"], 10)
+            if "PRE-GENERATION COMPLETE" in clean:
+                job["progress"] = max(job["progress"], 35)
+            if "START SIM LOOP" in clean:
+                job["progress"] = max(job["progress"], 45)
+            if "SIMULATION COMPLETE" in clean or "SIMULATION finished" in clean:
+                job["progress"] = max(job["progress"], 95)
 
 
 def _finish_job(job_id: str, ok: bool, return_code: int | None) -> None:
+    snapshot = None
     with _AI_JOBS_LOCK:
         job = _AI_JOBS.get(job_id)
         if not job:
@@ -132,6 +166,9 @@ def _finish_job(job_id: str, ok: bool, return_code: int | None) -> None:
         job["ended_at"] = datetime.now(timezone.utc).isoformat()
         job["pid"] = None
         job["current_process"] = None
+        snapshot = dict(job)
+    if ok and snapshot is not None:
+        _persist_job_runtime(snapshot)
 
 
 def _mark_stopped(job_id: str, return_code: int | None) -> None:
@@ -206,8 +243,13 @@ def _run_ai_commands(job_id: str, commands: list[list[str]]) -> None:
     _finish_job(job_id, ok=True, return_code=0)
 
 
-def _start_ai_job(kind: str, commands: list[list[str]]) -> str:
+def _start_ai_job(kind: str, commands: list[list[str]], *, metadata: dict[str, object] | None = None) -> str:
     job_id = _new_job(kind, commands[0] if commands else [])
+    if metadata:
+        with _AI_JOBS_LOCK:
+            job = _AI_JOBS.get(job_id)
+            if job is not None:
+                job["metadata"] = metadata
     thread = threading.Thread(target=_run_ai_commands, args=(job_id, commands), daemon=True)
     thread.start()
     return job_id
@@ -228,12 +270,281 @@ def _parse_kv_lines(lines: list[str]) -> dict[str, float | int | str]:
     return metrics
 
 
-def _ai_script(name: str) -> str:
-    return str((_AI_FORECAST_DIR / name).resolve())
+def _default_runtime_summary() -> dict[str, object]:
+    return {
+        "total_runtime": "Pending",
+        "build_runtime": "Pending",
+        "split_runtime": "Pending",
+        "training_runtime": "Pending",
+        "simulation_total_runtime": "Pending",
+        "simulation_runtime": "Pending",
+        "simulation_seed_runtime": "Pending",
+        "simulation_write_runtime": "Pending",
+        "stage_seconds": {
+            "build": None,
+            "split": None,
+            "training": None,
+            "simulation_total": None,
+            "simulation": None,
+            "simulation_seed": None,
+            "simulation_write": None,
+        },
+        "last_configs": {
+            "build": {},
+            "split": {},
+            "training": {},
+            "simulation": {},
+        },
+        "history": [],
+    }
 
 
-def _weights_dir_for_model(model_type: str) -> Path:
-    return _MODEL_OUTPUT_DIRS.get(model_type, _MODEL_OUTPUT_DIRS["mlp"])
+def _default_pc_spec() -> dict[str, object]:
+    return {
+        "cpu": "Pending",
+        "ram": "Pending",
+        "gpu": "Pending",
+        "os": "Pending",
+    }
+
+
+def _safe_iso_to_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "Pending"
+    total_seconds = max(0, int(round(float(seconds))))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _detect_total_ram_gb() -> str:
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return f"{stat.ullTotalPhys / (1024 ** 3):.1f} GB"
+    except Exception:
+        pass
+    return "Pending"
+
+
+def _run_powershell_query(script: str) -> str | None:
+    if platform.system().lower() != "windows":
+        return None
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=8,
+        )
+        output = (completed.stdout or "").strip()
+        return output or None
+    except Exception:
+        return None
+
+
+def _detect_cpu_label() -> str:
+    base = platform.processor() or "Unknown"
+    ps_value = _run_powershell_query("(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)")
+    name = ps_value or base
+    return f"{name} ({os.cpu_count() or 0} logical cores)"
+
+
+def _detect_gpu_label() -> str:
+    ps_value = _run_powershell_query(
+        "(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -and $_.Name -notmatch 'Basic Display|Remote Display|Hyper-V' } | "
+        "Select-Object -ExpandProperty Name)"
+    )
+    if not ps_value:
+        return "Pending"
+    parts = [line.strip() for line in ps_value.splitlines() if line.strip()]
+    unique_parts: list[str] = []
+    for part in parts:
+        if part not in unique_parts:
+            unique_parts.append(part)
+    return ", ".join(unique_parts) if unique_parts else "Pending"
+
+
+def _detect_os_label() -> str:
+    system = platform.system()
+    if system.lower() != "windows":
+        return f"{system} {platform.release()}"
+    version = platform.version()
+    try:
+        build = int(version.split(".")[-1])
+    except Exception:
+        build = 0
+    label = "Windows 11" if build >= 22000 else "Windows 10"
+    return label
+
+
+def _refresh_pc_spec() -> None:
+    _RUN_METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cpu": _detect_cpu_label(),
+        "ram": _detect_total_ram_gb(),
+        "gpu": _detect_gpu_label(),
+        "os": _detect_os_label(),
+    }
+    _PC_SPEC_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_runtime_summary_file() -> dict[str, object]:
+    _ensure_run_metadata_files()
+    with open(_LAST_RUNTIME_SUMMARY_PATH, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    merged = _default_runtime_summary()
+    if isinstance(payload, dict):
+        merged.update({k: v for k, v in payload.items() if k in merged and k not in {"stage_seconds", "last_configs", "history"}})
+        if isinstance(payload.get("stage_seconds"), dict):
+            merged["stage_seconds"].update(payload["stage_seconds"])
+        if isinstance(payload.get("last_configs"), dict):
+            for key, value in payload["last_configs"].items():
+                if key in merged["last_configs"] and isinstance(value, dict):
+                    merged["last_configs"][key] = value
+        if isinstance(payload.get("history"), list):
+            merged["history"] = payload["history"]
+    return merged
+
+
+def _save_runtime_summary_file(payload: dict[str, object]) -> None:
+    _RUN_METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    _LAST_RUNTIME_SUMMARY_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _persist_job_runtime(job: dict[str, object]) -> None:
+    started_at = _safe_iso_to_datetime(job.get("started_at"))
+    ended_at = _safe_iso_to_datetime(job.get("ended_at"))
+    if started_at is None or ended_at is None:
+        return
+    duration_seconds = max(0.0, (ended_at - started_at).total_seconds())
+    kind = str(job.get("kind", ""))
+    if kind not in {"build", "split", "federated", "simulation"}:
+        return
+
+    runtime_summary = _load_runtime_summary_file()
+    stage_map = {
+        "build": ("build_runtime", "build"),
+        "split": ("split_runtime", "split"),
+        "federated": ("training_runtime", "training"),
+        "simulation": ("simulation_total_runtime", "simulation_total"),
+    }
+    display_key, seconds_key = stage_map[kind]
+    runtime_summary[display_key] = _format_duration(duration_seconds)
+    stage_seconds = runtime_summary["stage_seconds"]
+    stage_seconds[seconds_key] = duration_seconds
+    if kind == "simulation":
+        runtime_summary["simulation_runtime"] = _format_duration(duration_seconds)
+    else:
+        total_seconds = sum(float(stage_seconds[key]) for key in ("build", "split", "training") if stage_seconds.get(key) is not None)
+        runtime_summary["total_runtime"] = _format_duration(total_seconds if total_seconds > 0 else None)
+
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    last_configs = runtime_summary["last_configs"]
+    config_payload = {
+        "task_type": metadata.get("task_type"),
+        "command": job.get("command"),
+        "status": job.get("status"),
+        "return_code": job.get("return_code"),
+        "duration_seconds": round(duration_seconds, 3),
+        "started_at": job.get("started_at"),
+        "ended_at": job.get("ended_at"),
+        **(metadata.get("config") if isinstance(metadata.get("config"), dict) else {}),
+    }
+    config_bucket = "simulation" if kind == "simulation" else seconds_key
+    last_configs[config_bucket] = config_payload
+
+    history = runtime_summary["history"]
+    history.insert(
+        0,
+        {
+            "kind": kind,
+            "task_type": metadata.get("task_type"),
+            "status": job.get("status"),
+            "duration": _format_duration(duration_seconds),
+            "duration_seconds": round(duration_seconds, 3),
+            "started_at": job.get("started_at"),
+            "ended_at": job.get("ended_at"),
+            "return_code": job.get("return_code"),
+            "config": metadata.get("config", {}),
+            "command": job.get("command"),
+        },
+    )
+    runtime_summary["history"] = history[:_RUNTIME_HISTORY_LIMIT]
+    _save_runtime_summary_file(runtime_summary)
+
+
+def _normalize_task_type(value: object) -> str:
+    task_type = str(value or "k_hours").strip().lower()
+    return task_type if task_type in _TASK_DIRS else "k_hours"
+
+
+def _ensure_run_metadata_files() -> None:
+    _RUN_METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not _LAST_RUNTIME_SUMMARY_PATH.exists():
+        _save_runtime_summary_file(_default_runtime_summary())
+    if not _PC_SPEC_PATH.exists():
+        _PC_SPEC_PATH.write_text(json.dumps(_default_pc_spec(), indent=2), encoding="utf-8")
+    try:
+        with open(_LAST_RUNTIME_SUMMARY_PATH, "r", encoding="utf-8") as f:
+            json.load(f)
+    except Exception:
+        _save_runtime_summary_file(_default_runtime_summary())
+    try:
+        with open(_PC_SPEC_PATH, "r", encoding="utf-8") as f:
+            json.load(f)
+    except Exception:
+        _PC_SPEC_PATH.write_text(json.dumps(_default_pc_spec(), indent=2), encoding="utf-8")
+    _refresh_pc_spec()
+
+
+def _load_run_metadata() -> tuple[dict[str, object], dict[str, object]]:
+    _ensure_run_metadata_files()
+    runtime_summary = _load_runtime_summary_file()
+    with open(_PC_SPEC_PATH, "r", encoding="utf-8") as f:
+        pc_spec = json.load(f)
+    return runtime_summary, pc_spec
+
+
+def _ai_script(task_type: str, name: str) -> str:
+    task_dir = _TASK_DIRS[_normalize_task_type(task_type)]
+    return str((task_dir / name).resolve())
+
+
+def _weights_dir_for_model(task_type: str, model_type: str) -> Path:
+    task_type = _normalize_task_type(task_type)
+    model_dirs = _MODEL_OUTPUT_DIRS[task_type]
+    return model_dirs.get(model_type, model_dirs["mlp"])
 
 
 def _load_metrics_csv(path: Path) -> pd.DataFrame:
@@ -246,17 +557,120 @@ def _load_metrics_csv(path: Path) -> pd.DataFrame:
 
 
 def _to_native(value):
-    if isinstance(value, (np.floating,)):
-        return float(value)
-    if isinstance(value, (np.integer,)):
-        return int(value)
     if pd.isna(value):
         return None
+    if isinstance(value, (np.floating,)):
+        value = float(value)
+        return value if math.isfinite(value) else None
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     return value
 
 
-def _target_line_series(frame: pd.DataFrame) -> list[dict[str, object]]:
+def _sanitize_for_json(value):
+    if isinstance(value, dict):
+        return {key: _sanitize_for_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_json(item) for item in value]
+    return _to_native(value)
+
+
+def _series_values(frame: pd.DataFrame, column: str) -> list[float | None]:
+    values: list[float | None] = []
+    for raw in frame[column].tolist():
+        if pd.isna(raw):
+            values.append(None)
+            continue
+        numeric = float(raw)
+        values.append(numeric if math.isfinite(numeric) else None)
+    return values
+
+
+def _error_analysis_line_charts(frame: pd.DataFrame) -> list[dict[str, object]]:
     round_values = [int(x) for x in frame.get("round", pd.Series(dtype=int)).tolist()]
+    if not round_values:
+        return []
+
+    chart_specs = [
+        ("global_loss", "Global Loss", "#475569"),
+        ("local_loss", "Local Loss", "#475569"),
+        ("mae_y_temp_main", "MAE Temp Main", "#1d4ed8"),
+        ("mse_y_temp_main", "MSE Temp Main", "#3b82f6"),
+        ("rmse_y_temp_main", "RMSE Temp Main", "#2563eb"),
+        ("threshold_accuracy_y_temp_main", "Threshold Accuracy Temp Main", "#60a5fa"),
+        ("mae_y_temp_toilet", "MAE Temp Toilet", "#0f766e"),
+        ("mse_y_temp_toilet", "MSE Temp Toilet", "#14b8a6"),
+        ("rmse_y_temp_toilet", "RMSE Temp Toilet", "#0d9488"),
+        ("threshold_accuracy_y_temp_toilet", "Threshold Accuracy Temp Toilet", "#5eead4"),
+        ("mae_y_light", "MAE Light", "#f59e0b"),
+        ("mse_y_light", "MSE Light", "#fbbf24"),
+        ("rmse_y_light", "RMSE Light", "#d97706"),
+        ("threshold_accuracy_y_light", "Threshold Accuracy Light", "#fcd34d"),
+        ("mae_y_sound", "MAE Sound", "#dc2626"),
+        ("mse_y_sound", "MSE Sound", "#ef4444"),
+        ("rmse_y_sound", "RMSE Sound", "#b91c1c"),
+        ("threshold_accuracy_y_sound", "Threshold Accuracy Sound", "#fca5a5"),
+        ("regression_correct_rate", "Regression Correct Rate", "#7c3aed"),
+        ("temperature_correct_rate", "Temperature Correct Rate", "#8b5cf6"),
+        ("airflow_accuracy", "Airflow Accuracy", "#0891b2"),
+        ("airflow_precision", "Airflow Precision", "#0ea5e9"),
+        ("airflow_recall", "Airflow Recall", "#38bdf8"),
+        ("airflow_f1", "Airflow F1", "#0284c7"),
+        ("change_accuracy", "Change Accuracy", "#16a34a"),
+        ("change_precision", "Change Precision", "#22c55e"),
+        ("change_recall", "Change Recall", "#4ade80"),
+        ("change_f1", "Change F1", "#15803d"),
+    ]
+
+    charts: list[dict[str, object]] = []
+    for column, label, color in chart_specs:
+        if column not in frame.columns:
+            continue
+        charts.append(
+            {
+                "metric": column,
+                "label": label,
+                "rounds": round_values,
+                "series": [
+                    {
+                        "name": label,
+                        "color": color,
+                        "values": _series_values(frame, column),
+                    }
+                ],
+            }
+        )
+    return charts
+
+
+def _summary_line_charts(frame: pd.DataFrame) -> list[dict[str, object]]:
+    round_values = [int(x) for x in frame.get("round", pd.Series(dtype=int)).tolist()]
+    if not round_values:
+        return []
+
+    charts: list[dict[str, object]] = []
+    for column, label, color in (("global_loss", "Loss", "#475569"), ("local_loss", "Loss", "#475569")):
+        if column in frame.columns:
+            charts.append(
+                {
+                    "metric": column,
+                    "label": label,
+                    "rounds": round_values,
+                    "series": [
+                        {
+                            "name": label,
+                            "color": color,
+                            "values": _series_values(frame, column),
+                        }
+                    ],
+                }
+            )
+            break
+
     labels = {
         "temp_main": "Temp Main",
         "temp_toilet": "Temp Toilet",
@@ -269,8 +683,7 @@ def _target_line_series(frame: pd.DataFrame) -> list[dict[str, object]]:
         "light": "#f59e0b",
         "sound": "#b91c1c",
     }
-    series: list[dict[str, object]] = []
-    for metric_key, metric_label in (("mae", "MAE"), ("rmse", "RMSE")):
+    for metric_key, metric_label in (("mae", "MAE"), ("mse", "MSE"), ("rmse", "RMSE")):
         chart_series = []
         for suffix, target_label in labels.items():
             column = f"{metric_key}_y_{suffix}"
@@ -280,11 +693,19 @@ def _target_line_series(frame: pd.DataFrame) -> list[dict[str, object]]:
                 {
                     "name": f"{target_label} {metric_label}",
                     "color": colors[suffix],
-                    "values": [float(x) if not pd.isna(x) else None for x in frame[column].tolist()],
+                    "values": _series_values(frame, column),
                 }
             )
-        series.append({"metric": metric_key, "label": metric_label, "rounds": round_values, "series": chart_series})
-    return series
+        if chart_series:
+            charts.append(
+                {
+                    "metric": metric_key,
+                    "label": metric_label,
+                    "rounds": round_values,
+                    "series": chart_series,
+                }
+            )
+    return charts
 
 
 def _make_pie(title: str, slices: list[dict[str, object]]) -> dict[str, object]:
@@ -292,6 +713,8 @@ def _make_pie(title: str, slices: list[dict[str, object]]) -> dict[str, object]:
     total = 0.0
     for item in slices:
         value = float(item.get("value", 0.0) or 0.0)
+        if not math.isfinite(value):
+            value = 0.0
         total += value
         clean_slices.append(
             {
@@ -348,6 +771,166 @@ def _global_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
         )
     )
     return pies
+
+
+def _event_summary_line_charts(frame: pd.DataFrame) -> list[dict[str, object]]:
+    round_values = [int(x) for x in frame.get("round", pd.Series(dtype=int)).tolist()]
+    if not round_values:
+        return []
+
+    charts: list[dict[str, object]] = []
+    labels = {
+        "target_temp_main": "Temp Main",
+        "target_temp_toilet": "Temp Toilet",
+        "target_light": "Light",
+        "target_sound": "Sound",
+    }
+    colors = {
+        "target_temp_main": "#1d4ed8",
+        "target_temp_toilet": "#0f766e",
+        "target_light": "#f59e0b",
+        "target_sound": "#b91c1c",
+    }
+    for metric_key, metric_label in (("mae", "MAE"), ("rmse", "RMSE")):
+        chart_series = []
+        for suffix, target_label in labels.items():
+            column = f"{metric_key}_y_{suffix}"
+            if column not in frame.columns:
+                continue
+            chart_series.append(
+                {
+                    "name": f"{target_label} {metric_label}",
+                    "color": colors[suffix],
+                    "values": _series_values(frame, column),
+                }
+            )
+        if chart_series:
+            charts.append(
+                {
+                    "metric": metric_key,
+                    "label": metric_label,
+                    "rounds": round_values,
+                    "series": chart_series,
+                }
+            )
+
+    for column, label, color in (
+        ("airflow_accuracy", "Airflow Accuracy", "#2563eb"),
+        ("airflow_f1", "Airflow F1", "#16a34a"),
+    ):
+        if column in frame.columns:
+            charts.append(
+                {
+                    "metric": column,
+                    "label": label,
+                    "rounds": round_values,
+                    "series": [
+                        {
+                            "name": label,
+                            "color": color,
+                            "values": _series_values(frame, column),
+                        }
+                    ],
+                }
+            )
+    return charts
+
+
+def _event_error_analysis_line_charts(frame: pd.DataFrame) -> list[dict[str, object]]:
+    round_values = [int(x) for x in frame.get("round", pd.Series(dtype=int)).tolist()]
+    if not round_values:
+        return []
+
+    chart_specs = [
+        ("global_loss", "Global Loss", "#475569"),
+        ("mae_y_target_temp_main", "MAE Temp Main", "#1d4ed8"),
+        ("rmse_y_target_temp_main", "RMSE Temp Main", "#2563eb"),
+        ("threshold_accuracy_y_temp_main", "Threshold Accuracy Temp Main", "#60a5fa"),
+        ("mae_y_target_temp_toilet", "MAE Temp Toilet", "#0f766e"),
+        ("rmse_y_target_temp_toilet", "RMSE Temp Toilet", "#0d9488"),
+        ("threshold_accuracy_y_temp_toilet", "Threshold Accuracy Temp Toilet", "#5eead4"),
+        ("mae_y_target_light", "MAE Light", "#f59e0b"),
+        ("rmse_y_target_light", "RMSE Light", "#d97706"),
+        ("threshold_accuracy_y_light", "Threshold Accuracy Light", "#fcd34d"),
+        ("mae_y_target_sound", "MAE Sound", "#dc2626"),
+        ("rmse_y_target_sound", "RMSE Sound", "#b91c1c"),
+        ("threshold_accuracy_y_sound", "Threshold Accuracy Sound", "#fca5a5"),
+        ("airflow_accuracy", "Airflow Accuracy", "#2563eb"),
+        ("airflow_precision", "Airflow Precision", "#0ea5e9"),
+        ("airflow_recall", "Airflow Recall", "#38bdf8"),
+        ("airflow_f1", "Airflow F1", "#16a34a"),
+    ]
+
+    charts: list[dict[str, object]] = []
+    for column, label, color in chart_specs:
+        if column not in frame.columns:
+            continue
+        charts.append(
+            {
+                "metric": column,
+                "label": label,
+                "rounds": round_values,
+                "series": [
+                    {
+                        "name": label,
+                        "color": color,
+                        "values": _series_values(frame, column),
+                    }
+                ],
+            }
+        )
+    return charts
+
+
+def _event_global_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    latest = frame.sort_values("round").iloc[-1]
+    pies = []
+    for suffix, label, color in (
+        ("temp_main", "Temp Main Threshold", "#2563eb"),
+        ("temp_toilet", "Temp Toilet Threshold", "#0891b2"),
+        ("light", "Light Threshold", "#f59e0b"),
+        ("sound", "Sound Threshold", "#ef4444"),
+    ):
+        pies.append(
+            _make_pie(
+                label,
+                [
+                    {"label": "Correct", "value": latest.get(f"threshold_correct_y_{suffix}", 0), "color": color},
+                    {"label": "Wrong", "value": latest.get(f"threshold_wrong_y_{suffix}", 0), "color": "#e5e7eb"},
+                ],
+            )
+        )
+    pies.append(
+        _make_pie(
+            "Airflow Confusion",
+            [
+                {"label": "TP", "value": latest.get("airflow_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("airflow_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("airflow_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("airflow_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    )
+    return pies
+
+
+def _event_local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
+    if frame.empty:
+        return []
+    latest = frame.sort_values("round").iloc[-1]
+    return [
+        _make_pie(
+            "Airflow Confusion",
+            [
+                {"label": "TP", "value": latest.get("airflow_tp", 0), "color": "#16a34a"},
+                {"label": "TN", "value": latest.get("airflow_tn", 0), "color": "#2563eb"},
+                {"label": "FP", "value": latest.get("airflow_fp", 0), "color": "#f59e0b"},
+                {"label": "FN", "value": latest.get("airflow_fn", 0), "color": "#dc2626"},
+            ],
+        )
+    ]
 
 
 def _local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -747,6 +1330,7 @@ def patients():
 
 @sim_bp.route("/ai-suggestion")
 def ai_suggestion():
+    runtime_summary, pc_spec = _load_run_metadata()
     diagnosis_names = _DIAGNOSIS_NAMES if _PREDICT_IMPORT_ERROR is None else []
     symptom_names = _SYMPTOM_NAMES if _PREDICT_IMPORT_ERROR is None else []
     medication_names = _MEDICATION_NAMES if _PREDICT_IMPORT_ERROR is None else []
@@ -756,75 +1340,165 @@ def ai_suggestion():
         symptom_names=symptom_names,
         medication_names=medication_names,
         predict_import_error=_PREDICT_IMPORT_ERROR,
+        runtime_summary=runtime_summary,
+        pc_spec=pc_spec,
+        runtime_summary_path=str(_LAST_RUNTIME_SUMMARY_PATH),
+        pc_spec_path=str(_PC_SPEC_PATH),
     )
 
 
 @sim_bp.route("/api/ai/build/start", methods=["POST"])
 def api_ai_build_start():
     payload = request.get_json(silent=True) or {}
-    step_minutes = int(payload.get("step_minutes", 30))
-    horizon_minutes = int(payload.get("horizon_minutes", 60))
-    workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
-    chunk_size = int(payload.get("chunk_size", 250))
-
-    build_command = [
-        sys.executable,
-        "-u",
-        _ai_script("build_next_hour_rows.py"),
-        "--data-dir",
-        "filestorage",
-        "--out-dir",
-        str(_BUILD_OUTPUT_DIR),
-        "--step-minutes",
-        str(step_minutes),
-        "--horizon-minutes",
-        str(horizon_minutes),
-        "--workers",
-        str(workers),
-        "--chunk-size",
-        str(chunk_size),
-    ]
-    job_id = _start_ai_job("build", [build_command])
+    task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
+    if task_type == "event":
+        medication_effect_minutes = int(payload.get("medication_effect_minutes", 5))
+        medication_active_hours = int(payload.get("medication_active_hours", 24))
+        build_command = [
+            sys.executable,
+            "-u",
+            _ai_script(task_type, "build_event_rows.py"),
+            "--data-dir",
+            "filestorage",
+            "--out-dir",
+            str(_BUILD_OUTPUT_DIRS[task_type]),
+            "--medication-effect-minutes",
+            str(medication_effect_minutes),
+            "--medication-active-hours",
+            str(medication_active_hours),
+        ]
+    else:
+        step_minutes = int(payload.get("step_minutes", 30))
+        horizon_minutes = int(payload.get("horizon_minutes", 60))
+        workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
+        chunk_size = int(payload.get("chunk_size", 250))
+        build_command = [
+            sys.executable,
+            "-u",
+            _ai_script(task_type, "build_next_hour_rows.py"),
+            "--data-dir",
+            "filestorage",
+            "--out-dir",
+            str(_BUILD_OUTPUT_DIRS[task_type]),
+            "--step-minutes",
+            str(step_minutes),
+            "--horizon-minutes",
+            str(horizon_minutes),
+            "--workers",
+            str(workers),
+            "--chunk-size",
+            str(chunk_size),
+        ]
+    build_config = {
+        "mode": task_type,
+        "data_dir": "filestorage",
+        "out_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
+    }
+    if task_type == "event":
+        build_config.update(
+            {
+                "medication_effect_minutes": medication_effect_minutes,
+                "medication_active_hours": medication_active_hours,
+            }
+        )
+    else:
+        build_config.update(
+            {
+                "step_minutes": step_minutes,
+                "horizon_minutes": horizon_minutes,
+                "workers": workers,
+                "chunk_size": chunk_size,
+            }
+        )
+    job_id = _start_ai_job("build", [build_command], metadata={"task_type": task_type, "config": build_config})
     return jsonify({"job_id": job_id, "status": "running"})
 
 
 @sim_bp.route("/api/ai/split/start", methods=["POST"])
 def api_ai_split_start():
     payload = request.get_json(silent=True) or {}
-    train_ratio = float(payload.get("train_ratio", 0.8))
-    min_train_rows = int(payload.get("min_train_rows", 1))
+    task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
     chunk_size = int(payload.get("chunk_size", 200000))
-    workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
-
-    split_command = [
-        sys.executable,
-        "-u",
-        _ai_script("split_next_hour_by_room.py"),
-        "--input-dir",
-        str(_BUILD_OUTPUT_DIR),
-        "--output-dir",
-        str(_SPLIT_OUTPUT_DIR),
-        "--train-ratio",
-        str(train_ratio),
-        "--min-train-rows",
-        str(min_train_rows),
-        "--chunk-size",
-        str(chunk_size),
-        "--workers",
-        str(workers),
-    ]
-    job_id = _start_ai_job("split", [split_command])
+    if task_type == "event":
+        test_fraction = float(payload.get("test_fraction", 0.2))
+        split_command = [
+            sys.executable,
+            "-u",
+            _ai_script(task_type, "split_by_patient_stay.py"),
+            "--input-dir",
+            str(_BUILD_OUTPUT_DIRS[task_type]),
+            "--output-dir",
+            str(_SPLIT_OUTPUT_DIRS[task_type]),
+            "--test-fraction",
+            str(test_fraction),
+            "--chunk-size",
+            str(chunk_size),
+        ]
+    else:
+        train_ratio = float(payload.get("train_ratio", 0.8))
+        min_train_rows = int(payload.get("min_train_rows", 1))
+        workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
+        split_command = [
+            sys.executable,
+            "-u",
+            _ai_script(task_type, "split_next_hour_by_room.py"),
+            "--input-dir",
+            str(_BUILD_OUTPUT_DIRS[task_type]),
+            "--output-dir",
+            str(_SPLIT_OUTPUT_DIRS[task_type]),
+            "--train-ratio",
+            str(train_ratio),
+            "--min-train-rows",
+            str(min_train_rows),
+            "--chunk-size",
+            str(chunk_size),
+            "--workers",
+            str(workers),
+        ]
+    split_config = {
+        "mode": task_type,
+        "input_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
+        "output_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "chunk_size": chunk_size,
+    }
+    if task_type == "event":
+        split_config["test_fraction"] = test_fraction
+    else:
+        split_config.update(
+            {
+                "train_ratio": train_ratio,
+                "min_train_rows": min_train_rows,
+                "workers": workers,
+            }
+        )
+    job_id = _start_ai_job("split", [split_command], metadata={"task_type": task_type, "config": split_config})
     return jsonify({"job_id": job_id, "status": "running"})
 
 
 @sim_bp.route("/api/ai/federated/start", methods=["POST"])
 def api_ai_federated_start():
     payload = request.get_json(silent=True) or {}
+    task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
     model_type = str(payload.get("model_type", "mlp"))
+    aggregation_method = str(payload.get("aggregation_method", "fedavg"))
+    proximal_mu = float(payload.get("proximal_mu", 0.0))
     rounds = int(payload.get("rounds", 5))
     local_epochs = int(payload.get("local_epochs", 1))
     lstm_sequence_length = int(payload.get("lstm_sequence_length", 4))
     lstm_batch_size = int(payload.get("lstm_batch_size", 32))
+    mlp_hidden_layers = str(payload.get("mlp_hidden_layers", "128,64,32"))
+    mlp_batch_size = int(payload.get("mlp_batch_size", 1 if task_type == "event" else 32))
+    mlp_learning_rate = float(payload.get("mlp_learning_rate", 1e-3))
+    mlp_optimizer = str(payload.get("mlp_optimizer", "adam"))
+    mlp_activation = str(payload.get("mlp_activation", "relu"))
+    lstm_hidden_dim = int(payload.get("lstm_hidden_dim", 64))
+    lstm_num_layers = int(payload.get("lstm_num_layers", 1))
+    lstm_head_hidden_dim = int(payload.get("lstm_head_hidden_dim", 64))
+    lstm_learning_rate = float(payload.get("lstm_learning_rate", 1e-3))
+    lstm_optimizer = str(payload.get("lstm_optimizer", "adam"))
+    lstm_activation = str(payload.get("lstm_activation", "relu"))
+    hybrid_change_hidden_layers = str(payload.get("hybrid_change_hidden_layers", "128,64"))
+    hybrid_change_activation = str(payload.get("hybrid_change_activation", "relu"))
     max_rooms = int(payload.get("max_rooms", 20))
     fraction_fit = float(payload.get("fraction_fit", 1.0))
     fraction_evaluate = float(payload.get("fraction_evaluate", 1.0))
@@ -835,43 +1509,64 @@ def api_ai_federated_start():
     chunksize = int(payload.get("chunksize", 200000))
 
     sim_map = {
-        "mlp": "fl_mlp_simulation.py",
-        "lstm": "fl_lstm_simulation.py",
-        "mlp_lstm": "fl_lstm_mlp_simulation.py",
+        "k_hours": {
+            "mlp": "fl_mlp_simulation.py",
+            "lstm": "fl_lstm_simulation.py",
+            "mlp_lstm": "fl_lstm_mlp_simulation.py",
+        },
+        "event": {
+            "mlp": "fl_simulation.py",
+        },
     }
-    sim_script = sim_map.get(model_type)
+    sim_script = sim_map.get(task_type, {}).get(model_type)
     if not sim_script:
         return jsonify({"error": f"Unsupported model type: {model_type}"}), 400
 
-    weights_out_dir = _weights_dir_for_model(model_type)
+    weights_out_dir = _weights_dir_for_model(task_type, model_type)
     summary_dir = weights_out_dir / "summaries"
     summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_name = {
-        "mlp": "dashboard_summary.json",
-        "lstm": "dashboard_lstm_summary.json",
-        "mlp_lstm": "dashboard_mlp_lstm_summary.json",
-    }[model_type]
+    summary_name = (
+        {
+            "mlp": "dashboard_summary.json",
+            "lstm": "dashboard_lstm_summary.json",
+            "mlp_lstm": "dashboard_mlp_lstm_summary.json",
+        }.get(model_type, "dashboard_summary.json")
+        if task_type == "k_hours"
+        else "dashboard_event_summary.json"
+    )
 
     command = [
         sys.executable,
         "-u",
-        _ai_script(sim_script),
+        _ai_script(task_type, sim_script),
         "--split-dir",
-        str(_SPLIT_OUTPUT_DIR),
+        str(_SPLIT_OUTPUT_DIRS[task_type]),
         "--rounds",
         str(rounds),
-        "--local-epochs",
-        str(local_epochs),
-        "--fraction-fit",
-        str(fraction_fit),
-        "--fraction-evaluate",
-        str(fraction_evaluate),
-        "--min-fit-clients",
-        str(min_fit_clients),
-        "--min-evaluate-clients",
-        str(min_evaluate_clients),
-        "--min-available-clients",
-        str(min_available_clients),
+    ]
+    if task_type == "k_hours":
+        command.extend([
+            "--aggregation-method",
+            aggregation_method,
+            "--local-epochs",
+            str(local_epochs),
+            "--fraction-fit",
+            str(fraction_fit),
+            "--fraction-evaluate",
+            str(fraction_evaluate),
+            "--min-fit-clients",
+            str(min_fit_clients),
+            "--min-evaluate-clients",
+            str(min_evaluate_clients),
+            "--min-available-clients",
+            str(min_available_clients),
+        ])
+    else:
+        command.extend([
+            "--local-epochs",
+            str(local_epochs),
+        ])
+    command.extend([
         "--weights-out-dir",
         str(weights_out_dir),
         "--summary-out",
@@ -882,20 +1577,338 @@ def api_ai_federated_start():
         str(chunksize),
         "--max-rooms",
         str(max_rooms),
+    ])
+    if task_type == "k_hours" and aggregation_method == "fedprox":
+        command.extend(["--proximal-mu", str(proximal_mu)])
+    if task_type == "k_hours" and model_type != "mlp":
+        command.extend(
+            [
+                "--sequence-length",
+                str(lstm_sequence_length),
+                "--batch-size",
+                str(lstm_batch_size),
+            ]
+        )
+    if task_type == "event":
+        command.extend(["--batch-size", str(mlp_batch_size)])
+    elif model_type == "mlp":
+        command.extend(
+            [
+                "--hidden-layers",
+                mlp_hidden_layers,
+                "--batch-size",
+                str(mlp_batch_size),
+                "--learning-rate",
+                str(mlp_learning_rate),
+                "--optimizer",
+                mlp_optimizer,
+                "--activation",
+                mlp_activation,
+            ]
+        )
+    elif model_type == "lstm":
+        command.extend(
+            [
+                "--hidden-dim",
+                str(lstm_hidden_dim),
+                "--num-layers",
+                str(lstm_num_layers),
+                "--head-hidden-dim",
+                str(lstm_head_hidden_dim),
+                "--learning-rate",
+                str(lstm_learning_rate),
+                "--optimizer",
+                lstm_optimizer,
+                "--activation",
+                lstm_activation,
+            ]
+        )
+    elif model_type == "mlp_lstm":
+        command.extend(
+            [
+                "--change-hidden-layers",
+                hybrid_change_hidden_layers,
+                "--lstm-hidden-dim",
+                str(lstm_hidden_dim),
+                "--lstm-num-layers",
+                str(lstm_num_layers),
+                "--lstm-head-hidden-dim",
+                str(lstm_head_hidden_dim),
+                "--learning-rate",
+                str(lstm_learning_rate),
+                "--optimizer",
+                lstm_optimizer,
+                "--change-activation",
+                hybrid_change_activation,
+                "--lstm-activation",
+                lstm_activation,
+            ]
+        )
+    training_config = {
+        "mode": task_type,
+        "model_type": model_type,
+        "aggregation_method": aggregation_method,
+        "rounds": rounds,
+        "local_epochs": local_epochs,
+        "split_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "weights_out_dir": str(weights_out_dir),
+        "summary_out": str(summary_dir / summary_name),
+        "fraction_fit": fraction_fit,
+        "fraction_evaluate": fraction_evaluate,
+        "min_fit_clients": min_fit_clients,
+        "min_evaluate_clients": min_evaluate_clients,
+        "min_available_clients": min_available_clients,
+        "client_cpu": client_cpu,
+        "chunksize": chunksize,
+        "max_rooms": max_rooms,
+    }
+    if aggregation_method == "fedprox":
+        training_config["proximal_mu"] = proximal_mu
+    if task_type == "event":
+        training_config.update(
+            {
+                "hidden_layers": mlp_hidden_layers,
+                "batch_size": mlp_batch_size,
+                "learning_rate": mlp_learning_rate,
+                "optimizer": mlp_optimizer,
+                "activation": mlp_activation,
+            }
+        )
+    elif model_type == "mlp":
+        training_config.update(
+            {
+                "hidden_layers": mlp_hidden_layers,
+                "batch_size": mlp_batch_size,
+                "learning_rate": mlp_learning_rate,
+                "optimizer": mlp_optimizer,
+                "activation": mlp_activation,
+            }
+        )
+    elif model_type == "lstm":
+        training_config.update(
+            {
+                "sequence_length": lstm_sequence_length,
+                "batch_size": lstm_batch_size,
+                "hidden_dim": lstm_hidden_dim,
+                "num_layers": lstm_num_layers,
+                "head_hidden_dim": lstm_head_hidden_dim,
+                "learning_rate": lstm_learning_rate,
+                "optimizer": lstm_optimizer,
+                "activation": lstm_activation,
+            }
+        )
+    else:
+        training_config.update(
+            {
+                "sequence_length": lstm_sequence_length,
+                "lstm_batch_size": lstm_batch_size,
+                "lstm_hidden_dim": lstm_hidden_dim,
+                "lstm_num_layers": lstm_num_layers,
+                "lstm_head_hidden_dim": lstm_head_hidden_dim,
+                "lstm_learning_rate": lstm_learning_rate,
+                "lstm_optimizer": lstm_optimizer,
+                "lstm_activation": lstm_activation,
+                "mlp_hidden_layers": mlp_hidden_layers,
+                "mlp_batch_size": mlp_batch_size,
+                "mlp_learning_rate": mlp_learning_rate,
+                "mlp_optimizer": mlp_optimizer,
+                "mlp_activation": mlp_activation,
+                "change_hidden_layers": hybrid_change_hidden_layers,
+                "change_activation": hybrid_change_activation,
+            }
+        )
+    job_id = _start_ai_job("federated", [command], metadata={"task_type": task_type, "config": training_config})
+    return jsonify({"job_id": job_id, "status": "running"})
+
+
+def _simulation_config_defaults() -> dict[str, object]:
+    return {
+        "start_date": getattr(sim_config, "START_DATE", None),
+        "days": getattr(sim_config, "DAYS", None),
+        "patient_count": getattr(sim_config, "PATIENT_COUNT", None),
+        "change_room_prob": getattr(sim_config, "CHANGE_ROOM_PROB", None),
+        "min_days_before_transfer": getattr(sim_config, "MIN_DAYS_BEFORE_TRANSFER", None),
+        "min_days_after_transfer": getattr(sim_config, "MIN_DAYS_AFTER_TRANSFER", None),
+        "comfort_max_changes_per_day": getattr(sim_config, "COMFORT_MAX_CHANGES_PER_DAY", None),
+        "sim_step_s": getattr(sim_config, "SIM_STEP_S", None),
+        "sensor_sample_every_s": getattr(sim_config, "SENSOR_SAMPLE_EVERY_S", None),
+        "wall_sleep_s": getattr(sim_config, "WALL_SLEEP_S", None),
+        "enable_comfort": getattr(sim_config, "ENABLE_COMFORT", None),
+        "enable_medication": getattr(sim_config, "ENABLE_MEDICATION", None),
+        "enable_visits": getattr(sim_config, "ENABLE_VISITS", None),
+        "enable_toilet_usage": getattr(sim_config, "ENABLE_TOILET_USAGE", None),
+        "enable_sensor_emit": getattr(sim_config, "ENABLE_SENSOR_EMIT", None),
+        "enable_utility_usage": getattr(sim_config, "ENABLE_UTILITY_USAGE", None),
+        "random_seed": getattr(sim_config, "RANDOM_SEED", None),
+    }
+
+
+@sim_bp.route("/new-simulation")
+def new_simulation():
+    runtime_summary, pc_spec = _load_run_metadata()
+    config_defaults = _simulation_config_defaults()
+    return render_template(
+        "new_simulation.html",
+        config_defaults=config_defaults,
+        simulation_command="python main.py --mode simulation",
+        runtime_summary=runtime_summary,
+        pc_spec=pc_spec,
+        runtime_summary_path=str(_LAST_RUNTIME_SUMMARY_PATH),
+        pc_spec_path=str(_PC_SPEC_PATH),
+    )
+
+
+@sim_bp.route("/api/simulation/start", methods=["POST"])
+def api_simulation_start():
+    payload = request.get_json(silent=True) or {}
+    config_payload = {
+        "start_date": str(payload.get("start_date") or _simulation_config_defaults().get("start_date")),
+        "days": int(payload.get("days", getattr(sim_config, "DAYS", 1))),
+        "patient_count": int(payload.get("patient_count", getattr(sim_config, "PATIENT_COUNT", 1))),
+        "random_seed": int(payload.get("random_seed", getattr(sim_config, "RANDOM_SEED", 42))),
+        "change_room_prob": float(payload.get("change_room_prob", getattr(sim_config, "CHANGE_ROOM_PROB", 0.3))),
+        "min_days_before_transfer": int(payload.get("min_days_before_transfer", getattr(sim_config, "MIN_DAYS_BEFORE_TRANSFER", 1))),
+        "min_days_after_transfer": int(payload.get("min_days_after_transfer", getattr(sim_config, "MIN_DAYS_AFTER_TRANSFER", 1))),
+        "comfort_max_changes_per_day": int(payload.get("comfort_max_changes_per_day", getattr(sim_config, "COMFORT_MAX_CHANGES_PER_DAY", 6))),
+        "sim_step_s": int(payload.get("sim_step_s", getattr(sim_config, "SIM_STEP_S", 60))),
+        "sensor_sample_every_s": int(payload.get("sensor_sample_every_s", getattr(sim_config, "SENSOR_SAMPLE_EVERY_S", 300))),
+        "wall_sleep_s": float(payload.get("wall_sleep_s", getattr(sim_config, "WALL_SLEEP_S", 0.0))),
+        "enable_comfort": bool(payload.get("enable_comfort", getattr(sim_config, "ENABLE_COMFORT", True))),
+        "enable_medication": bool(payload.get("enable_medication", getattr(sim_config, "ENABLE_MEDICATION", True))),
+        "enable_visits": bool(payload.get("enable_visits", getattr(sim_config, "ENABLE_VISITS", True))),
+        "enable_toilet_usage": bool(payload.get("enable_toilet_usage", getattr(sim_config, "ENABLE_TOILET_USAGE", False))),
+        "enable_sensor_emit": bool(payload.get("enable_sensor_emit", getattr(sim_config, "ENABLE_SENSOR_EMIT", False))),
+        "enable_utility_usage": bool(payload.get("enable_utility_usage", getattr(sim_config, "ENABLE_UTILITY_USAGE", False))),
+    }
+    command = [
+        sys.executable,
+        "-u",
+        str((_ROOT_DIR / "main.py").resolve()),
+        "--mode",
+        "simulation",
+        "--start-date",
+        config_payload["start_date"],
+        "--days",
+        str(config_payload["days"]),
+        "--patient-count",
+        str(config_payload["patient_count"]),
+        "--random-seed",
+        str(config_payload["random_seed"]),
+        "--change-room-prob",
+        str(config_payload["change_room_prob"]),
+        "--min-days-before-transfer",
+        str(config_payload["min_days_before_transfer"]),
+        "--min-days-after-transfer",
+        str(config_payload["min_days_after_transfer"]),
+        "--comfort-max-changes-per-day",
+        str(config_payload["comfort_max_changes_per_day"]),
+        "--sim-step-s",
+        str(config_payload["sim_step_s"]),
+        "--sensor-sample-every-s",
+        str(config_payload["sensor_sample_every_s"]),
+        "--wall-sleep-s",
+        str(config_payload["wall_sleep_s"]),
     ]
-    if model_type != "mlp":
-        command.extend(["--sequence-length", str(lstm_sequence_length), "--batch-size", str(lstm_batch_size)])
-    job_id = _start_ai_job("federated", [command])
+    for flag_key, flag_name in (
+        ("enable_comfort", "comfort"),
+        ("enable_medication", "medication"),
+        ("enable_visits", "visits"),
+        ("enable_toilet_usage", "toilet-usage"),
+        ("enable_sensor_emit", "sensor-emit"),
+        ("enable_utility_usage", "utility-usage"),
+    ):
+        command.append(f"--{'enable' if config_payload[flag_key] else 'no-enable'}-{flag_name}")
+    job_id = _start_ai_job("simulation", [command], metadata={"task_type": "simulation", "config": config_payload})
     return jsonify({"job_id": job_id, "status": "running"})
 
 
 @sim_bp.route("/api/ai/results", methods=["GET"])
 def api_ai_results():
+    task_type = _normalize_task_type(request.args.get("task_type", "k_hours"))
     model_type = str(request.args.get("model_type", "mlp") or "mlp")
     scope = str(request.args.get("scope", "global") or "global")
+    figure_detail = str(request.args.get("figure_detail", "summary") or "summary")
     requested_room_id = str(request.args.get("room_id", "") or "").strip()
 
-    weights_dir = _weights_dir_for_model(model_type)
+    weights_dir = _weights_dir_for_model(task_type, model_type)
+    if task_type == "event":
+        metric_rows: list[dict[str, object]] = []
+        for path in sorted(weights_dir.glob("round_*_total_metrics.csv"), key=lambda item: int(item.stem.split("_")[1])):
+            try:
+                frame = pd.read_csv(path)
+            except Exception:
+                continue
+            if frame.empty:
+                continue
+            row = frame.iloc[-1].to_dict()
+            row["round"] = int(path.stem.split("_")[1])
+            metric_rows.append(row)
+
+        total_frame = pd.DataFrame(metric_rows)
+        room_metric_rows: list[dict[str, object]] = []
+        for path in sorted(weights_dir.glob("round_*_room_metrics.csv"), key=lambda item: int(item.stem.split("_")[1])):
+            try:
+                frame = pd.read_csv(path)
+            except Exception:
+                continue
+            if frame.empty:
+                continue
+            if "round" not in frame.columns:
+                frame["round"] = int(path.stem.split("_")[1])
+            room_metric_rows.extend(frame.to_dict(orient="records"))
+
+        room_frame = pd.DataFrame(room_metric_rows)
+        if total_frame.empty and room_frame.empty:
+            return jsonify({"error": f"No metrics found for model '{model_type}' in {weights_dir}"}), 404
+
+        if not total_frame.empty and "round" in total_frame.columns:
+            total_frame = total_frame.sort_values("round").reset_index(drop=True)
+        if not room_frame.empty:
+            room_frame["room_id"] = room_frame["room_id"].astype(str)
+            if "round" in room_frame.columns:
+                room_frame = room_frame.sort_values(["room_id", "round"]).reset_index(drop=True)
+
+        room_ids = sorted(room_frame["room_id"].dropna().astype(str).unique().tolist()) if not room_frame.empty else []
+        active_room_id = requested_room_id
+        if scope == "local":
+            if not active_room_id and room_ids:
+                active_room_id = room_ids[0]
+            if active_room_id:
+                room_frame = room_frame[room_frame["room_id"] == active_room_id].copy()
+
+        source_frame = room_frame if scope == "local" else total_frame
+        if source_frame.empty:
+            return jsonify({"error": f"No metrics available for scope '{scope}'"}), 404
+
+        latest_row = source_frame.sort_values("round").iloc[-1].to_dict()
+        cards = [
+            {"label": "Round", "value": _to_native(latest_row.get("round")), "explain": "Latest completed federated round."},
+            {"label": "MAE Temp Main", "value": _to_native(latest_row.get("mae_y_target_temp_main")), "explain": "Average absolute error for main temperature."},
+            {"label": "MAE Temp Toilet", "value": _to_native(latest_row.get("mae_y_target_temp_toilet")), "explain": "Average absolute error for toilet temperature."},
+            {"label": "MAE Light", "value": _to_native(latest_row.get("mae_y_target_light")), "explain": "Average absolute error for light intensity."},
+            {"label": "MAE Sound", "value": _to_native(latest_row.get("mae_y_target_sound")), "explain": "Average absolute error for sound level."},
+            {"label": "RMSE Temp Main", "value": _to_native(latest_row.get("rmse_y_target_temp_main")), "explain": "Root mean squared error for main temperature."},
+            {"label": "Airflow Accuracy", "value": _to_native(latest_row.get("airflow_accuracy")), "explain": "Overall correctness of airflow classification."},
+            {"label": "Airflow F1", "value": _to_native(latest_row.get("airflow_f1")), "explain": "Balance between airflow precision and recall."},
+            {"label": "Evaluated Samples", "value": _to_native(latest_row.get("evaluated_examples") or latest_row.get("num_examples")), "explain": "Number of test examples included in evaluation."},
+        ]
+        return jsonify(
+            _sanitize_for_json(
+                {
+                    "task_type": task_type,
+                    "model_type": model_type,
+                    "scope": scope,
+                    "figure_detail": figure_detail,
+                    "room_id": active_room_id or None,
+                    "room_ids": room_ids,
+                    "weights_dir": str(weights_dir),
+                    "latest_cards": cards,
+                    "line_charts": _event_error_analysis_line_charts(source_frame) if figure_detail == "detailed" else _event_summary_line_charts(source_frame),
+                    "pie_charts": _event_local_pies(source_frame) if scope == "local" else _event_global_pies(source_frame),
+                }
+            )
+        )
+
     total_frame = _load_metrics_csv(weights_dir / "total_metrics.csv")
     room_frame = _load_metrics_csv(weights_dir / "room_metrics.csv")
 
@@ -928,20 +1941,25 @@ def api_ai_results():
         {"label": "RMSE Temp Main", "value": _to_native(latest_row.get("rmse_y_temp_main")), "explain": "Root mean squared error for main temperature."},
         {"label": "Regression Correct Rate", "value": _to_native(latest_row.get("regression_correct_rate")), "explain": "Share of samples meeting the regression correctness criterion."},
         {"label": "Airflow F1", "value": _to_native(latest_row.get("airflow_f1")), "explain": "Balance between airflow precision and recall."},
+        {"label": "Change Precision", "value": _to_native(latest_row.get("change_precision")), "explain": "Of predicted changes, how many were true changes."},
+        {"label": "Change Recall", "value": _to_native(latest_row.get("change_recall")), "explain": "Of real changes, how many the model detected."},
         {"label": "Change F1", "value": _to_native(latest_row.get("change_f1")), "explain": "Balance between change precision and recall."},
     ]
 
     return jsonify(
-        {
-            "model_type": model_type,
-            "scope": scope,
-            "room_id": active_room_id or None,
-            "room_ids": room_ids,
-            "weights_dir": str(weights_dir),
-            "latest_cards": cards,
-            "line_charts": _target_line_series(source_frame),
-            "pie_charts": _local_pies(source_frame) if scope == "local" else _global_pies(source_frame),
-        }
+        _sanitize_for_json(
+            {
+                "model_type": model_type,
+                "scope": scope,
+                "figure_detail": figure_detail,
+                "room_id": active_room_id or None,
+                "room_ids": room_ids,
+                "weights_dir": str(weights_dir),
+                "latest_cards": cards,
+                "line_charts": _error_analysis_line_charts(source_frame) if figure_detail == "detailed" else _summary_line_charts(source_frame),
+                "pie_charts": _local_pies(source_frame) if scope == "local" else _global_pies(source_frame),
+            }
+        )
     )
 
 
@@ -1076,6 +2094,7 @@ def api_ai_job_status(job_id: str):
         logs = job["logs"][cursor:]
         next_cursor = cursor + len(logs)
         metrics = _extract_job_metrics(job)
+        runtime_summary, pc_spec = _load_run_metadata()
         return jsonify(
             {
                 "id": job["id"],
@@ -1090,6 +2109,8 @@ def api_ai_job_status(job_id: str):
                 "metrics": metrics,
                 "logs": logs,
                 "next_cursor": next_cursor,
+                "runtime_summary": runtime_summary,
+                "pc_spec": pc_spec,
             }
         )
 

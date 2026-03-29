@@ -1,2 +1,0 @@
-target,accuracy,precision,recall,f1,tp,tn,fp,fn
-y_target_airflow,0.3128366561734872,0.3128366561734872,1.0,0.4765812330153994,4472,0,9823,0

@@ -28,6 +28,14 @@ DEFAULT_OUTPUT_THRESHOLDS = {
 }
 
 
+def make_activation(name: str) -> nn.Module:
+    return {
+        "relu": nn.ReLU(),
+        "tanh": nn.Tanh(),
+        "gelu": nn.GELU(),
+    }[name]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower room client for federated next-hour LSTM training.")
     parser.add_argument("--split-dir", default="ai/splits_next_hour", help="Directory with next_hour train and test CSV files")
@@ -39,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize for room filtering")
     parser.add_argument("--sequence-length", type=int, default=4, help="Number of historical rows per LSTM sample")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
+    parser.add_argument("--hidden-dim", type=int, default=64, help="LSTM hidden dimension size")
+    parser.add_argument("--num-layers", type=int, default=1, help="Number of stacked LSTM layers")
+    parser.add_argument("--head-hidden-dim", type=int, default=64, help="Dense head hidden dimension after the LSTM")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd", "rmsprop"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the dense head")
     parser.add_argument("--predictions-out-dir", default=None, help="Optional directory to write per-room evaluation predictions")
     return parser.parse_args()
 
@@ -48,7 +62,15 @@ def get_input_dim() -> int:
 
 
 class NextHourLSTM(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 64, num_layers: int = 1, output_dim: int = len(TARGET_COLUMNS)):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 64,
+        num_layers: int = 1,
+        head_hidden_dim: int = 64,
+        activation: str = "relu",
+        output_dim: int = len(TARGET_COLUMNS),
+    ):
         super().__init__()
         # The LSTM reads a short sequence of past rows and compresses them into
         # one hidden representation, which the head maps to the next-hour targets.
@@ -59,9 +81,9 @@ class NextHourLSTM(nn.Module):
             batch_first=True,
         )
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, output_dim),
+            nn.Linear(hidden_dim, head_hidden_dim),
+            make_activation(activation),
+            nn.Linear(head_hidden_dim, output_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -70,8 +92,20 @@ class NextHourLSTM(nn.Module):
         return self.head(last_hidden)
 
 
-def make_model(input_dim: int) -> NextHourLSTM:
-    return NextHourLSTM(input_dim=input_dim)
+def make_model(
+    input_dim: int,
+    hidden_dim: int = 64,
+    num_layers: int = 1,
+    head_hidden_dim: int = 64,
+    activation: str = "relu",
+) -> NextHourLSTM:
+    return NextHourLSTM(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        head_hidden_dim=head_hidden_dim,
+        activation=activation,
+    )
 
 
 def get_params(model: NextHourLSTM) -> list[np.ndarray]:
@@ -181,6 +215,12 @@ class RoomLSTMClient(fl.client.NumPyClient):
         input_dim: int,
         local_epochs: int,
         batch_size: int,
+        hidden_dim: int = 64,
+        num_layers: int = 1,
+        head_hidden_dim: int = 64,
+        learning_rate: float = 1e-3,
+        optimizer: str = "adam",
+        activation: str = "relu",
         predictions_out_dir: str | None = None,
     ):
         self.room_id = room_id
@@ -192,9 +232,17 @@ class RoomLSTMClient(fl.client.NumPyClient):
         self.change_true = change_true
         self.local_epochs = local_epochs
         self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.optimizer_name = optimizer
         self.predictions_out_dir = predictions_out_dir
         self.device = torch.device("cpu")
-        self.model = make_model(input_dim).to(self.device)
+        self.model = make_model(
+            input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            head_hidden_dim=head_hidden_dim,
+            activation=activation,
+        ).to(self.device)
 
     def get_parameters(self, config: dict[str, Any]):
         return get_params(self.model)
@@ -204,15 +252,22 @@ class RoomLSTMClient(fl.client.NumPyClient):
         if self.y_train.size == 0:
             return get_params(self.model), 0, {"room_id": self.room_id}
 
+        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
         self.model.train()
         dataset = TensorDataset(
             torch.tensor(self.x_train, dtype=torch.float32, device=self.device),
             torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
         )
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        optimizer_cls = {
+            "adam": torch.optim.Adam,
+            "sgd": torch.optim.SGD,
+            "rmsprop": torch.optim.RMSprop,
+        }[self.optimizer_name]
+        optimizer = optimizer_cls(self.model.parameters(), lr=self.learning_rate)
         loss_fn = nn.MSELoss()
         train_loss_sum = 0.0
+        global_params = [param.detach().clone() for param in self.model.parameters()]
 
         for _ in range(self.local_epochs):
             for batch_x, batch_y in loader:
@@ -221,6 +276,11 @@ class RoomLSTMClient(fl.client.NumPyClient):
                 preds = self.model(batch_x)
                 # MSE measures how far all predicted target values are from the true ones.
                 loss = loss_fn(preds, batch_y)
+                if proximal_mu > 0.0:
+                    prox_reg = torch.zeros((), device=self.device)
+                    for param, global_param in zip(self.model.parameters(), global_params):
+                        prox_reg = prox_reg + torch.sum((param - global_param) ** 2)
+                    loss = loss + (proximal_mu / 2.0) * prox_reg
                 # Backprop computes gradients for every trainable weight in the LSTM and head.
                 loss.backward()
                 # Adam updates the local room model before the round finishes.
@@ -410,6 +470,12 @@ def main() -> None:
         input_dim=get_input_dim(),
         local_epochs=args.local_epochs,
         batch_size=args.batch_size,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        head_hidden_dim=args.head_hidden_dim,
+        learning_rate=args.learning_rate,
+        optimizer=args.optimizer,
+        activation=args.activation,
         predictions_out_dir=os.path.abspath(args.predictions_out_dir) if args.predictions_out_dir else None,
     )
 
@@ -418,6 +484,12 @@ def main() -> None:
     print(f"split_dir={split_dir}")
     print(f"server_address={args.server_address}")
     print(f"sequence_length={args.sequence_length}")
+    print(f"hidden_dim={args.hidden_dim}")
+    print(f"num_layers={args.num_layers}")
+    print(f"head_hidden_dim={args.head_hidden_dim}")
+    print(f"learning_rate={args.learning_rate}")
+    print(f"optimizer={args.optimizer}")
+    print(f"activation={args.activation}")
     print(f"train_sequences={len(y_train)} test_sequences={len(y_test)}")
 
     attempts = 0

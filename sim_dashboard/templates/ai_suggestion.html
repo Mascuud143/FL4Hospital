@@ -19,14 +19,6 @@
     font: inherit;
   }
   .hint { color: var(--muted); font-size: 0.86rem; line-height: 1.45; }
-  .config-list { display: grid; gap: 10px; margin-top: 12px; }
-  .config-item {
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: var(--surface-alt);
-    padding: 10px 12px;
-  }
-  .config-item strong { display: block; margin-bottom: 4px; }
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .btn {
     border: 1px solid var(--line);
@@ -87,7 +79,7 @@
   }
   .results-toolbar {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr auto;
+    grid-template-columns: 1fr 1fr 1fr 1fr auto auto;
     gap: 10px;
     align-items: end;
   }
@@ -145,6 +137,68 @@
     color: var(--muted);
     background: var(--surface-alt);
   }
+  .history-table-wrap {
+    margin-top: 12px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.84rem;
+  }
+  .history-table th, .history-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  .history-table th {
+    color: var(--muted);
+    background: #f8fafc;
+    font-weight: 700;
+  }
+  .history-table code {
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.56);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 1000;
+  }
+  .modal.hidden { display: none; }
+  .modal-panel {
+    width: min(1200px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-body {
+    padding: 16px;
+    overflow: auto;
+  }
   .hidden { display: none; }
   @media (max-width: 1100px) {
     .section-grid, .chart-grid, .results-toolbar, .pie-grid, .metrics-grid, .field-grid {
@@ -157,35 +211,81 @@
   <section class="card">
     <h2 style="margin:0;">AI Forecast Dashboard</h2>
     <p class="hint" style="margin:8px 0 0;">
-      Run the k-hours based build, split, and federated training pipeline from the dashboard, then inspect error analysis globally or per room.
+      Choose either the k-hours based pipeline or the event-based pipeline, then run the matching build, split, and federated training flow.
     </p>
+    <div class="field-grid" style="margin-top:16px;">
+      <div class="field">
+        <label for="taskType">Pipeline type</label>
+        <select id="taskType">
+          <option value="k_hours">k-hours based</option>
+          <option value="event">event based</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Last Run Time Summary</h3>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-k">Total Runtime</div>
+        <div id="summaryTotalRuntime" class="metric-v">{{ runtime_summary.total_runtime }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-k">Build Runtime</div>
+        <div id="summaryBuildRuntime" class="metric-v">{{ runtime_summary.build_runtime }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-k">Split Runtime</div>
+        <div id="summarySplitRuntime" class="metric-v">{{ runtime_summary.split_runtime }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-k">Training Runtime</div>
+        <div id="summaryTrainingRuntime" class="metric-v">{{ runtime_summary.training_runtime }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-k">CPU</div>
+        <div id="summaryCpu" class="metric-v">{{ pc_spec.cpu }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-k">RAM</div>
+        <div id="summaryRam" class="metric-v">{{ pc_spec.ram }}</div>
+      </div>
+      
+    </div>
+    <div class="btn-row">
+      <button id="toggleRuntimeHistoryBtn" class="btn" type="button">Show Runtime History</button>
+    </div>
   </section>
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">1) Build Next-Hour Rows</h3>
+      <h3 id="buildSectionTitle" style="margin-top:0;">1) Build Next-Hour Rows</h3>
       <div class="field-grid">
-        <div class="field">
+        <div class="field" data-tasks="k_hours">
           <label for="buildStepMinutes">Step minutes</label>
           <input id="buildStepMinutes" type="number" min="1" step="1" value="30" />
         </div>
-        <div class="field">
+        <div class="field" data-tasks="k_hours">
           <label for="buildHorizonMinutes">Horizon minutes</label>
           <input id="buildHorizonMinutes" type="number" min="1" step="1" value="60" />
         </div>
-        <div class="field">
+        <div class="field" data-tasks="k_hours">
           <label for="buildWorkers">Number of workers</label>
           <input id="buildWorkers" type="number" min="1" step="1" value="4" />
         </div>
-        <div class="field">
+        <div class="field" data-tasks="k_hours">
           <label for="buildChunkSize">Chunk size</label>
           <input id="buildChunkSize" type="number" min="1" step="1" value="250" />
         </div>
-      </div>
-      <div class="config-list">
-        <div class="config-item"><strong>Step minutes</strong>How often a new training row is created in time, for example every 30 minutes.</div>
-        <div class="config-item"><strong>Horizon minutes</strong>How far ahead the target should be predicted, for example 60 minutes into the future.</div>
-        <div class="config-item"><strong>Number of workers</strong>How many parallel worker processes are used to build rows.</div>
+        <div class="field hidden" data-tasks="event">
+          <label for="eventMedicationEffectMinutes">Medication effect delay (minutes)</label>
+          <input id="eventMedicationEffectMinutes" type="number" min="0" step="1" value="5" />
+        </div>
+        <div class="field hidden" data-tasks="event">
+          <label for="eventMedicationActiveHours">Medication active window (hours)</label>
+          <input id="eventMedicationActiveHours" type="number" min="1" step="1" value="24" />
+        </div>
       </div>
       <div class="btn-row">
         <button id="runBuildBtn" class="btn primary" type="button">Run Build</button>
@@ -198,13 +298,17 @@
     </section>
 
     <section class="card">
-      <h3 style="margin-top:0;">2) Split By Room</h3>
+      <h3 id="splitSectionTitle" style="margin-top:0;">2) Split By Room</h3>
       <div class="field-grid">
-        <div class="field">
+        <div class="field" data-tasks="k_hours">
           <label for="splitTrainRatio">Train ratio</label>
           <input id="splitTrainRatio" type="number" min="0.1" max="0.95" step="0.05" value="0.80" />
         </div>
-        <div class="field">
+        <div class="field hidden" data-tasks="event">
+          <label for="eventTestFraction">Test fraction</label>
+          <input id="eventTestFraction" type="number" min="0.05" max="0.95" step="0.05" value="0.20" />
+        </div>
+        <div class="field" data-tasks="k_hours">
           <label for="splitWorkers">Number of workers</label>
           <input id="splitWorkers" type="number" min="1" step="1" value="4" />
         </div>
@@ -212,11 +316,6 @@
           <label for="splitChunkSize">Chunk size for CSV loading</label>
           <input id="splitChunkSize" type="number" min="1000" step="1000" value="200000" />
         </div>
-      </div>
-      <div class="config-list">
-        <div class="config-item"><strong>Train ratio</strong>The percentage of each room's time-ordered rows that go into the training set.</div>
-        <div class="config-item"><strong>Number of workers</strong>How many parallel worker processes split room timelines at the same time.</div>
-        <div class="config-item"><strong>Chunk size for CSV loading</strong>How many rows are read at a time during the split, instead of loading the whole file at once.</div>
       </div>
       <div class="btn-row">
         <button id="runSplitBtn" class="btn primary" type="button">Run Split</button>
@@ -249,28 +348,102 @@
         <input id="flLocalEpochs" type="number" min="1" step="1" value="1" />
       </div>
       <div class="field">
+        <label for="flAggregationMethod">Aggregation method</label>
+        <select id="flAggregationMethod">
+          <option value="fedavg">FedAvg</option>
+          <option value="fedprox">FedProx</option>
+        </select>
+      </div>
+      <div class="field" id="flProximalMuField">
+        <label for="flProximalMu">FedProx mu</label>
+        <input id="flProximalMu" type="number" min="0" step="0.01" value="0.01" />
+      </div>
+      <div class="field" data-models="mlp">
+        <label for="flMlpHiddenLayers">MLP hidden layers</label>
+        <input id="flMlpHiddenLayers" type="text" value="128,64,32" />
+      </div>
+      <div class="field" data-models="mlp">
+        <label for="flMlpBatchSize">MLP batch size</label>
+        <input id="flMlpBatchSize" type="number" min="1" step="1" value="32" />
+      </div>
+      <div class="field" data-models="mlp">
+        <label for="flMlpLearningRate">MLP learning rate</label>
+        <input id="flMlpLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" />
+      </div>
+      <div class="field" data-models="mlp">
+        <label for="flMlpOptimizer">MLP optimizer</label>
+        <select id="flMlpOptimizer">
+          <option value="adam">Adam</option>
+          <option value="sgd">SGD</option>
+        </select>
+      </div>
+      <div class="field" data-models="mlp">
+        <label for="flMlpActivation">MLP activation</label>
+        <select id="flMlpActivation">
+          <option value="relu">ReLU</option>
+          <option value="tanh">Tanh</option>
+          <option value="logistic">Logistic</option>
+        </select>
+      </div>
+      <div class="field hidden" data-tasks="event">
+        <label for="eventBatchSize">Event MLP batch size</label>
+        <input id="eventBatchSize" type="number" min="1" step="1" value="1" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
         <label for="flBatchSize">Batch size</label>
         <input id="flBatchSize" type="number" min="1" step="1" value="32" />
       </div>
-      <div class="field">
+      <div class="field" data-models="lstm,mlp_lstm">
         <label for="flSeqLen">Sequence length</label>
         <input id="flSeqLen" type="number" min="1" step="1" value="4" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmHiddenDim">LSTM hidden size</label>
+        <input id="flLstmHiddenDim" type="number" min="1" step="1" value="64" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmNumLayers">LSTM layers</label>
+        <input id="flLstmNumLayers" type="number" min="1" step="1" value="1" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmHeadHiddenDim">LSTM head hidden size</label>
+        <input id="flLstmHeadHiddenDim" type="number" min="1" step="1" value="64" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmLearningRate">Learning rate</label>
+        <input id="flLstmLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" />
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmOptimizer">Optimizer</label>
+        <select id="flLstmOptimizer">
+          <option value="adam">Adam</option>
+          <option value="sgd">SGD</option>
+          <option value="rmsprop">RMSprop</option>
+        </select>
+      </div>
+      <div class="field" data-models="lstm,mlp_lstm">
+        <label for="flLstmActivation">LSTM head activation</label>
+        <select id="flLstmActivation">
+          <option value="relu">ReLU</option>
+          <option value="tanh">Tanh</option>
+          <option value="gelu">GELU</option>
+        </select>
+      </div>
+      <div class="field" data-models="mlp_lstm">
+        <label for="flHybridChangeHiddenLayers">Hybrid change MLP hidden layers</label>
+        <input id="flHybridChangeHiddenLayers" type="text" value="128,64" />
+      </div>
+      <div class="field" data-models="mlp_lstm">
+        <label for="flHybridChangeActivation">Hybrid change activation</label>
+        <select id="flHybridChangeActivation">
+          <option value="relu">ReLU</option>
+          <option value="tanh">Tanh</option>
+          <option value="gelu">GELU</option>
+        </select>
       </div>
       <div class="field">
         <label for="flMaxRooms">Maximum number of rooms</label>
         <input id="flMaxRooms" type="number" min="1" step="1" value="20" />
-      </div>
-      <div class="field">
-        <label for="flMinFitClients">Minimum fit clients</label>
-        <input id="flMinFitClients" type="number" min="1" step="1" value="2" />
-      </div>
-      <div class="field">
-        <label for="flMinEvalClients">Minimum evaluation clients</label>
-        <input id="flMinEvalClients" type="number" min="1" step="1" value="2" />
-      </div>
-      <div class="field">
-        <label for="flMinAvailableClients">Minimum available clients</label>
-        <input id="flMinAvailableClients" type="number" min="1" step="1" value="2" />
       </div>
       <div class="field">
         <label for="flClientCpu">CPU resources per client</label>
@@ -280,27 +453,6 @@
         <label for="flChunkSize">Chunk size for CSV loading</label>
         <input id="flChunkSize" type="number" min="1000" step="1000" value="200000" />
       </div>
-      <div class="field">
-        <label for="flFractionFit">Fraction of clients used for training</label>
-        <input id="flFractionFit" type="number" min="0.1" max="1" step="0.1" value="1.0" />
-      </div>
-      <div class="field">
-        <label for="flFractionEval">Fraction of clients used for evaluation</label>
-        <input id="flFractionEval" type="number" min="0.1" max="1" step="0.1" value="1.0" />
-      </div>
-    </div>
-
-    <div class="config-list">
-      <div class="config-item"><strong>Epochs</strong>How many times the local model trains on its data before sending updates back in a federated round.</div>
-      <div class="config-item"><strong>Batch size</strong>How many training samples are processed together in one update step.</div>
-      <div class="config-item"><strong>Activation functions</strong>The mathematical functions used inside the neural network to help it learn complex patterns, for example ReLU.</div>
-      <div class="config-item"><strong>Optimization method</strong>The algorithm used to update model weights during training, for example Adam.</div>
-      <div class="config-item"><strong>Learning rate</strong>How large each weight update is during training. A high value learns faster but can become unstable; a low value learns more slowly.</div>
-      <div class="config-item"><strong>Hidden layers and model structure</strong><span id="modelStructureText">MLP uses hidden layers 128 -> 64 -> 32. LSTM models use hidden size 64 with a dense 64-unit head.</span></div>
-      <div class="config-item"><strong>Federated rounds</strong>How many times the server collects updates from clients, aggregates them, and sends back a new global model.</div>
-      <div class="config-item"><strong>Sequence length</strong>For sequence models like LSTM, this is how many past time steps are used to predict the next value.</div>
-      <div class="config-item"><strong>Number of LSTM layers</strong>Current code default is 1 stacked LSTM layer.</div>
-      <div class="config-item"><strong>Hidden dimension size</strong>Current code default is hidden size 64.</div>
     </div>
 
     <div class="btn-row">
@@ -335,12 +487,18 @@
         <label for="resultsRoomId">Room</label>
         <select id="resultsRoomId"></select>
       </div>
+      <div class="field">
+        <label for="resultsFigureDetail">Figure detail</label>
+        <select id="resultsFigureDetail">
+          <option value="summary">Summary</option>
+          <option value="detailed">Detailed</option>
+        </select>
+      </div>
+      <button id="downloadResultsPdfBtn" class="btn" type="button">Save Figures As PDF</button>
       <button id="refreshResultsBtn" class="btn primary" type="button">Refresh Results</button>
     </div>
 
-    <div class="muted-box">
-      Global analysis shows round-by-round metrics for the full federated model. Room analysis shows the same figure structure, but filtered to one selected room.
-    </div>
+    
 
     <div id="resultsState" class="state">No results loaded yet.</div>
     <div id="resultsCards" class="metrics-grid"></div>
@@ -349,12 +507,49 @@
   </section>
 </div>
 
+<div id="runtimeHistoryModal" class="modal hidden" aria-hidden="true">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 style="margin:0;">Runtime History</h3>
+      <button id="closeRuntimeHistoryBtn" class="btn" type="button">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="history-table-wrap" style="margin-top:0;">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Status</th>
+              <th>Duration</th>
+              <th>Started</th>
+              <th>PC Specs</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="runtimeHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
   (() => {
+    const initialRuntimeSummary = {{ runtime_summary|tojson }};
+    const initialPcSpec = {{ pc_spec|tojson }};
+    const taskType = document.getElementById("taskType");
+    const toggleRuntimeHistoryBtn = document.getElementById("toggleRuntimeHistoryBtn");
+    const closeRuntimeHistoryBtn = document.getElementById("closeRuntimeHistoryBtn");
+    const runtimeHistoryModal = document.getElementById("runtimeHistoryModal");
+    const runtimeHistoryBody = document.getElementById("runtimeHistoryBody");
+    const buildSectionTitle = document.getElementById("buildSectionTitle");
+    const splitSectionTitle = document.getElementById("splitSectionTitle");
     const buildStepMinutes = document.getElementById("buildStepMinutes");
     const buildHorizonMinutes = document.getElementById("buildHorizonMinutes");
     const buildWorkers = document.getElementById("buildWorkers");
     const buildChunkSize = document.getElementById("buildChunkSize");
+    const eventMedicationEffectMinutes = document.getElementById("eventMedicationEffectMinutes");
+    const eventMedicationActiveHours = document.getElementById("eventMedicationActiveHours");
     const runBuildBtn = document.getElementById("runBuildBtn");
     const stopBuildBtn = document.getElementById("stopBuildBtn");
     const buildBar = document.getElementById("buildBar");
@@ -363,7 +558,9 @@
     const buildLog = document.getElementById("buildLog");
 
     const splitTrainRatio = document.getElementById("splitTrainRatio");
+    const eventTestFraction = document.getElementById("eventTestFraction");
     const splitChunkSize = document.getElementById("splitChunkSize");
+    const splitWorkers = document.getElementById("splitWorkers");
     const runSplitBtn = document.getElementById("runSplitBtn");
     const stopSplitBtn = document.getElementById("stopSplitBtn");
     const splitBar = document.getElementById("splitBar");
@@ -374,17 +571,28 @@
     const modelType = document.getElementById("modelType");
     const flRounds = document.getElementById("flRounds");
     const flLocalEpochs = document.getElementById("flLocalEpochs");
+    const flAggregationMethod = document.getElementById("flAggregationMethod");
+    const flProximalMu = document.getElementById("flProximalMu");
+    const flProximalMuField = document.getElementById("flProximalMuField");
+    const flMlpHiddenLayers = document.getElementById("flMlpHiddenLayers");
+    const flMlpBatchSize = document.getElementById("flMlpBatchSize");
+    const flMlpLearningRate = document.getElementById("flMlpLearningRate");
+    const flMlpOptimizer = document.getElementById("flMlpOptimizer");
+    const flMlpActivation = document.getElementById("flMlpActivation");
+    const eventBatchSize = document.getElementById("eventBatchSize");
     const flBatchSize = document.getElementById("flBatchSize");
     const flSeqLen = document.getElementById("flSeqLen");
+    const flLstmHiddenDim = document.getElementById("flLstmHiddenDim");
+    const flLstmNumLayers = document.getElementById("flLstmNumLayers");
+    const flLstmHeadHiddenDim = document.getElementById("flLstmHeadHiddenDim");
+    const flLstmLearningRate = document.getElementById("flLstmLearningRate");
+    const flLstmOptimizer = document.getElementById("flLstmOptimizer");
+    const flLstmActivation = document.getElementById("flLstmActivation");
+    const flHybridChangeHiddenLayers = document.getElementById("flHybridChangeHiddenLayers");
+    const flHybridChangeActivation = document.getElementById("flHybridChangeActivation");
     const flMaxRooms = document.getElementById("flMaxRooms");
-    const flMinFitClients = document.getElementById("flMinFitClients");
-    const flMinEvalClients = document.getElementById("flMinEvalClients");
-    const flMinAvailableClients = document.getElementById("flMinAvailableClients");
     const flClientCpu = document.getElementById("flClientCpu");
     const flChunkSize = document.getElementById("flChunkSize");
-    const flFractionFit = document.getElementById("flFractionFit");
-    const flFractionEval = document.getElementById("flFractionEval");
-    const modelStructureText = document.getElementById("modelStructureText");
     const runTrainBtn = document.getElementById("runTrainBtn");
     const stopTrainBtn = document.getElementById("stopTrainBtn");
     const trainBar = document.getElementById("trainBar");
@@ -395,7 +603,9 @@
     const resultsModelType = document.getElementById("resultsModelType");
     const resultsScope = document.getElementById("resultsScope");
     const resultsRoomId = document.getElementById("resultsRoomId");
+    const resultsFigureDetail = document.getElementById("resultsFigureDetail");
     const roomField = document.getElementById("roomField");
+    const downloadResultsPdfBtn = document.getElementById("downloadResultsPdfBtn");
     const refreshResultsBtn = document.getElementById("refreshResultsBtn");
     const resultsState = document.getElementById("resultsState");
     const resultsCards = document.getElementById("resultsCards");
@@ -405,6 +615,17 @@
     let buildJobId = null;
     let splitJobId = null;
     let trainJobId = null;
+    let latestResultsData = null;
+    const modelOptionsByTask = {
+      k_hours: [
+        { value: "mlp", label: "MLP" },
+        { value: "lstm", label: "LSTM" },
+        { value: "mlp_lstm", label: "MLP + LSTM" }
+      ],
+      event: [
+        { value: "mlp", label: "MLP" }
+      ]
+    };
 
     function appendLog(el, lines) {
       if (!lines || !lines.length) return;
@@ -455,6 +676,83 @@
       return response.json();
     }
 
+    function renderRuntimeHistory(summary, pcSpec) {
+      if (!runtimeHistoryBody) return;
+      const history = Array.isArray(summary?.history) ? summary.history : [];
+      function compactPairs(cfg, allowKeys) {
+        const blocked = new Set([
+          "command",
+          "split_dir",
+          "summary_out",
+          "weights_out_dir",
+          "out_dir",
+          "output_dir",
+          "input_dir",
+          "stats_path",
+          "data_dir",
+        ]);
+        return Object.entries(cfg || {})
+          .filter(([key, value]) => !blocked.has(key) && value !== null && value !== undefined && value !== "")
+          .filter(([key]) => !allowKeys || allowKeys.includes(key))
+          .map(([key, value]) => `${key}=${value}`)
+          .join(" | ");
+      }
+      function detailText(item) {
+        const cfg = item.config || {};
+        if (item.kind === "build") {
+          if (cfg.mode === "event") return `event | effect=${cfg.medication_effect_minutes ?? "-"}m | active=${cfg.medication_active_hours ?? "-"}h`;
+          return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+        }
+        if (item.kind === "split") {
+          if (cfg.mode === "event") return `event | test=${cfg.test_fraction ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+          return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+        }
+        if (item.kind === "federated" || item.kind === "training") {
+          const agg = cfg.aggregation_method ?? "FedAvg";
+          const base = `${agg} | ${cfg.mode ?? "-"} ${cfg.model_type ?? "-"} | ${cfg.rounds ?? "-"} rounds | ${cfg.local_epochs ?? "-"} epoch(s)`;
+          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | client cpu ${cfg.client_cpu ?? "-"}`;
+          if (cfg.model_type === "mlp") return `${base} | batch ${cfg.batch_size ?? "-"} | lr ${cfg.learning_rate ?? "-"} | ${cfg.optimizer ?? "-"} | ${cfg.activation ?? "-"} | ${cfg.max_rooms ?? "-"} rooms`;
+          if (cfg.model_type === "lstm") return `${base} | seq ${cfg.sequence_length ?? "-"} | batch ${cfg.batch_size ?? "-"} | hidden ${cfg.hidden_dim ?? "-"} | layers ${cfg.num_layers ?? "-"} | lr ${cfg.learning_rate ?? "-"}`;
+          return `${base} | seq ${cfg.sequence_length ?? "-"} | lstm batch ${cfg.lstm_batch_size ?? "-"} | mlp batch ${cfg.mlp_batch_size ?? "-"} | hidden ${cfg.lstm_hidden_dim ?? "-"} | lr ${cfg.lstm_learning_rate ?? "-"}`;
+        }
+        return compactPairs(cfg);
+      }
+      runtimeHistoryBody.innerHTML = history.length
+        ? history.map((item) => `
+            <tr>
+              <td>${item.kind ?? "-"}</td>
+              <td>${item.status ?? "-"}</td>
+              <td>${item.duration ?? "-"}</td>
+              <td>${item.started_at ?? "-"}</td>
+              <td><code>${pcSpec?.cpu ?? "Pending"} | ${pcSpec?.ram ?? "Pending"} | ${pcSpec?.gpu ?? "Pending"} | ${pcSpec?.os ?? "Pending"}</code></td>
+              <td><code>${detailText(item)}</code></td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="6">No runtime history yet.</td></tr>`;
+    }
+
+    function updateRuntimeSummary(summary, pcSpec) {
+      if (summary) {
+        const totalEl = document.getElementById("summaryTotalRuntime");
+        const buildEl = document.getElementById("summaryBuildRuntime");
+        const splitEl = document.getElementById("summarySplitRuntime");
+        const trainingEl = document.getElementById("summaryTrainingRuntime");
+        if (totalEl) totalEl.textContent = summary.total_runtime ?? "Pending";
+        if (buildEl) buildEl.textContent = summary.build_runtime ?? "Pending";
+        if (splitEl) splitEl.textContent = summary.split_runtime ?? "Pending";
+        if (trainingEl) trainingEl.textContent = summary.training_runtime ?? "Pending";
+      }
+      if (pcSpec) {
+        const cpuEl = document.getElementById("summaryCpu");
+        const ramEl = document.getElementById("summaryRam");
+        if (cpuEl) cpuEl.textContent = pcSpec.cpu ?? "Pending";
+        if (ramEl) ramEl.textContent = pcSpec.ram ?? "Pending";
+      }
+      renderRuntimeHistory(summary, pcSpec);
+    }
+
+    updateRuntimeSummary(initialRuntimeSummary, initialPcSpec);
+
     function pollJob(jobId, stateEl, logEl, barEl, metricsEl, onDone) {
       let cursor = 0;
       const timer = setInterval(async () => {
@@ -467,6 +765,7 @@
           setProgress(barEl, data.progress);
           stateEl.textContent = `${data.status} (${data.progress}%)`;
           renderMetricCards(metricsEl, data.metrics ? data.metrics.items : []);
+          updateRuntimeSummary(data.runtime_summary, data.pc_spec);
           if (["completed", "failed", "stopped"].includes(data.status)) {
             clearInterval(timer);
             if (typeof onDone === "function") onDone(data);
@@ -580,15 +879,338 @@
       });
     }
 
+    function slugify(value) {
+      return String(value || "figure")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        || "figure";
+    }
+
+    function escapeXml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&apos;");
+    }
+
+    function polarToCartesian(cx, cy, r, angleDeg) {
+      const angleRad = (angleDeg - 90) * Math.PI / 180.0;
+      return {
+        x: cx + (r * Math.cos(angleRad)),
+        y: cy + (r * Math.sin(angleRad))
+      };
+    }
+
+    function describeArc(cx, cy, r, startAngle, endAngle) {
+      const start = polarToCartesian(cx, cy, r, endAngle);
+      const end = polarToCartesian(cx, cy, r, startAngle);
+      const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+      return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArcFlag} 0 ${end.x} ${end.y} Z`;
+    }
+
+    function buildLineChartExportSvg(chart) {
+      const width = 1120;
+      const height = 860;
+      const plotX = 90;
+      const plotY = 90;
+      const plotW = 940;
+      const plotH = 470;
+      const rounds = chart.rounds || [];
+      const series = (chart.series || []).filter((item) => Array.isArray(item.values));
+      const values = series.flatMap((item) => item.values).filter((value) => typeof value === "number");
+      const minY = values.length ? Math.min(...values) : 0;
+      const maxY = values.length ? Math.max(...values) : 1;
+      const spanX = Math.max(1, rounds.length - 1);
+      const spanY = Math.max(1e-9, maxY - minY);
+
+      const grid = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
+        const y = plotY + plotH - (pct * plotH);
+        const value = minY + (pct * spanY);
+        return `
+          <line x1="${plotX}" y1="${y}" x2="${plotX + plotW}" y2="${y}" stroke="#d7dee8" stroke-width="1" stroke-dasharray="6 6" />
+          <text x="${plotX - 14}" y="${y + 5}" font-size="20" text-anchor="end" fill="#64748b">${escapeXml(value.toFixed(2))}</text>
+        `;
+      }).join("");
+
+      const labels = rounds.map((round, idx) => {
+        const x = plotX + (idx / spanX) * plotW;
+        return `<text x="${x}" y="${plotY + plotH + 34}" text-anchor="middle" font-size="20" fill="#64748b">R${escapeXml(round)}</text>`;
+      }).join("");
+
+      const lines = series.map((item) => {
+        const points = item.values.map((value, idx) => {
+          const x = plotX + (idx / spanX) * plotW;
+          const safeValue = typeof value === "number" ? value : minY;
+          const y = plotY + plotH - ((safeValue - minY) / spanY) * plotH;
+          return `${x},${y}`;
+        }).join(" ");
+        return `<polyline fill="none" stroke="${escapeXml(item.color)}" stroke-width="5" points="${points}" />`;
+      }).join("");
+
+      const legend = series.map((item, index) => {
+        const x = 110 + (index % 2) * 420;
+        const y = 640 + Math.floor(index / 2) * 38;
+        return `
+          <circle cx="${x}" cy="${y - 6}" r="8" fill="${escapeXml(item.color)}" />
+          <text x="${x + 18}" y="${y}" font-size="22" fill="#334155">${escapeXml(item.name)}</text>
+        `;
+      }).join("");
+
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+          <rect width="100%" height="100%" fill="#ffffff" />
+          <text x="60" y="48" font-size="30" font-weight="700" fill="#0f172a">${escapeXml(chart.label)} by round</text>
+          <line x1="${plotX}" y1="${plotY}" x2="${plotX}" y2="${plotY + plotH}" stroke="#94a3b8" stroke-width="2" />
+          <line x1="${plotX}" y1="${plotY + plotH}" x2="${plotX + plotW}" y2="${plotY + plotH}" stroke="#94a3b8" stroke-width="2" />
+          ${grid}
+          ${lines}
+          ${labels}
+          ${legend}
+        </svg>
+      `;
+    }
+
+    function buildPieChartExportSvg(chart) {
+      const width = 900;
+      const height = 760;
+      const cx = 250;
+      const cy = 340;
+      const radius = 140;
+      const slices = chart.slices || [];
+      const total = slices.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      let angle = 0;
+      const sectors = total > 0 ? slices.map((item) => {
+        const value = Number(item.value || 0);
+        const start = angle;
+        angle += (value / total) * 360;
+        return `<path d="${describeArc(cx, cy, radius, start, angle)}" fill="${escapeXml(item.color)}" stroke="#ffffff" stroke-width="2" />`;
+      }).join("") : `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#cbd5e1" />`;
+
+      const legend = slices.map((item, index) => {
+        const x = 470;
+        const y = 180 + (index * 42);
+        return `
+          <rect x="${x}" y="${y - 16}" width="20" height="20" rx="4" fill="${escapeXml(item.color)}" />
+          <text x="${x + 32}" y="${y}" font-size="22" fill="#334155">${escapeXml(item.label)}: ${escapeXml(formatMetric(item.value))}</text>
+        `;
+      }).join("");
+
+      return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+          <rect width="100%" height="100%" fill="#ffffff" />
+          <text x="60" y="54" font-size="30" font-weight="700" fill="#0f172a">${escapeXml(chart.title)}</text>
+          ${sectors}
+          <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="#cbd5e1" stroke-width="1" />
+          ${legend}
+        </svg>
+      `;
+    }
+
+    function base64ToUint8Array(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    function concatUint8Arrays(parts) {
+      const total = parts.reduce((sum, part) => sum + part.length, 0);
+      const out = new Uint8Array(total);
+      let offset = 0;
+      parts.forEach((part) => {
+        out.set(part, offset);
+        offset += part.length;
+      });
+      return out;
+    }
+
+    function buildPdfFromJpeg(jpegBytes, widthPx, heightPx) {
+      const encoder = new TextEncoder();
+      const parts = [];
+      const offsets = [];
+      let length = 0;
+      function pushBytes(bytes) {
+        parts.push(bytes);
+        length += bytes.length;
+      }
+      function pushText(text) {
+        pushBytes(encoder.encode(text));
+      }
+      function startObject(id) {
+        offsets[id] = length;
+        pushText(`${id} 0 obj\n`);
+      }
+      function endObject() {
+        pushText(`endobj\n`);
+      }
+
+      const pageWidth = widthPx;
+      const pageHeight = heightPx;
+
+      pushText("%PDF-1.3\n");
+      startObject(1);
+      pushText("<< /Type /Catalog /Pages 2 0 R >>\n");
+      endObject();
+
+      startObject(2);
+      pushText("<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n");
+      endObject();
+
+      startObject(3);
+      pushText(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\n`);
+      endObject();
+
+      startObject(4);
+      pushText(`<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
+      pushBytes(jpegBytes);
+      pushText("\nendstream\n");
+      endObject();
+
+      const content = `q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ\n`;
+      const contentBytes = encoder.encode(content);
+      startObject(5);
+      pushText(`<< /Length ${contentBytes.length} >>\nstream\n`);
+      pushBytes(contentBytes);
+      pushText("endstream\n");
+      endObject();
+
+      const xrefOffset = length;
+      pushText(`xref\n0 6\n0000000000 65535 f \n`);
+      for (let i = 1; i <= 5; i += 1) {
+        pushText(`${String(offsets[i] || 0).padStart(10, "0")} 00000 n \n`);
+      }
+      pushText(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
+      return new Blob([concatUint8Arrays(parts)], { type: "application/pdf" });
+    }
+
+    async function svgToPdfBlob(svgMarkup, width, height) {
+      const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+      try {
+        const image = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = url;
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(image, 0, 0, width, height);
+        const jpegBase64 = canvas.toDataURL("image/jpeg", 0.95).split(",")[1];
+        return buildPdfFromJpeg(base64ToUint8Array(jpegBase64), width, height);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function downloadResultsFiguresAsPdf() {
+      if (!latestResultsData) {
+        resultsState.textContent = "load results before exporting figures.";
+        return;
+      }
+      downloadResultsPdfBtn.disabled = true;
+      const previousText = resultsState.textContent;
+      resultsState.textContent = "preparing figure pdf downloads...";
+      try {
+        const figures = [
+          ...((latestResultsData.line_charts || []).map((chart) => ({
+            filename: `${slugify(chart.label)}.pdf`,
+            svg: buildLineChartExportSvg(chart),
+            width: 1120,
+            height: 860
+          }))),
+          ...((latestResultsData.pie_charts || []).map((chart) => ({
+            filename: `${slugify(chart.title)}.pdf`,
+            svg: buildPieChartExportSvg(chart),
+            width: 900,
+            height: 760
+          })))
+        ];
+        for (const figure of figures) {
+          const pdfBlob = await svgToPdfBlob(figure.svg, figure.width, figure.height);
+          downloadBlob(pdfBlob, figure.filename);
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        resultsState.textContent = `downloaded ${figures.length} figure pdf${figures.length === 1 ? "" : "s"}.`;
+      } catch (error) {
+        resultsState.textContent = `pdf export failed: ${error.message}`;
+      } finally {
+        downloadResultsPdfBtn.disabled = false;
+        if (previousText && !String(resultsState.textContent).startsWith("pdf export failed")) {
+          setTimeout(() => {
+            if (resultsState.textContent.includes("downloaded")) resultsState.textContent = previousText;
+          }, 2000);
+        }
+      }
+    }
+
+    function syncModelOptions() {
+      const options = modelOptionsByTask[taskType.value] || modelOptionsByTask.k_hours;
+      const current = modelType.value;
+      modelType.innerHTML = options.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      if (options.some((item) => item.value === current)) {
+        modelType.value = current;
+      }
+      const currentResults = resultsModelType.value;
+      resultsModelType.innerHTML = options.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      if (options.some((item) => item.value === currentResults)) {
+        resultsModelType.value = currentResults;
+      }
+    }
+
+    function updateTaskText() {
+      const isEvent = taskType.value === "event";
+      buildSectionTitle.textContent = isEvent ? "1) Build Event Rows" : "1) Build Next-Hour Rows";
+      splitSectionTitle.textContent = isEvent ? "2) Split By Admission" : "2) Split By Room";
+      document.querySelectorAll("[data-tasks]").forEach((el) => {
+        const supported = (el.dataset.tasks || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        el.classList.toggle("hidden", supported.length > 0 && !supported.includes(taskType.value));
+      });
+      syncModelOptions();
+      if (isEvent) {
+        Array.from(resultsScope.options).forEach((option) => {
+          option.disabled = false;
+        });
+      } else {
+        Array.from(resultsScope.options).forEach((option) => {
+          option.disabled = false;
+        });
+      }
+    }
+
     function updateModelText() {
       const type = modelType.value;
-      if (type === "mlp") {
-        modelStructureText.textContent = "MLP uses hidden layers 128 -> 64 -> 32, ReLU activation, Adam optimizer, and learning rate 0.001.";
-      } else if (type === "lstm") {
-        modelStructureText.textContent = "LSTM uses 1 LSTM layer with hidden size 64 and a dense head 64 -> output, ReLU activation, Adam optimizer, and learning rate 0.001.";
-      } else {
-        modelStructureText.textContent = "Hybrid uses a change MLP branch 128 -> 64 -> 1 and a target LSTM branch with 1 LSTM layer, hidden size 64, and a dense head 64 -> output.";
-      }
+      const isEvent = taskType.value === "event";
+      const isFedProx = flAggregationMethod.value === "fedprox";
+      document.querySelectorAll("[data-models]").forEach((el) => {
+        const supported = (el.dataset.models || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        el.classList.toggle("hidden", supported.length > 0 && !supported.includes(type));
+      });
+      flProximalMuField.classList.toggle("hidden", isEvent || !isFedProx);
     }
 
     async function loadResults() {
@@ -598,8 +1220,10 @@
       resultsPies.innerHTML = "";
       try {
         const params = new URLSearchParams({
+          task_type: taskType.value,
           model_type: resultsModelType.value,
-          scope: resultsScope.value
+          scope: resultsScope.value,
+          figure_detail: resultsFigureDetail.value
         });
         if (resultsScope.value === "local" && resultsRoomId.value) {
           params.set("room_id", resultsRoomId.value);
@@ -607,6 +1231,7 @@
         const response = await fetch(`/api/ai/results?${params.toString()}`);
         if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
         const data = await response.json();
+        latestResultsData = data;
 
         const roomIds = data.room_ids || [];
         resultsRoomId.innerHTML = roomIds.map((roomId) => `<option value="${roomId}">${roomId}</option>`).join("");
@@ -616,7 +1241,7 @@
         renderMetricCards(resultsCards, data.latest_cards || []);
         renderLineCharts(data.line_charts || []);
         renderPieCharts(data.pie_charts || []);
-        resultsState.textContent = `${data.scope} analysis loaded from ${data.weights_dir}`;
+        resultsState.textContent = `${data.scope} analysis loaded.`;
       } catch (error) {
         resultsState.textContent = `results unavailable: ${error.message}`;
       }
@@ -630,10 +1255,13 @@
       setProgress(buildBar, 0);
       try {
         const data = await startJob("/api/ai/build/start", {
+          task_type: taskType.value,
           step_minutes: Number(buildStepMinutes.value || 30),
           horizon_minutes: Number(buildHorizonMinutes.value || 60),
           workers: Number(buildWorkers.value || 1),
-          chunk_size: Number(buildChunkSize.value || 250)
+          chunk_size: Number(buildChunkSize.value || 250),
+          medication_effect_minutes: Number(eventMedicationEffectMinutes.value || 5),
+          medication_active_hours: Number(eventMedicationActiveHours.value || 24)
         });
         buildJobId = data.job_id;
         pollJob(data.job_id, buildState, buildLog, buildBar, buildMetrics, () => {
@@ -664,7 +1292,9 @@
       setProgress(splitBar, 0);
       try {
         const data = await startJob("/api/ai/split/start", {
+          task_type: taskType.value,
           train_ratio: Number(splitTrainRatio.value || 0.8),
+          test_fraction: Number(eventTestFraction.value || 0.2),
           min_train_rows: 1,
           chunk_size: Number(splitChunkSize.value || 200000),
           workers: Number(splitWorkers.value || 1)
@@ -696,22 +1326,49 @@
       trainLog.textContent = "[dashboard] starting training job...";
       trainMetrics.innerHTML = "";
       setProgress(trainBar, 0);
+      latestResultsData = null;
+      resultsState.textContent = "results cleared for new training run...";
+      resultsCards.innerHTML = "";
+      resultsCharts.innerHTML = "";
+      resultsPies.innerHTML = "";
       try {
-        const data = await startJob("/api/ai/federated/start", {
+        const payload = {
+          task_type: taskType.value,
           model_type: modelType.value,
+          aggregation_method: flAggregationMethod.value || "fedavg",
           rounds: Number(flRounds.value || 5),
           local_epochs: Number(flLocalEpochs.value || 1),
-          lstm_batch_size: Number(flBatchSize.value || 32),
-          lstm_sequence_length: Number(flSeqLen.value || 4),
           max_rooms: Number(flMaxRooms.value || 20),
-          min_fit_clients: Number(flMinFitClients.value || 2),
-          min_evaluate_clients: Number(flMinEvalClients.value || 2),
-          min_available_clients: Number(flMinAvailableClients.value || 2),
           client_cpu: Number(flClientCpu.value || 1.0),
-          chunksize: Number(flChunkSize.value || 200000),
-          fraction_fit: Number(flFractionFit.value || 1.0),
-          fraction_evaluate: Number(flFractionEval.value || 1.0)
-        });
+          chunksize: Number(flChunkSize.value || 200000)
+        };
+        if (payload.aggregation_method === "fedprox") {
+          payload.proximal_mu = Number(flProximalMu.value || 0.01);
+        }
+        if (taskType.value === "event") {
+          payload.model_type = "mlp";
+          payload.mlp_batch_size = Number(eventBatchSize.value || 1);
+        } else if (modelType.value === "mlp") {
+          payload.mlp_hidden_layers = flMlpHiddenLayers.value || "128,64,32";
+          payload.mlp_batch_size = Number(flMlpBatchSize.value || 32);
+          payload.mlp_learning_rate = Number(flMlpLearningRate.value || 0.001);
+          payload.mlp_optimizer = flMlpOptimizer.value || "adam";
+          payload.mlp_activation = flMlpActivation.value || "relu";
+        } else {
+          payload.lstm_batch_size = Number(flBatchSize.value || 32);
+          payload.lstm_sequence_length = Number(flSeqLen.value || 4);
+          payload.lstm_hidden_dim = Number(flLstmHiddenDim.value || 64);
+          payload.lstm_num_layers = Number(flLstmNumLayers.value || 1);
+          payload.lstm_head_hidden_dim = Number(flLstmHeadHiddenDim.value || 64);
+          payload.lstm_learning_rate = Number(flLstmLearningRate.value || 0.001);
+          payload.lstm_optimizer = flLstmOptimizer.value || "adam";
+          payload.lstm_activation = flLstmActivation.value || "relu";
+          if (modelType.value === "mlp_lstm") {
+            payload.hybrid_change_hidden_layers = flHybridChangeHiddenLayers.value || "128,64";
+            payload.hybrid_change_activation = flHybridChangeActivation.value || "relu";
+          }
+        }
+        const data = await startJob("/api/ai/federated/start", payload);
         trainJobId = data.job_id;
         pollJob(data.job_id, trainState, trainLog, trainBar, trainMetrics, async () => {
           trainJobId = null;
@@ -735,15 +1392,33 @@
       }
     });
 
+    taskType.addEventListener("change", () => {
+      updateTaskText();
+      updateModelText();
+    });
     modelType.addEventListener("change", updateModelText);
+    [flAggregationMethod, flProximalMu, flMlpHiddenLayers, flMlpBatchSize, flMlpLearningRate, flMlpOptimizer, flMlpActivation, eventBatchSize, flBatchSize, flSeqLen, flLstmHiddenDim, flLstmNumLayers, flLstmHeadHiddenDim, flLstmLearningRate, flLstmOptimizer, flLstmActivation, flHybridChangeHiddenLayers, flHybridChangeActivation]
+      .forEach((input) => input.addEventListener("input", updateModelText));
     resultsScope.addEventListener("change", () => {
       roomField.classList.toggle("hidden", resultsScope.value !== "local");
       loadResults();
     });
     resultsModelType.addEventListener("change", loadResults);
     resultsRoomId.addEventListener("change", loadResults);
+    resultsFigureDetail.addEventListener("change", loadResults);
+    downloadResultsPdfBtn.addEventListener("click", downloadResultsFiguresAsPdf);
     refreshResultsBtn.addEventListener("click", loadResults);
+    toggleRuntimeHistoryBtn?.addEventListener("click", () => {
+      runtimeHistoryModal.classList.remove("hidden");
+    });
+    closeRuntimeHistoryBtn?.addEventListener("click", () => {
+      runtimeHistoryModal.classList.add("hidden");
+    });
+    runtimeHistoryModal?.addEventListener("click", (event) => {
+      if (event.target === runtimeHistoryModal) runtimeHistoryModal.classList.add("hidden");
+    });
 
+    updateTaskText();
     updateModelText();
     roomField.classList.add("hidden");
     loadResults();
