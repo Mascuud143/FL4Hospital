@@ -19,11 +19,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--weights-out-dir", default="ai_state_to_outcome/fl_weights", help="Directory to write global weights and metrics")
+    parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
+    parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     return parser.parse_args()
 
 
-def make_initial_parameters() -> fl.common.Parameters:
-    model = make_model(get_input_dim())
+def make_initial_parameters(hidden_layers: str = "128,64,32", activation: str = "relu") -> fl.common.Parameters:
+    model = make_model(get_input_dim(), hidden_layers=hidden_layers, activation=activation)
     return fl.common.ndarrays_to_parameters(get_params(model))
 
 
@@ -202,7 +204,7 @@ def main() -> None:
         min_fit_clients=args.min_fit_clients,
         min_evaluate_clients=args.min_evaluate_clients,
         min_available_clients=args.min_available_clients,
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(hidden_layers=args.hidden_layers, activation=args.activation),
     )
     fl.server.start_server(
         server_address=args.server_address,

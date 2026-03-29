@@ -1,6 +1,6 @@
 {
-  "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel (20 logical cores)",
-  "ram": "31.7 GB",
-  "gpu": "Pending",
-  "os": "Windows 10"
+  "cpu": "12th Gen Intel(R) Core(TM) i5-12500H (16 logical cores)",
+  "ram": "7.6 GB",
+  "gpu": "Intel(R) Iris(R) Xe Graphics",
+  "os": "Windows 11"
 }

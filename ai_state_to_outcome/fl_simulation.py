@@ -17,6 +17,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=5, help="Federated rounds")
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per round")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
+    parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--min-fit-clients", type=int, default=2, help="Minimum clients for fit")
@@ -95,7 +99,7 @@ def main() -> None:
         min_fit_clients=min(args.min_fit_clients, len(room_ids)),
         min_evaluate_clients=min(args.min_evaluate_clients, len(room_ids)),
         min_available_clients=min(args.min_available_clients, len(room_ids)),
-        initial_parameters=make_initial_parameters(),
+        initial_parameters=make_initial_parameters(hidden_layers=args.hidden_layers, activation=args.activation),
     )
     input_dim = get_input_dim()
 
@@ -111,6 +115,10 @@ def main() -> None:
             input_dim=input_dim,
             local_epochs=args.local_epochs,
             batch_size=args.batch_size,
+            hidden_layers=args.hidden_layers,
+            learning_rate=args.learning_rate,
+            optimizer_name=args.optimizer,
+            activation=args.activation,
         ).to_client()
 
     try:
@@ -146,6 +154,10 @@ def main() -> None:
                 input_dim=input_dim,
                 local_epochs=args.local_epochs,
                 batch_size=args.batch_size,
+                hidden_layers=args.hidden_layers,
+                learning_rate=args.learning_rate,
+                optimizer_name=args.optimizer,
+                activation=args.activation,
             )
             tries = 0
             while tries < args.client_retries:

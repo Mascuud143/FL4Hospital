@@ -385,10 +385,6 @@
           <option value="logistic">Logistic</option>
         </select>
       </div>
-      <div class="field hidden" data-tasks="event">
-        <label for="eventBatchSize">Event MLP batch size</label>
-        <input id="eventBatchSize" type="number" min="1" step="1" value="1" />
-      </div>
       <div class="field" data-models="lstm,mlp_lstm">
         <label for="flBatchSize">Batch size</label>
         <input id="flBatchSize" type="number" min="1" step="1" value="32" />
@@ -579,7 +575,6 @@
     const flMlpLearningRate = document.getElementById("flMlpLearningRate");
     const flMlpOptimizer = document.getElementById("flMlpOptimizer");
     const flMlpActivation = document.getElementById("flMlpActivation");
-    const eventBatchSize = document.getElementById("eventBatchSize");
     const flBatchSize = document.getElementById("flBatchSize");
     const flSeqLen = document.getElementById("flSeqLen");
     const flLstmHiddenDim = document.getElementById("flLstmHiddenDim");
@@ -1208,7 +1203,13 @@
           .split(",")
           .map((value) => value.trim())
           .filter(Boolean);
-        el.classList.toggle("hidden", supported.length > 0 && !supported.includes(type));
+        const supportedTasks = (el.dataset.tasks || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        const hiddenForModel = supported.length > 0 && !supported.includes(type);
+        const hiddenForTask = supportedTasks.length > 0 && !supportedTasks.includes(taskType.value);
+        el.classList.toggle("hidden", hiddenForModel || hiddenForTask);
       });
       flProximalMuField.classList.toggle("hidden", isEvent || !isFedProx);
     }
@@ -1347,7 +1348,11 @@
         }
         if (taskType.value === "event") {
           payload.model_type = "mlp";
-          payload.mlp_batch_size = Number(eventBatchSize.value || 1);
+          payload.mlp_hidden_layers = flMlpHiddenLayers.value || "128,64,32";
+          payload.mlp_batch_size = Number(flMlpBatchSize.value || 1);
+          payload.mlp_learning_rate = Number(flMlpLearningRate.value || 0.001);
+          payload.mlp_optimizer = flMlpOptimizer.value || "adam";
+          payload.mlp_activation = flMlpActivation.value || "relu";
         } else if (modelType.value === "mlp") {
           payload.mlp_hidden_layers = flMlpHiddenLayers.value || "128,64,32";
           payload.mlp_batch_size = Number(flMlpBatchSize.value || 32);
@@ -1397,7 +1402,7 @@
       updateModelText();
     });
     modelType.addEventListener("change", updateModelText);
-    [flAggregationMethod, flProximalMu, flMlpHiddenLayers, flMlpBatchSize, flMlpLearningRate, flMlpOptimizer, flMlpActivation, eventBatchSize, flBatchSize, flSeqLen, flLstmHiddenDim, flLstmNumLayers, flLstmHeadHiddenDim, flLstmLearningRate, flLstmOptimizer, flLstmActivation, flHybridChangeHiddenLayers, flHybridChangeActivation]
+    [flAggregationMethod, flProximalMu, flMlpHiddenLayers, flMlpBatchSize, flMlpLearningRate, flMlpOptimizer, flMlpActivation, flBatchSize, flSeqLen, flLstmHiddenDim, flLstmNumLayers, flLstmHeadHiddenDim, flLstmLearningRate, flLstmOptimizer, flLstmActivation, flHybridChangeHiddenLayers, flHybridChangeActivation]
       .forEach((input) => input.addEventListener("input", updateModelText));
     resultsScope.addEventListener("change", () => {
       roomField.classList.toggle("hidden", resultsScope.value !== "local");

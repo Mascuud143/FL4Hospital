@@ -39,6 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between retries")
     parser.add_argument("--chunksize", type=int, default=100000, help="CSV chunksize for room filtering")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
+    parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
+    parser.add_argument("--optimizer", choices=["adam", "sgd"], default="adam", help="Optimizer for local training")
+    parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     return parser.parse_args()
 
 
@@ -46,27 +50,59 @@ def get_input_dim() -> int:
     return len(FEATURE_COLUMNS)
 
 
+def parse_hidden_layers(raw: str) -> list[int]:
+    layers: list[int] = []
+    for part in str(raw).split(","):
+        value = part.strip()
+        if not value:
+            continue
+        size = int(value)
+        if size <= 0:
+            raise ValueError("Hidden layer sizes must be positive integers")
+        layers.append(size)
+    if not layers:
+        raise ValueError("At least one hidden layer size is required")
+    return layers
+
+
+def _activation_module(name: str) -> nn.Module:
+    normalized = str(name).strip().lower()
+    if normalized == "relu":
+        return nn.ReLU()
+    if normalized == "tanh":
+        return nn.Tanh()
+    if normalized == "logistic":
+        return nn.Sigmoid()
+    raise ValueError(f"Unsupported activation: {name}")
+
+
 class StateOutcomeMLP(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int = len(TARGET_COLUMNS)):
+    def __init__(self, input_dim: int, hidden_layers: list[int], activation: str, output_dim: int = len(TARGET_COLUMNS)):
         super().__init__()
-        # This MLP maps one event-state snapshot directly to the predicted
-        # comfort outcome after that event.
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, output_dim),
-        )
+        layers: list[nn.Module] = []
+        in_features = input_dim
+        for hidden_dim in hidden_layers:
+            layers.append(nn.Linear(in_features, hidden_dim))
+            layers.append(_activation_module(activation))
+            in_features = hidden_dim
+        layers.append(nn.Linear(in_features, output_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
-def make_model(input_dim: int) -> StateOutcomeMLP:
-    return StateOutcomeMLP(input_dim=input_dim)
+def make_model(input_dim: int, hidden_layers: str = "128,64,32", activation: str = "relu") -> StateOutcomeMLP:
+    return StateOutcomeMLP(input_dim=input_dim, hidden_layers=parse_hidden_layers(hidden_layers), activation=activation)
+
+
+def make_optimizer(model: nn.Module, optimizer_name: str, learning_rate: float) -> torch.optim.Optimizer:
+    normalized = str(optimizer_name).strip().lower()
+    if normalized == "adam":
+        return torch.optim.Adam(model.parameters(), lr=learning_rate)
+    if normalized == "sgd":
+        return torch.optim.SGD(model.parameters(), lr=learning_rate)
+    raise ValueError(f"Unsupported optimizer: {optimizer_name}")
 
 
 def get_params(model: StateOutcomeMLP) -> list[np.ndarray]:
@@ -142,6 +178,10 @@ class RoomClient(fl.client.NumPyClient):
         input_dim: int,
         local_epochs: int,
         batch_size: int,
+        hidden_layers: str,
+        learning_rate: float,
+        optimizer_name: str,
+        activation: str,
     ):
         self.room_id = room_id
         self.x_train = x_train
@@ -150,8 +190,10 @@ class RoomClient(fl.client.NumPyClient):
         self.y_test = y_test
         self.local_epochs = local_epochs
         self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.optimizer_name = optimizer_name
         self.device = torch.device("cpu")
-        self.model = make_model(input_dim).to(self.device)
+        self.model = make_model(input_dim, hidden_layers=hidden_layers, activation=activation).to(self.device)
         self.airflow_pos_weight = _pos_weight_from_targets(self.y_train[:, AIRFLOW_OUTPUT_INDEX]).to(self.device)
 
     def get_parameters(self, config: dict[str, Any]):
@@ -168,7 +210,7 @@ class RoomClient(fl.client.NumPyClient):
             torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
         )
         loader = DataLoader(dataset, batch_size=max(1, min(self.batch_size, len(dataset))), shuffle=False)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        optimizer = make_optimizer(self.model, self.optimizer_name, self.learning_rate)
         reg_loss_fn = nn.MSELoss()
         airflow_loss_fn = nn.BCEWithLogitsLoss(pos_weight=self.airflow_pos_weight)
 
@@ -307,6 +349,10 @@ def main() -> None:
         input_dim=get_input_dim(),
         local_epochs=args.local_epochs,
         batch_size=args.batch_size,
+        hidden_layers=args.hidden_layers,
+        learning_rate=args.learning_rate,
+        optimizer_name=args.optimizer,
+        activation=args.activation,
     )
 
     attempts = 0

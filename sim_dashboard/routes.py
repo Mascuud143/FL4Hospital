@@ -730,6 +730,7 @@ def _global_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
     if frame.empty:
         return []
     latest = frame.sort_values("round").iloc[-1]
+    count = max(int(latest.get("evaluated_examples", 0) or 0), 1)
     pies = []
     for suffix, label, color in (
         ("temp_main", "Temp Main Threshold", "#2563eb"),
@@ -737,8 +738,15 @@ def _global_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
         ("light", "Light Threshold", "#f59e0b"),
         ("sound", "Sound Threshold", "#ef4444"),
     ):
-        correct = float(latest.get(f"threshold_correct_y_{suffix}", 0.0) or 0.0)
-        wrong = float(latest.get(f"threshold_wrong_y_{suffix}", 0.0) or 0.0)
+        correct_key = f"threshold_correct_y_{suffix}"
+        wrong_key = f"threshold_wrong_y_{suffix}"
+        if correct_key in latest.index or wrong_key in latest.index:
+            correct = float(latest.get(correct_key, 0.0) or 0.0)
+            wrong = float(latest.get(wrong_key, 0.0) or 0.0)
+        else:
+            accuracy = float(latest.get(f"threshold_accuracy_y_{suffix}", 0.0) or 0.0)
+            correct = max(0, min(count, int(round(accuracy * count))))
+            wrong = max(0, count - correct)
         pies.append(
             _make_pie(
                 label,
@@ -920,7 +928,27 @@ def _event_local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
     if frame.empty:
         return []
     latest = frame.sort_values("round").iloc[-1]
-    return [
+    count = max(int(latest.get("num_examples", 0) or 0), 1)
+    pies = []
+    for suffix, label, color in (
+        ("temp_main", "Temp Main Threshold", "#2563eb"),
+        ("temp_toilet", "Temp Toilet Threshold", "#0891b2"),
+        ("light", "Light Threshold", "#f59e0b"),
+        ("sound", "Sound Threshold", "#ef4444"),
+    ):
+        accuracy = float(latest.get(f"threshold_accuracy_y_{suffix}", 0.0) or 0.0)
+        correct = max(0, min(count, int(round(accuracy * count))))
+        wrong = max(0, count - correct)
+        pies.append(
+            _make_pie(
+                label,
+                [
+                    {"label": "Correct", "value": correct, "color": color},
+                    {"label": "Wrong", "value": wrong, "color": "#e5e7eb"},
+                ],
+            )
+        )
+    pies.append(
         _make_pie(
             "Airflow Confusion",
             [
@@ -930,7 +958,8 @@ def _event_local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
                 {"label": "FN", "value": latest.get("airflow_fn", 0), "color": "#dc2626"},
             ],
         )
-    ]
+    )
+    return pies
 
 
 def _local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -1590,7 +1619,20 @@ def api_ai_federated_start():
             ]
         )
     if task_type == "event":
-        command.extend(["--batch-size", str(mlp_batch_size)])
+        command.extend(
+            [
+                "--hidden-layers",
+                mlp_hidden_layers,
+                "--batch-size",
+                str(mlp_batch_size),
+                "--learning-rate",
+                str(mlp_learning_rate),
+                "--optimizer",
+                mlp_optimizer,
+                "--activation",
+                mlp_activation,
+            ]
+        )
     elif model_type == "mlp":
         command.extend(
             [
