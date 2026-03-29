@@ -72,6 +72,14 @@ def to_bool(value: Any) -> int | None:
     return None
 
 
+def parse_bp(value: str | None) -> tuple[float | None, float | None]:
+    raw = str(value or "").strip()
+    if "/" not in raw:
+        return None, None
+    left, right = raw.split("/", 1)
+    return to_float(left), to_float(right)
+
+
 def read_csv(path: str) -> list[dict[str, str]]:
     with open(path, "r", encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
@@ -236,6 +244,8 @@ def build_indices(data_dir: str) -> dict[str, Any]:
             {
                 "ts": ts,
                 "symptoms": (row.get("symptoms") or "").strip(),
+                "body_temperature": to_float(row.get("body_temperature")),
+                "blood_pressure": (row.get("blood_pressure") or "").strip(),
             }
         )
 

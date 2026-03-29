@@ -23,7 +23,15 @@ MEDICATION_TO_INDEX = {name: idx for idx, name in enumerate(MEDICATION_NAMES)}
 MAX_MEDICATION_SLOTS = max(len(item["medications"]) for item in DIAGNOSES.values())
 TIME_VECTOR_SLOTS = 48
 
-BASE_NUMERIC_COLUMNS = ["age", "height", "weight", "gender_binary"]
+BASE_NUMERIC_COLUMNS = [
+    "age",
+    "height",
+    "weight",
+    "gender_binary",
+    "body_temperature",
+    "bp_systolic",
+    "bp_diastolic",
+]
 TIME_COLUMNS = [f"time_slot_{slot:02d}" for slot in range(TIME_VECTOR_SLOTS)]
 DIAGNOSIS_COLUMNS = [f"diagnosis_{idx}" for idx, _ in enumerate(DIAGNOSIS_NAMES)]
 SYMPTOM_COLUMNS = [f"symptom_{idx}" for idx, _ in enumerate(SYMPTOM_NAMES)]

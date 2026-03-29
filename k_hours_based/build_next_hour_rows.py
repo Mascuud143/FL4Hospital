@@ -15,6 +15,7 @@ from build_next_hour_rows_base import (
     build_time_feature_cache,
     choose_admission,
     latest_at_or_before,
+    parse_bp,
     resolve_input_path,
 )
 from next_hour_schema import (
@@ -127,6 +128,8 @@ def write_assignment_chunk(
                 if diagnosis_features is None:
                     diagnosis_features = {"diagnosis": {}, "medication": {}, "med_slots": []}
                 symptom_value = active_symptom_for_time(visit_times, visit_rows, t, window_minutes=60)
+                latest_visit = latest_at_or_before(visit_times, visit_rows, t) if visit_rows else None
+                bp_systolic, bp_diastolic = parse_bp(latest_visit.get("blood_pressure") if latest_visit else None)
                 med_slots = diagnosis_features["med_slots"]
 
                 row: dict[str, Any] = {
@@ -141,6 +144,9 @@ def write_assignment_chunk(
                     "height": patient_profile.get("height"),
                     "weight": admission.get("weight"),
                     "gender_binary": gender_to_binary(patient_profile.get("gender", "")),
+                    "body_temperature": latest_visit.get("body_temperature") if latest_visit else None,
+                    "bp_systolic": bp_systolic,
+                    "bp_diastolic": bp_diastolic,
                     "curr_temp_main_eval": current_comfort.get("temperature_main"),
                     "curr_temp_toilet_eval": current_comfort.get("temperature_toilet"),
                     "curr_light_eval": current_comfort.get("light_intensity"),
