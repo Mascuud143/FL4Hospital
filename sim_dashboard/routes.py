@@ -1868,11 +1868,16 @@ def api_simulation_start():
 def api_ai_results():
     task_type = _normalize_task_type(request.args.get("task_type", "k_hours"))
     model_type = str(request.args.get("model_type", "mlp") or "mlp")
+    result_set = str(request.args.get("result_set", "test") or "test").strip().lower()
     scope = str(request.args.get("scope", "global") or "global")
     figure_detail = str(request.args.get("figure_detail", "summary") or "summary")
     requested_room_id = str(request.args.get("room_id", "") or "").strip()
+    if result_set not in {"test", "train"}:
+        return jsonify({"error": f"Unsupported result set: {result_set}"}), 400
 
     weights_dir = _weights_dir_for_model(task_type, model_type)
+    if task_type == "event" and result_set == "train":
+        return jsonify({"error": "Train result view is currently only available for k-hours models."}), 400
     if task_type == "event":
         metric_rows: list[dict[str, object]] = []
         for path in sorted(weights_dir.glob("round_*_total_metrics.csv"), key=lambda item: int(item.stem.split("_")[1])):
@@ -1939,6 +1944,7 @@ def api_ai_results():
                 {
                     "task_type": task_type,
                     "model_type": model_type,
+                    "result_set": result_set,
                     "scope": scope,
                     "figure_detail": figure_detail,
                     "room_id": active_room_id or None,
@@ -1951,8 +1957,14 @@ def api_ai_results():
             )
         )
 
-    total_frame = _load_metrics_csv(weights_dir / "total_metrics.csv")
-    room_frame = _load_metrics_csv(weights_dir / "room_metrics.csv")
+    if result_set == "train":
+        total_frame = _load_metrics_csv(weights_dir / "train_total_metrics.csv")
+        room_frame = _load_metrics_csv(weights_dir / "train_room_metrics.csv")
+        if total_frame.empty:
+            total_frame = _load_metrics_csv(weights_dir / "train_metrics.csv")
+    else:
+        total_frame = _load_metrics_csv(weights_dir / "total_metrics.csv")
+        room_frame = _load_metrics_csv(weights_dir / "room_metrics.csv")
 
     if total_frame.empty and room_frame.empty:
         return jsonify({"error": f"No metrics found for model '{model_type}' in {weights_dir}"}), 404
@@ -1977,6 +1989,8 @@ def api_ai_results():
         return jsonify({"error": f"No metrics available for scope '{scope}'"}), 404
 
     latest_row = source_frame.sort_values("round").iloc[-1].to_dict()
+    sample_label = "Trained Samples" if result_set == "train" else "Evaluated Samples"
+    sample_explain = "Number of training examples included in the round." if result_set == "train" else "Number of test examples included in evaluation."
     cards = [
         {"label": "Round", "value": _to_native(latest_row.get("round")), "explain": "Latest completed federated round."},
         {"label": "MAE Temp Main", "value": _to_native(latest_row.get("mae_y_temp_main")), "explain": "Average absolute error for main temperature."},
@@ -1986,12 +2000,14 @@ def api_ai_results():
         {"label": "Change Precision", "value": _to_native(latest_row.get("change_precision")), "explain": "Of predicted changes, how many were true changes."},
         {"label": "Change Recall", "value": _to_native(latest_row.get("change_recall")), "explain": "Of real changes, how many the model detected."},
         {"label": "Change F1", "value": _to_native(latest_row.get("change_f1")), "explain": "Balance between change precision and recall."},
+        {"label": sample_label, "value": _to_native(latest_row.get("evaluated_examples") or latest_row.get("num_examples") or latest_row.get("trained_examples")), "explain": sample_explain},
     ]
 
     return jsonify(
         _sanitize_for_json(
             {
                 "model_type": model_type,
+                "result_set": result_set,
                 "scope": scope,
                 "figure_detail": figure_detail,
                 "room_id": active_room_id or None,

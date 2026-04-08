@@ -479,6 +479,13 @@
           <option value="local">Room</option>
         </select>
       </div>
+      <div class="field">
+        <label for="resultsSet">Result set</label>
+        <select id="resultsSet">
+          <option value="test">Test</option>
+          <option value="train">Train</option>
+        </select>
+      </div>
       <div class="field" id="roomField">
         <label for="resultsRoomId">Room</label>
         <select id="resultsRoomId"></select>
@@ -597,6 +604,7 @@
 
     const resultsModelType = document.getElementById("resultsModelType");
     const resultsScope = document.getElementById("resultsScope");
+    const resultsSet = document.getElementById("resultsSet");
     const resultsRoomId = document.getElementById("resultsRoomId");
     const resultsFigureDetail = document.getElementById("resultsFigureDetail");
     const roomField = document.getElementById("roomField");
@@ -1223,6 +1231,7 @@
         const params = new URLSearchParams({
           task_type: taskType.value,
           model_type: resultsModelType.value,
+          result_set: resultsSet.value,
           scope: resultsScope.value,
           figure_detail: resultsFigureDetail.value
         });
@@ -1242,7 +1251,7 @@
         renderMetricCards(resultsCards, data.latest_cards || []);
         renderLineCharts(data.line_charts || []);
         renderPieCharts(data.pie_charts || []);
-        resultsState.textContent = `${data.scope} analysis loaded.`;
+        resultsState.textContent = `${data.result_set || "test"} ${data.scope} analysis loaded.`;
       } catch (error) {
         resultsState.textContent = `results unavailable: ${error.message}`;
       }
@@ -1408,6 +1417,7 @@
       roomField.classList.toggle("hidden", resultsScope.value !== "local");
       loadResults();
     });
+    resultsSet.addEventListener("change", loadResults);
     resultsModelType.addEventListener("change", loadResults);
     resultsRoomId.addEventListener("change", loadResults);
     resultsFigureDetail.addEventListener("change", loadResults);

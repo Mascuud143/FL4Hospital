@@ -95,6 +95,8 @@ def build_room_datasets(train_df: pd.DataFrame, test_df: pd.DataFrame, room_ids:
         room_data[rid] = (
             row_to_input_vector(room_train),
             room_train[TARGET_COLUMNS].to_numpy(dtype=np.float64),
+            room_train[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
+            room_train["y_any_change"].to_numpy(dtype=np.int64),
             row_to_input_vector(room_test),
             room_test[TARGET_COLUMNS].to_numpy(dtype=np.float64),
             room_test[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
@@ -105,7 +107,14 @@ def build_room_datasets(train_df: pd.DataFrame, test_df: pd.DataFrame, room_ids:
 
 def cleanup_previous_outputs(weights_out_dir: str) -> None:
     os.makedirs(weights_out_dir, exist_ok=True)
-    for name in ["total_metrics.csv", "room_metrics.csv", "train_metrics.csv", "latest_global_weights.npz"]:
+    for name in [
+        "total_metrics.csv",
+        "room_metrics.csv",
+        "train_metrics.csv",
+        "train_total_metrics.csv",
+        "train_room_metrics.csv",
+        "latest_global_weights.npz",
+    ]:
         path = os.path.join(weights_out_dir, name)
         if os.path.exists(path):
             os.remove(path)
@@ -140,11 +149,13 @@ def _run_manual_federated_loop(
         print(f"[manual] round={server_round} fit_start")
         fit_results = []
         for rid in room_ids:
-            x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
+            x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
             client = RoomClient(
                 room_id=rid,
                 x_train=x_train,
                 y_train=y_train,
+                current_train=current_train,
+                change_train=change_train,
                 x_test=x_test,
                 y_test=y_test,
                 current_test=current_test,
@@ -165,14 +176,153 @@ def _run_manual_federated_loop(
 
         global_parameters = _weighted_average_params([(params, num_examples) for params, num_examples, _ in fit_results])
         train_examples = sum(num_examples for _, num_examples, _ in fit_results)
-        train_loss_sum = sum(float(metrics.get("train_loss_sum", 0.0)) for _, _, metrics in fit_results)
+        train_summary = {
+            "evaluated_examples": 0.0,
+            "regression_correct": 0.0,
+            "regression_wrong": 0.0,
+            "temperature_correct": 0.0,
+            "temperature_wrong": 0.0,
+            "airflow_correct": 0.0,
+            "airflow_incorrect": 0.0,
+            "airflow_tp": 0.0,
+            "airflow_tn": 0.0,
+            "airflow_fp": 0.0,
+            "airflow_fn": 0.0,
+            "airflow_accuracy_sum": 0.0,
+            "airflow_precision_sum": 0.0,
+            "airflow_recall_sum": 0.0,
+            "airflow_f1_sum": 0.0,
+            "change_accuracy_sum": 0.0,
+            "change_precision_sum": 0.0,
+            "change_recall_sum": 0.0,
+            "change_f1_sum": 0.0,
+            "change_correct": 0.0,
+            "change_incorrect": 0.0,
+            "change_tp": 0.0,
+            "change_tn": 0.0,
+            "change_fp": 0.0,
+            "change_fn": 0.0,
+            "mae_sum_y_temp_main": 0.0,
+            "mae_sum_y_temp_toilet": 0.0,
+            "mae_sum_y_light": 0.0,
+            "mae_sum_y_sound": 0.0,
+            "mse_sum_y_temp_main": 0.0,
+            "mse_sum_y_temp_toilet": 0.0,
+            "mse_sum_y_light": 0.0,
+            "mse_sum_y_sound": 0.0,
+            "threshold_correct_y_temp_main": 0.0,
+            "threshold_wrong_y_temp_main": 0.0,
+            "threshold_correct_y_temp_toilet": 0.0,
+            "threshold_wrong_y_temp_toilet": 0.0,
+            "threshold_correct_y_light": 0.0,
+            "threshold_wrong_y_light": 0.0,
+            "threshold_correct_y_sound": 0.0,
+            "threshold_wrong_y_sound": 0.0,
+        }
+        train_room_rows: list[dict[str, float | int | str]] = []
+        train_loss_weighted_sum = 0.0
+        for _, num_examples, metrics in fit_results:
+            count = float(num_examples)
+            loss = float(metrics.get("train_loss_sum", 0.0)) / max(count, 1.0)
+            train_summary["evaluated_examples"] += count
+            train_loss_weighted_sum += loss * count
+            for key in train_summary:
+                if key == "evaluated_examples":
+                    continue
+                train_summary[key] += float(metrics.get(key, 0.0))
+            train_room_rows.append(
+                {
+                    "round": int(server_round),
+                    "room_id": str(metrics.get("room_id", "")),
+                    "num_examples": int(num_examples),
+                    "local_loss": loss,
+                    "mae_y_temp_main": float(metrics.get("mae_sum_y_temp_main", 0.0)) / max(count, 1.0),
+                    "mse_y_temp_main": float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0),
+                    "rmse_y_temp_main": (float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_temp_main": float(metrics.get("threshold_correct_y_temp_main", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_main", 0.0)) + float(metrics.get("threshold_wrong_y_temp_main", 0.0)), 1.0),
+                    "mae_y_temp_toilet": float(metrics.get("mae_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
+                    "mse_y_temp_toilet": float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
+                    "rmse_y_temp_toilet": (float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_temp_toilet": float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) + float(metrics.get("threshold_wrong_y_temp_toilet", 0.0)), 1.0),
+                    "mae_y_light": float(metrics.get("mae_sum_y_light", 0.0)) / max(count, 1.0),
+                    "mse_y_light": float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0),
+                    "rmse_y_light": (float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_light": float(metrics.get("threshold_correct_y_light", 0.0)) / max(float(metrics.get("threshold_correct_y_light", 0.0)) + float(metrics.get("threshold_wrong_y_light", 0.0)), 1.0),
+                    "mae_y_sound": float(metrics.get("mae_sum_y_sound", 0.0)) / max(count, 1.0),
+                    "mse_y_sound": float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0),
+                    "rmse_y_sound": (float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0)) ** 0.5,
+                    "threshold_accuracy_y_sound": float(metrics.get("threshold_correct_y_sound", 0.0)) / max(float(metrics.get("threshold_correct_y_sound", 0.0)) + float(metrics.get("threshold_wrong_y_sound", 0.0)), 1.0),
+                    "airflow_accuracy": float(metrics.get("airflow_accuracy_sum", 0.0)) / max(count, 1.0),
+                    "airflow_precision": float(metrics.get("airflow_precision_sum", 0.0)) / max(count, 1.0),
+                    "airflow_recall": float(metrics.get("airflow_recall_sum", 0.0)) / max(count, 1.0),
+                    "airflow_f1": float(metrics.get("airflow_f1_sum", 0.0)) / max(count, 1.0),
+                    "airflow_tp": int(metrics.get("airflow_tp", 0)),
+                    "airflow_fp": int(metrics.get("airflow_fp", 0)),
+                    "airflow_tn": int(metrics.get("airflow_tn", 0)),
+                    "airflow_fn": int(metrics.get("airflow_fn", 0)),
+                    "change_accuracy": float(metrics.get("change_accuracy_sum", 0.0)) / max(count, 1.0),
+                    "change_precision": float(metrics.get("change_precision_sum", 0.0)) / max(count, 1.0),
+                    "change_recall": float(metrics.get("change_recall_sum", 0.0)) / max(count, 1.0),
+                    "change_f1": float(metrics.get("change_f1_sum", 0.0)) / max(count, 1.0),
+                    "change_tp": int(metrics.get("change_tp", 0)),
+                    "change_fp": int(metrics.get("change_fp", 0)),
+                    "change_tn": int(metrics.get("change_tn", 0)),
+                    "change_fn": int(metrics.get("change_fn", 0)),
+                }
+            )
         strategy.latest_fit_summary = {
             "round": int(server_round),
             "trained_examples": int(train_examples),
-            "train_loss": train_loss_sum / max(float(train_examples), 1.0),
+            "global_loss": train_loss_weighted_sum / max(train_summary["evaluated_examples"], 1.0),
+            "mae_y_temp_main": train_summary["mae_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0),
+            "mse_y_temp_main": train_summary["mse_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0),
+            "mae_y_temp_toilet": train_summary["mae_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0),
+            "mse_y_temp_toilet": train_summary["mse_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0),
+            "mae_y_light": train_summary["mae_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0),
+            "mse_y_light": train_summary["mse_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0),
+            "mae_y_sound": train_summary["mae_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0),
+            "mse_y_sound": train_summary["mse_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0),
+            "rmse_y_temp_main": (train_summary["mse_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
+            "rmse_y_temp_toilet": (train_summary["mse_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
+            "rmse_y_light": (train_summary["mse_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
+            "rmse_y_sound": (train_summary["mse_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
+            "threshold_accuracy_y_temp_main": train_summary["threshold_correct_y_temp_main"] / max(train_summary["threshold_correct_y_temp_main"] + train_summary["threshold_wrong_y_temp_main"], 1.0),
+            "threshold_accuracy_y_temp_toilet": train_summary["threshold_correct_y_temp_toilet"] / max(train_summary["threshold_correct_y_temp_toilet"] + train_summary["threshold_wrong_y_temp_toilet"], 1.0),
+            "threshold_accuracy_y_light": train_summary["threshold_correct_y_light"] / max(train_summary["threshold_correct_y_light"] + train_summary["threshold_wrong_y_light"], 1.0),
+            "threshold_accuracy_y_sound": train_summary["threshold_correct_y_sound"] / max(train_summary["threshold_correct_y_sound"] + train_summary["threshold_wrong_y_sound"], 1.0),
+            "regression_correct": int(train_summary["regression_correct"]),
+            "regression_wrong": int(train_summary["regression_wrong"]),
+            "regression_correct_rate": train_summary["regression_correct"] / max(train_summary["regression_correct"] + train_summary["regression_wrong"], 1.0),
+            "temperature_correct": int(train_summary["temperature_correct"]),
+            "temperature_wrong": int(train_summary["temperature_wrong"]),
+            "temperature_correct_rate": train_summary["temperature_correct"] / max(train_summary["temperature_correct"] + train_summary["temperature_wrong"], 1.0),
+            "airflow_accuracy": train_summary["airflow_accuracy_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "airflow_precision": train_summary["airflow_precision_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "airflow_recall": train_summary["airflow_recall_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "airflow_f1": train_summary["airflow_f1_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "airflow_correct": int(train_summary["airflow_correct"]),
+            "airflow_incorrect": int(train_summary["airflow_incorrect"]),
+            "airflow_tp": int(train_summary["airflow_tp"]),
+            "airflow_tn": int(train_summary["airflow_tn"]),
+            "airflow_fp": int(train_summary["airflow_fp"]),
+            "airflow_fn": int(train_summary["airflow_fn"]),
+            "change_accuracy": train_summary["change_accuracy_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "change_precision": train_summary["change_precision_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "change_recall": train_summary["change_recall_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "change_f1": train_summary["change_f1_sum"] / max(train_summary["evaluated_examples"], 1.0),
+            "change_correct": int(train_summary["change_correct"]),
+            "change_incorrect": int(train_summary["change_incorrect"]),
+            "change_tp": int(train_summary["change_tp"]),
+            "change_tn": int(train_summary["change_tn"]),
+            "change_fp": int(train_summary["change_fp"]),
+            "change_fn": int(train_summary["change_fn"]),
+            "evaluated_examples": int(train_summary["evaluated_examples"]),
+            "train_loss": train_loss_weighted_sum / max(train_summary["evaluated_examples"], 1.0),
         }
         from k_hours_based.fl_mlp_server import upsert_rows, save_parameters
         upsert_rows(os.path.join(strategy.weights_out_dir, "train_metrics.csv"), [strategy.latest_fit_summary], ["round"])
+        upsert_rows(os.path.join(strategy.weights_out_dir, "train_total_metrics.csv"), [strategy.latest_fit_summary], ["round"])
+        upsert_rows(os.path.join(strategy.weights_out_dir, "train_room_metrics.csv"), train_room_rows, ["round", "room_id"])
         round_weights_path = os.path.join(strategy.weights_out_dir, f"round_{server_round}_global_weights.npz")
         latest_weights_path = os.path.join(strategy.weights_out_dir, "latest_global_weights.npz")
         save_parameters(fl.common.ndarrays_to_parameters(global_parameters), round_weights_path)
@@ -187,11 +337,13 @@ def _run_manual_federated_loop(
         print(f"[manual] round={server_round} evaluate_start")
         eval_results = []
         for rid in room_ids:
-            x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
+            x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
             client = RoomClient(
                 room_id=rid,
                 x_train=x_train,
                 y_train=y_train,
+                current_train=current_train,
+                change_train=change_train,
                 x_test=x_test,
                 y_test=y_test,
                 current_test=current_test,
@@ -422,11 +574,13 @@ def main() -> None:
     def client_fn(cid: str):
         # Flower identifies clients as "0", "1", ...; we map those ids back to room ids.
         rid = room_ids[int(cid)]
-        x_train, y_train, x_test, y_test, current_test, change_true = room_data[rid]
+        x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
         return RoomClient(
             room_id=rid,
             x_train=x_train,
             y_train=y_train,
+            current_train=current_train,
+            change_train=change_train,
             x_test=x_test,
             y_test=y_test,
             current_test=current_test,

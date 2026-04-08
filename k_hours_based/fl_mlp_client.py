@@ -159,6 +159,8 @@ class RoomClient(fl.client.NumPyClient):
         room_id: str,
         x_train: np.ndarray,
         y_train: np.ndarray,
+        current_train: np.ndarray,
+        change_train: np.ndarray,
         x_test: np.ndarray,
         y_test: np.ndarray,
         current_test: np.ndarray,
@@ -174,6 +176,8 @@ class RoomClient(fl.client.NumPyClient):
         self.room_id = room_id
         self.x_train = x_train
         self.y_train = y_train
+        self.current_train = current_train
+        self.change_train = change_train
         self.x_test = x_test
         self.y_test = y_test
         self.current_test = current_test
@@ -191,82 +195,65 @@ class RoomClient(fl.client.NumPyClient):
     def get_parameters(self, config: dict[str, Any]):
         return get_params(self.model)
 
-    def fit(self, parameters, config):
-        # Each round starts from the current global model sent by the server.
-        set_params(self.model, parameters)
-        initial_parameters = [np.asarray(param, dtype=np.float64).copy() for param in parameters]
-        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
-        train_loss_sum = 0.0
-        for _ in range(self.local_epochs):
-            # partial_fit runs one local optimization pass over this room's rows.
-            self.model.partial_fit(self.x_train, self.y_train)
-            if proximal_mu > 0.0:
-                current_parameters = get_params(self.model)
-                blended_parameters = [
-                    (current + proximal_mu * initial) / (1.0 + proximal_mu)
-                    for current, initial in zip(current_parameters, initial_parameters)
-                ]
-                set_params(self.model, blended_parameters)
-            train_pred = self.model.predict(self.x_train)
-            train_loss_sum += float(mean_squared_error(self.y_train, train_pred)) * float(self.y_train.shape[0])
-        return get_params(self.model), int(self.y_train.shape[0]), {
+    def _empty_metrics(self) -> dict[str, float | int | str]:
+        return {
+            "mae_sum_y_temp_main": 0.0,
+            "mae_sum_y_temp_toilet": 0.0,
+            "mae_sum_y_light": 0.0,
+            "mae_sum_y_sound": 0.0,
+            "mse_sum_y_temp_main": 0.0,
+            "mse_sum_y_temp_toilet": 0.0,
+            "mse_sum_y_light": 0.0,
+            "mse_sum_y_sound": 0.0,
+            "regression_correct": 0,
+            "regression_wrong": 0,
+            "threshold_correct_y_temp_main": 0,
+            "threshold_wrong_y_temp_main": 0,
+            "threshold_correct_y_temp_toilet": 0,
+            "threshold_wrong_y_temp_toilet": 0,
+            "threshold_correct_y_light": 0,
+            "threshold_wrong_y_light": 0,
+            "threshold_correct_y_sound": 0,
+            "threshold_wrong_y_sound": 0,
+            "temperature_correct": 0,
+            "temperature_wrong": 0,
+            "airflow_accuracy_sum": 0.0,
+            "airflow_precision_sum": 0.0,
+            "airflow_recall_sum": 0.0,
+            "airflow_f1_sum": 0.0,
+            "airflow_correct": 0,
+            "airflow_incorrect": 0,
+            "airflow_tp": 0,
+            "airflow_tn": 0,
+            "airflow_fp": 0,
+            "airflow_fn": 0,
+            "change_accuracy_sum": 0.0,
+            "change_precision_sum": 0.0,
+            "change_recall_sum": 0.0,
+            "change_f1_sum": 0.0,
+            "change_correct": 0,
+            "change_incorrect": 0,
+            "change_tp": 0,
+            "change_tn": 0,
+            "change_fp": 0,
+            "change_fn": 0,
             "room_id": self.room_id,
-            "train_loss_sum": train_loss_sum,
         }
 
-    def evaluate(self, parameters, config):
-        set_params(self.model, parameters)
-        if self.y_test.size == 0:
-            return 0.0, 0, {
-                "mae_sum_y_temp_main": 0.0,
-                "mae_sum_y_temp_toilet": 0.0,
-                "mae_sum_y_light": 0.0,
-                "mae_sum_y_sound": 0.0,
-                "mse_sum_y_temp_main": 0.0,
-                "mse_sum_y_temp_toilet": 0.0,
-                "mse_sum_y_light": 0.0,
-                "mse_sum_y_sound": 0.0,
-                "regression_correct": 0,
-                "regression_wrong": 0,
-                "threshold_correct_y_temp_main": 0,
-                "threshold_wrong_y_temp_main": 0,
-                "threshold_correct_y_temp_toilet": 0,
-                "threshold_wrong_y_temp_toilet": 0,
-                "threshold_correct_y_light": 0,
-                "threshold_wrong_y_light": 0,
-                "threshold_correct_y_sound": 0,
-                "threshold_wrong_y_sound": 0,
-                "temperature_correct": 0,
-                "temperature_wrong": 0,
-                "airflow_accuracy_sum": 0.0,
-                "airflow_precision_sum": 0.0,
-                "airflow_recall_sum": 0.0,
-                "airflow_f1_sum": 0.0,
-                "airflow_correct": 0,
-                "airflow_incorrect": 0,
-                "airflow_tp": 0,
-                "airflow_tn": 0,
-                "airflow_fp": 0,
-                "airflow_fn": 0,
-                "change_accuracy_sum": 0.0,
-                "change_precision_sum": 0.0,
-                "change_recall_sum": 0.0,
-                "change_f1_sum": 0.0,
-                "change_correct": 0,
-                "change_incorrect": 0,
-                "change_tp": 0,
-                "change_tn": 0,
-                "change_fp": 0,
-                "change_fn": 0,
-                "room_id": self.room_id,
-            }
+    def _score_dataset(
+        self,
+        x_values: np.ndarray,
+        y_true: np.ndarray,
+        current_values: np.ndarray,
+        change_true: np.ndarray,
+    ) -> tuple[float, int, dict[str, float | int | str]]:
+        if y_true.size == 0:
+            return 0.0, 0, self._empty_metrics()
 
-        y_pred = self.model.predict(self.x_test)
-        # The network predicts all next-hour targets at once, then we score
-        # regression accuracy, airflow classification, and change detection.
-        reg_true = self.y_test[:, :AIRFLOW_INDEX]
+        y_pred = self.model.predict(x_values)
+        reg_true = y_true[:, :AIRFLOW_INDEX]
         reg_pred = y_pred[:, :AIRFLOW_INDEX]
-        airflow_true = self.y_test[:, AIRFLOW_INDEX].round().astype(int)
+        airflow_true = y_true[:, AIRFLOW_INDEX].round().astype(int)
         airflow_pred = (np.clip(y_pred[:, AIRFLOW_INDEX], 0.0, 1.0) >= 0.5).astype(int)
 
         regression_mae = {
@@ -277,9 +264,9 @@ class RoomClient(fl.client.NumPyClient):
             target: float(mean_squared_error(reg_true[:, idx], reg_pred[:, idx]))
             for idx, target in enumerate(TARGET_COLUMNS[:AIRFLOW_INDEX])
         }
-        regression_correct, regression_wrong = target_correct_counts(self.y_test, y_pred)
+        regression_correct, regression_wrong = target_correct_counts(y_true, y_pred)
         threshold_counts = per_target_threshold_counts(reg_true, reg_pred)
-        temperature_correct, temperature_wrong = temperature_correct_counts(self.y_test, y_pred)
+        temperature_correct, temperature_wrong = temperature_correct_counts(y_true, y_pred)
 
         tp = int(np.sum((airflow_true == 1) & (airflow_pred == 1)))
         tn = int(np.sum((airflow_true == 0) & (airflow_pred == 0)))
@@ -289,26 +276,27 @@ class RoomClient(fl.client.NumPyClient):
         airflow_precision = float(precision_score(airflow_true, airflow_pred, zero_division=0))
         airflow_recall = float(recall_score(airflow_true, airflow_pred, zero_division=0))
         airflow_f1 = float(f1_score(airflow_true, airflow_pred, zero_division=0))
-        change_pred = next_hour_change_flags(self.current_test, y_pred)
-        change_accuracy = float(accuracy_score(self.change_true, change_pred))
-        change_precision = float(precision_score(self.change_true, change_pred, zero_division=0))
-        change_recall = float(recall_score(self.change_true, change_pred, zero_division=0))
-        change_f1 = float(f1_score(self.change_true, change_pred, zero_division=0))
-        change_tp = int(np.sum((self.change_true == 1) & (change_pred == 1)))
-        change_tn = int(np.sum((self.change_true == 0) & (change_pred == 0)))
-        change_fp = int(np.sum((self.change_true == 0) & (change_pred == 1)))
-        change_fn = int(np.sum((self.change_true == 1) & (change_pred == 0)))
+        change_pred = next_hour_change_flags(current_values, y_pred)
+        change_accuracy = float(accuracy_score(change_true, change_pred))
+        change_precision = float(precision_score(change_true, change_pred, zero_division=0))
+        change_recall = float(recall_score(change_true, change_pred, zero_division=0))
+        change_f1 = float(f1_score(change_true, change_pred, zero_division=0))
+        change_tp = int(np.sum((change_true == 1) & (change_pred == 1)))
+        change_tn = int(np.sum((change_true == 0) & (change_pred == 0)))
+        change_fp = int(np.sum((change_true == 0) & (change_pred == 1)))
+        change_fn = int(np.sum((change_true == 1) & (change_pred == 0)))
 
         overall_loss = float(np.mean(list(regression_mae.values())))
-        return overall_loss, int(self.y_test.shape[0]), {
-            "mae_sum_y_temp_main": regression_mae["y_temp_main"] * self.y_test.shape[0],
-            "mae_sum_y_temp_toilet": regression_mae["y_temp_toilet"] * self.y_test.shape[0],
-            "mae_sum_y_light": regression_mae["y_light"] * self.y_test.shape[0],
-            "mae_sum_y_sound": regression_mae["y_sound"] * self.y_test.shape[0],
-            "mse_sum_y_temp_main": regression_mse["y_temp_main"] * self.y_test.shape[0],
-            "mse_sum_y_temp_toilet": regression_mse["y_temp_toilet"] * self.y_test.shape[0],
-            "mse_sum_y_light": regression_mse["y_light"] * self.y_test.shape[0],
-            "mse_sum_y_sound": regression_mse["y_sound"] * self.y_test.shape[0],
+        count = int(y_true.shape[0])
+        return overall_loss, count, {
+            "mae_sum_y_temp_main": regression_mae["y_temp_main"] * count,
+            "mae_sum_y_temp_toilet": regression_mae["y_temp_toilet"] * count,
+            "mae_sum_y_light": regression_mae["y_light"] * count,
+            "mae_sum_y_sound": regression_mae["y_sound"] * count,
+            "mse_sum_y_temp_main": regression_mse["y_temp_main"] * count,
+            "mse_sum_y_temp_toilet": regression_mse["y_temp_toilet"] * count,
+            "mse_sum_y_light": regression_mse["y_light"] * count,
+            "mse_sum_y_sound": regression_mse["y_sound"] * count,
             "regression_correct": regression_correct,
             "regression_wrong": regression_wrong,
             "threshold_correct_y_temp_main": threshold_counts["y_temp_main"][0],
@@ -321,28 +309,51 @@ class RoomClient(fl.client.NumPyClient):
             "threshold_wrong_y_sound": threshold_counts["y_sound"][1],
             "temperature_correct": temperature_correct,
             "temperature_wrong": temperature_wrong,
-            "airflow_accuracy_sum": airflow_accuracy * self.y_test.shape[0],
-            "airflow_precision_sum": airflow_precision * self.y_test.shape[0],
-            "airflow_recall_sum": airflow_recall * self.y_test.shape[0],
-            "airflow_f1_sum": airflow_f1 * self.y_test.shape[0],
+            "airflow_accuracy_sum": airflow_accuracy * count,
+            "airflow_precision_sum": airflow_precision * count,
+            "airflow_recall_sum": airflow_recall * count,
+            "airflow_f1_sum": airflow_f1 * count,
             "airflow_correct": int(np.sum(airflow_true == airflow_pred)),
-            "airflow_incorrect": int(self.y_test.shape[0] - np.sum(airflow_true == airflow_pred)),
+            "airflow_incorrect": int(count - np.sum(airflow_true == airflow_pred)),
             "airflow_tp": tp,
             "airflow_tn": tn,
             "airflow_fp": fp,
             "airflow_fn": fn,
-            "change_accuracy_sum": change_accuracy * self.y_test.shape[0],
-            "change_precision_sum": change_precision * self.y_test.shape[0],
-            "change_recall_sum": change_recall * self.y_test.shape[0],
-            "change_f1_sum": change_f1 * self.y_test.shape[0],
-            "change_correct": int(np.sum(self.change_true == change_pred)),
-            "change_incorrect": int(self.y_test.shape[0] - np.sum(self.change_true == change_pred)),
+            "change_accuracy_sum": change_accuracy * count,
+            "change_precision_sum": change_precision * count,
+            "change_recall_sum": change_recall * count,
+            "change_f1_sum": change_f1 * count,
+            "change_correct": int(np.sum(change_true == change_pred)),
+            "change_incorrect": int(count - np.sum(change_true == change_pred)),
             "change_tp": change_tp,
             "change_tn": change_tn,
             "change_fp": change_fp,
             "change_fn": change_fn,
             "room_id": self.room_id,
         }
+
+    def fit(self, parameters, config):
+        # Each round starts from the current global model sent by the server.
+        set_params(self.model, parameters)
+        initial_parameters = [np.asarray(param, dtype=np.float64).copy() for param in parameters]
+        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
+        for _ in range(self.local_epochs):
+            # partial_fit runs one local optimization pass over this room's rows.
+            self.model.partial_fit(self.x_train, self.y_train)
+            if proximal_mu > 0.0:
+                current_parameters = get_params(self.model)
+                blended_parameters = [
+                    (current + proximal_mu * initial) / (1.0 + proximal_mu)
+                    for current, initial in zip(current_parameters, initial_parameters)
+                ]
+                set_params(self.model, blended_parameters)
+        train_loss, count, metrics = self._score_dataset(self.x_train, self.y_train, self.current_train, self.change_train)
+        metrics["train_loss_sum"] = train_loss * count
+        return get_params(self.model), int(self.y_train.shape[0]), metrics
+
+    def evaluate(self, parameters, config):
+        set_params(self.model, parameters)
+        return self._score_dataset(self.x_test, self.y_test, self.current_test, self.change_true)
 
 
 def main() -> None:
@@ -365,6 +376,8 @@ def main() -> None:
     hidden_layer_sizes = parse_hidden_layers(args.hidden_layers)
     x_train = row_to_input_vector(train_df)
     y_train = train_df[TARGET_COLUMNS].to_numpy(dtype=np.float64)
+    current_train = train_df[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64)
+    change_train = train_df["y_any_change"].to_numpy(dtype=np.int64)
     x_test = row_to_input_vector(test_df)
     y_test = test_df[TARGET_COLUMNS].to_numpy(dtype=np.float64)
     current_test = test_df[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64)
@@ -374,6 +387,8 @@ def main() -> None:
         room_id=room_id,
         x_train=x_train,
         y_train=y_train,
+        current_train=current_train,
+        change_train=change_train,
         x_test=x_test,
         y_test=y_test,
         current_test=current_test,
