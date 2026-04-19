@@ -3,7 +3,7 @@ import csv
 import os
 import shutil
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import timedelta
 from typing import Any
 
@@ -24,16 +24,55 @@ from next_hour_schema import (
     TARGET_COLUMNS,
     gender_to_binary,
 )
+from runtime_defaults import (
+    BUILD_CSV_WRITE_BATCH_SIZE,
+    BUILD_DEFAULT_CHUNK_SIZE,
+    BUILD_DEFAULT_WORKERS,
+    default_build_workers,
+)
 
 DEFAULT_DATA_DIR = "filestorage"
 DEFAULT_OUT_DIR = "outputs_next_hour_parallel"
 DEFAULT_TMP_DIR = ".tmp_next_hour_rows_parallel"
+DEFAULT_WORKERS = BUILD_DEFAULT_WORKERS
+DEFAULT_CHUNK_SIZE = BUILD_DEFAULT_CHUNK_SIZE
+CSV_WRITE_BATCH_SIZE = BUILD_CSV_WRITE_BATCH_SIZE
 
 
 def chunk_assignments(assignments: list[dict[str, Any]], chunk_size: int) -> list[list[dict[str, Any]]]:
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
-    return [assignments[i : i + chunk_size] for i in range(0, len(assignments), chunk_size)]
+    if not assignments:
+        return []
+
+    chunks: list[list[dict[str, Any]]] = []
+    current_chunk: list[dict[str, Any]] = []
+    current_room_id: Any = None
+    current_room_group: list[dict[str, Any]] = []
+
+    def flush_room_group() -> None:
+        nonlocal current_chunk, current_room_group
+        if not current_room_group:
+            return
+        if current_chunk and len(current_chunk) + len(current_room_group) > chunk_size:
+            chunks.append(current_chunk)
+            current_chunk = []
+        current_chunk.extend(current_room_group)
+        current_room_group = []
+
+    for assignment in assignments:
+        room_id = assignment["room_id"]
+        if current_room_id is None:
+            current_room_id = room_id
+        if room_id != current_room_id:
+            flush_room_group()
+            current_room_id = room_id
+        current_room_group.append(assignment)
+
+    flush_room_group()
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
 
 def build_subset_indices(indices: dict[str, Any], assignments: list[dict[str, Any]]) -> dict[str, Any]:
@@ -93,6 +132,7 @@ def write_assignment_chunk(
     with open(out_path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
+        pending_rows: list[dict[str, Any]] = []
 
         for assignment in assignments:
             pid = assignment["patient_id"]
@@ -170,9 +210,15 @@ def write_assignment_chunk(
                 row.update(diagnosis_features["diagnosis"])
                 row.update(symptom_feature_cache.get(symptom_value, symptom_feature_cache[""]))
                 row.update(diagnosis_features["medication"])
-                writer.writerow(row)
+                pending_rows.append(row)
+                if len(pending_rows) >= CSV_WRITE_BATCH_SIZE:
+                    writer.writerows(pending_rows)
+                    pending_rows = []
                 row_count += 1
                 t += step
+
+        if pending_rows:
+            writer.writerows(pending_rows)
 
     return out_path, row_count
 
@@ -198,8 +244,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step-minutes", type=int, default=30, help="Decision interval in minutes.")
     parser.add_argument("--horizon-minutes", type=int, default=60, help="Prediction look-ahead window in minutes.")
     parser.add_argument("--max-assignments", type=int, default=None, help="Optional cap for faster dry-runs.")
-    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="Number of worker processes.")
-    parser.add_argument("--chunk-size", type=int, default=250, help="Assignments per worker task.")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of worker processes.")
+    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="Assignments per worker task.")
+    parser.add_argument("--csv-write-batch-size", type=int, default=CSV_WRITE_BATCH_SIZE, help="Rows buffered per CSV write.")
     parser.add_argument("--keep-temp", action="store_true", help="Keep temporary part CSV files.")
     return parser.parse_args()
 
@@ -207,6 +254,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     started = time.perf_counter()
     args = parse_args()
+    global CSV_WRITE_BATCH_SIZE
+    CSV_WRITE_BATCH_SIZE = max(1, int(args.csv_write_batch_size))
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     data_dir = resolve_input_path(args.data_dir, project_root)
@@ -232,27 +282,55 @@ def main() -> None:
     assignment_chunks = chunk_assignments(assignments, args.chunk_size)
     total_chunks = len(assignment_chunks)
     width = max(1, len(str(total_chunks)))
-    worker_count = max(1, min(args.workers, total_chunks))
-
-    jobs: list[tuple[int, list[dict[str, Any]], dict[str, Any], str, int, int]] = []
-    for chunk_id, chunk in enumerate(assignment_chunks):
-        subset_indices = build_subset_indices(indices, chunk)
-        jobs.append((chunk_id, chunk, subset_indices, temp_dir, args.step_minutes, args.horizon_minutes))
+    worker_limit = default_build_workers()
+    worker_count = max(1, min(args.workers, worker_limit, total_chunks))
 
     results: list[tuple[int, str, int]] = []
+    max_in_flight = max(1, min(total_chunks, worker_count * 2))
     with ProcessPoolExecutor(max_workers=worker_count) as executor:
-        future_map = {
-            executor.submit(write_assignment_chunk, *job): job[0]
-            for job in jobs
-        }
-        for future in as_completed(future_map):
-            part_path, row_count = future.result()
-            chunk_id = future_map[future]
-            print(
-                f"[chunk {chunk_id + 1:0{width}d}/{total_chunks}] rows={row_count} path={part_path}",
-                flush=True,
+        future_map: dict[Any, int] = {}
+        next_chunk_id = 0
+
+        while next_chunk_id < total_chunks and len(future_map) < max_in_flight:
+            chunk = assignment_chunks[next_chunk_id]
+            subset_indices = build_subset_indices(indices, chunk)
+            future = executor.submit(
+                write_assignment_chunk,
+                next_chunk_id,
+                chunk,
+                subset_indices,
+                temp_dir,
+                args.step_minutes,
+                args.horizon_minutes,
             )
-            results.append((chunk_id, part_path, row_count))
+            future_map[future] = next_chunk_id
+            next_chunk_id += 1
+
+        while future_map:
+            done, _ = wait(tuple(future_map), return_when=FIRST_COMPLETED)
+            for future in done:
+                chunk_id = future_map.pop(future)
+                part_path, row_count = future.result()
+                print(
+                    f"[chunk {chunk_id + 1:0{width}d}/{total_chunks}] rows={row_count} path={part_path}",
+                    flush=True,
+                )
+                results.append((chunk_id, part_path, row_count))
+
+                if next_chunk_id < total_chunks:
+                    chunk = assignment_chunks[next_chunk_id]
+                    subset_indices = build_subset_indices(indices, chunk)
+                    next_future = executor.submit(
+                        write_assignment_chunk,
+                        next_chunk_id,
+                        chunk,
+                        subset_indices,
+                        temp_dir,
+                        args.step_minutes,
+                        args.horizon_minutes,
+                    )
+                    future_map[next_future] = next_chunk_id
+                    next_chunk_id += 1
 
     results.sort(key=lambda item: item[0])
     out_path = os.path.join(out_dir, "next_hour_rows.csv")
@@ -263,6 +341,7 @@ def main() -> None:
     print(f"assignments_processed={len(assignments)}")
     print(f"chunks={total_chunks}")
     print(f"workers_used={worker_count}")
+    print(f"csv_write_batch_size={CSV_WRITE_BATCH_SIZE}")
     print(f"next_hour_rows={total_rows}")
     print(f"next_hour_rows_path={out_path}")
     elapsed_seconds = time.perf_counter() - started

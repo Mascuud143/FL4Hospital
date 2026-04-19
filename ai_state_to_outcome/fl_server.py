@@ -9,6 +9,9 @@ import pandas as pd
 from fl_client import get_input_dim, get_params, make_model
 
 
+CSV_WRITE_BATCH_SIZE = 1000
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower server for Task #2 state-to-outcome training.")
     parser.add_argument("--server-address", default="127.0.0.1:8080", help="Server bind address")
@@ -18,6 +21,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-available-clients", type=int, default=2, help="Minimum connected clients")
     parser.add_argument("--fraction-fit", type=float, default=1.0, help="Fraction of clients sampled for fit")
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
+    parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
+    parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
     parser.add_argument("--weights-out-dir", default="ai_state_to_outcome/fl_weights", help="Directory to write global weights and metrics")
     parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
     parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
@@ -33,6 +38,14 @@ def save_parameters(params: fl.common.Parameters, out_path: str) -> None:
     ndarrays = fl.common.parameters_to_ndarrays(params)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     np.savez(out_path, **{f"param_{idx}": array for idx, array in enumerate(ndarrays)})
+
+
+def _write_dataframe_in_batches(df: pd.DataFrame, out_path: str, *, mode: str, header: bool) -> None:
+    for start_idx in range(0, len(df), CSV_WRITE_BATCH_SIZE):
+        batch = df.iloc[start_idx:start_idx + CSV_WRITE_BATCH_SIZE]
+        batch.to_csv(out_path, mode=mode, header=header, index=False)
+        mode = "a"
+        header = False
 
 
 def upsert_rows(out_path: str, rows: list[dict[str, Any]], key_cols: list[str]) -> None:
@@ -57,9 +70,9 @@ def upsert_rows(out_path: str, rows: list[dict[str, Any]], key_cols: list[str]) 
                 new_df[col] = np.nan
         merged = pd.concat([existing[all_cols], new_df[all_cols]], ignore_index=True)
         merged = merged.drop_duplicates(subset=key_cols, keep="last")
-        merged.to_csv(out_path, index=False)
+        _write_dataframe_in_batches(merged, out_path, mode="w", header=True)
     else:
-        new_df.to_csv(out_path, index=False)
+        _write_dataframe_in_batches(new_df, out_path, mode="w", header=True)
 
 
 def _summary_template() -> dict[str, float]:
@@ -189,16 +202,35 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         total_path = os.path.join(self.weights_out_dir, f"round_{server_round}_total_metrics.csv")
         room_path = os.path.join(self.weights_out_dir, f"round_{server_round}_room_metrics.csv")
         os.makedirs(self.weights_out_dir, exist_ok=True)
-        pd.DataFrame([self.latest_eval_summary]).to_csv(total_path, index=False)
-        pd.DataFrame(room_rows).to_csv(room_path, index=False)
+        _write_dataframe_in_batches(pd.DataFrame([self.latest_eval_summary]), total_path, mode="w", header=True)
+        _write_dataframe_in_batches(pd.DataFrame(room_rows), room_path, mode="w", header=True)
         upsert_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows, ["round", "room_id"])
         return aggregated_loss, aggregated_metrics
 
 
+class TrackingFedProx(fl.server.strategy.FedProx):
+    def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.weights_out_dir = weights_out_dir
+        self.latest_parameters: fl.common.Parameters | None = None
+        self.latest_eval_summary: dict[str, float] | None = None
+
+    aggregate_fit = TrackingFedAvg.aggregate_fit
+    aggregate_evaluate = TrackingFedAvg.aggregate_evaluate
+
+
+def make_strategy(aggregation_method: str, weights_out_dir: str, proximal_mu: float, **kwargs: Any):
+    if aggregation_method == "fedprox":
+        return TrackingFedProx(weights_out_dir=weights_out_dir, proximal_mu=proximal_mu, **kwargs)
+    return TrackingFedAvg(weights_out_dir=weights_out_dir, **kwargs)
+
+
 def main() -> None:
     args = parse_args()
-    strategy = TrackingFedAvg(
+    strategy = make_strategy(
+        aggregation_method=args.aggregation_method,
         weights_out_dir=os.path.abspath(args.weights_out_dir),
+        proximal_mu=args.proximal_mu,
         fraction_fit=args.fraction_fit,
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=args.min_fit_clients,

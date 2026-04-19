@@ -3,14 +3,21 @@ import os
 from typing import Any
 
 import flwr as fl
-import numpy as np
-import pandas as pd
+from fl_shared import (
+    accumulate_eval_metrics,
+    append_metric_rows,
+    build_latest_eval_summary,
+    build_room_metric_row,
+    count_split_rooms,
+    empty_eval_metric_totals,
+    extract_prefixed_eval_metrics,
+    save_parameters_npz,
+)
 
 try:
     from k_hours_based.fl_lstm_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
 except ModuleNotFoundError:
     from fl_lstm_mlp_client import TARGET_COLUMNS, get_input_dim, get_params, make_model
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower server for next-hour hybrid MLP+LSTM training.")
@@ -53,50 +60,6 @@ def make_initial_parameters(
         lstm_activation=lstm_activation,
     )
     return fl.common.ndarrays_to_parameters(get_params(model))
-
-
-def count_rooms(split_dir: str) -> int:
-    train_path = os.path.join(split_dir, "next_hour_train.csv")
-    if not os.path.exists(train_path):
-        return 0
-    df = pd.read_csv(train_path, usecols=["client_id"])
-    return int(df["client_id"].astype(str).nunique())
-
-
-def save_parameters(params: fl.common.Parameters, out_path: str) -> None:
-    ndarrays = fl.common.parameters_to_ndarrays(params)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    np.savez(out_path, **{f"param_{idx}": array for idx, array in enumerate(ndarrays)})
-
-
-def append_rows(out_path: str, rows: list[dict[str, Any]]) -> None:
-    if not rows:
-        return
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    df = pd.DataFrame(rows)
-    if os.path.exists(out_path):
-        df.to_csv(out_path, mode="a", header=False, index=False)
-    else:
-        df.to_csv(out_path, index=False)
-
-
-def save_parameters_readable(params: fl.common.Parameters, out_prefix: str) -> None:
-    ndarrays = fl.common.parameters_to_ndarrays(params)
-    summary_txt = f"{out_prefix}_summary.txt"
-    os.makedirs(os.path.dirname(summary_txt), exist_ok=True)
-    with open(summary_txt, "w", encoding="utf-8") as f:
-        f.write(f"param_count={len(ndarrays)}\n")
-        for idx, array in enumerate(ndarrays):
-            flat = array.reshape(-1)
-            csv_path = f"{out_prefix}_param_{idx}.csv"
-            pd.DataFrame({"value": flat}).to_csv(csv_path, index=False)
-            f.write(f"param_{idx}_shape={array.shape}\n")
-            f.write(f"param_{idx}_min={float(np.min(flat))}\n")
-            f.write(f"param_{idx}_max={float(np.max(flat))}\n")
-            f.write(f"param_{idx}_mean={float(np.mean(flat))}\n")
-            f.write(f"param_{idx}_std={float(np.std(flat))}\n")
-
-
 class TrackingFedAvg(fl.server.strategy.FedAvg):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -109,23 +72,50 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
         fit_examples = 0.0
         train_loss_sum = 0.0
+        train_summary = empty_eval_metric_totals()
+        train_room_rows: list[dict[str, Any]] = []
+        test_local_summary = empty_eval_metric_totals()
+        test_local_room_rows: list[dict[str, Any]] = []
         for _, fit_res in results:
             metrics = fit_res.metrics or {}
             count = float(fit_res.num_examples)
             fit_examples += count
             train_loss_sum += float(metrics.get("train_loss_sum", 0.0))
-        self.latest_fit_summary = {
-            "round": int(server_round),
-            "trained_examples": int(fit_examples),
-            "train_loss": train_loss_sum / max(fit_examples, 1.0),
-        }
-        append_rows(os.path.join(self.weights_out_dir, "train_metrics.csv"), [self.latest_fit_summary])
+            train_eval_loss, train_eval_examples, train_eval_metrics = extract_prefixed_eval_metrics("train_local", metrics)
+            accumulate_eval_metrics(train_summary, train_eval_metrics, float(train_eval_examples))
+            train_room_rows.append(
+                build_room_metric_row(server_round, train_eval_examples, train_eval_loss, train_eval_metrics)
+            )
+            test_local_loss, test_local_examples, test_local_metrics = extract_prefixed_eval_metrics("test_local", metrics)
+            accumulate_eval_metrics(test_local_summary, test_local_metrics, float(test_local_examples))
+            test_local_room_rows.append(
+                build_room_metric_row(server_round, test_local_examples, test_local_loss, test_local_metrics)
+            )
+        self.latest_fit_summary = build_latest_eval_summary(
+            server_round,
+            float(train_loss_sum) / max(float(fit_examples), 1.0),
+            train_summary,
+            recompute_binary_metrics=True,
+        )
+        self.latest_fit_summary["trained_examples"] = int(fit_examples)
+        self.latest_fit_summary["train_loss"] = float(train_loss_sum) / max(float(fit_examples), 1.0)
+        local_test_summary = build_latest_eval_summary(
+            server_round,
+            float(test_local_summary["mae_sum_y_temp_main"] + test_local_summary["mae_sum_y_temp_toilet"] + test_local_summary["mae_sum_y_light"] + test_local_summary["mae_sum_y_sound"])
+            / max(float(test_local_summary["evaluated_examples"]) * 4.0, 1.0),
+            test_local_summary,
+            recompute_binary_metrics=True,
+        )
+        append_metric_rows(os.path.join(self.weights_out_dir, "train_metrics.csv"), [self.latest_fit_summary])
+        append_metric_rows(os.path.join(self.weights_out_dir, "train_room_metrics.csv"), train_room_rows)
+        append_metric_rows(os.path.join(self.weights_out_dir, "local_test_metrics.csv"), [local_test_summary])
+        append_metric_rows(os.path.join(self.weights_out_dir, "local_test_room_metrics.csv"), test_local_room_rows)
         if aggregated_parameters is not None:
             self.latest_parameters = aggregated_parameters
             round_weights_path = os.path.join(self.weights_out_dir, f"round_{server_round}_global_weights.npz")
             latest_weights_path = os.path.join(self.weights_out_dir, "latest_global_weights.npz")
-            save_parameters(aggregated_parameters, round_weights_path)
-            save_parameters(aggregated_parameters, latest_weights_path)
+            save_parameters_npz(aggregated_parameters, round_weights_path)
+            save_parameters_npz(aggregated_parameters, latest_weights_path)
             print(f"saved_global_weights={round_weights_path}")
         print(
             f"[round {server_round}] training_summary "
@@ -136,169 +126,22 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
 
     def aggregate_evaluate(self, server_round, results, failures):
         aggregated_loss, aggregated_metrics = super().aggregate_evaluate(server_round, results, failures)
-        summary = {
-            "evaluated_examples": 0.0,
-            "regression_correct": 0.0,
-            "regression_wrong": 0.0,
-            "airflow_correct": 0.0,
-            "airflow_incorrect": 0.0,
-            "airflow_tp": 0.0,
-            "airflow_tn": 0.0,
-            "airflow_fp": 0.0,
-            "airflow_fn": 0.0,
-            "airflow_accuracy_sum": 0.0,
-            "airflow_precision_sum": 0.0,
-            "airflow_recall_sum": 0.0,
-            "airflow_f1_sum": 0.0,
-            "change_accuracy_sum": 0.0,
-            "change_precision_sum": 0.0,
-            "change_recall_sum": 0.0,
-            "change_f1_sum": 0.0,
-            "change_correct": 0.0,
-            "change_incorrect": 0.0,
-            "change_tp": 0.0,
-            "change_tn": 0.0,
-            "change_fp": 0.0,
-            "change_fn": 0.0,
-            "mae_sum_y_temp_main": 0.0,
-            "mae_sum_y_temp_toilet": 0.0,
-            "mae_sum_y_light": 0.0,
-            "mae_sum_y_sound": 0.0,
-            "mse_sum_y_temp_main": 0.0,
-            "mse_sum_y_temp_toilet": 0.0,
-            "mse_sum_y_light": 0.0,
-            "mse_sum_y_sound": 0.0,
-            "threshold_correct_y_temp_main": 0.0,
-            "threshold_wrong_y_temp_main": 0.0,
-            "threshold_correct_y_temp_toilet": 0.0,
-            "threshold_wrong_y_temp_toilet": 0.0,
-            "threshold_correct_y_light": 0.0,
-            "threshold_wrong_y_light": 0.0,
-            "threshold_correct_y_sound": 0.0,
-            "threshold_wrong_y_sound": 0.0,
-        }
+        summary = empty_eval_metric_totals()
         room_rows: list[dict[str, Any]] = []
         for _, eval_res in results:
             metrics = eval_res.metrics or {}
             count = float(eval_res.num_examples)
-            summary["evaluated_examples"] += count
-            for key in summary:
-                if key == "evaluated_examples":
-                    continue
-                summary[key] += float(metrics.get(key, 0.0))
-            room_rows.append(
-                {
-                    "round": int(server_round),
-                    "room_id": str(metrics.get("room_id", "")),
-                    "num_examples": int(eval_res.num_examples),
-                    "local_loss": float(eval_res.loss),
-                    "mae_y_temp_main": float(metrics.get("mae_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_main": float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_main": (float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_main": float(metrics.get("threshold_correct_y_temp_main", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_main", 0.0)) + float(metrics.get("threshold_wrong_y_temp_main", 0.0)), 1.0),
-                    "mae_y_temp_toilet": float(metrics.get("mae_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_toilet": float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_toilet": (float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_toilet": float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) + float(metrics.get("threshold_wrong_y_temp_toilet", 0.0)), 1.0),
-                    "mae_y_light": float(metrics.get("mae_sum_y_light", 0.0)) / max(count, 1.0),
-                    "mse_y_light": float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0),
-                    "rmse_y_light": (float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_light": float(metrics.get("threshold_correct_y_light", 0.0)) / max(float(metrics.get("threshold_correct_y_light", 0.0)) + float(metrics.get("threshold_wrong_y_light", 0.0)), 1.0),
-                    "mae_y_sound": float(metrics.get("mae_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "mse_y_sound": float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "rmse_y_sound": (float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_sound": float(metrics.get("threshold_correct_y_sound", 0.0)) / max(float(metrics.get("threshold_correct_y_sound", 0.0)) + float(metrics.get("threshold_wrong_y_sound", 0.0)), 1.0),
-                    "airflow_accuracy": float(metrics.get("airflow_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "airflow_precision": float(metrics.get("airflow_precision_sum", 0.0)) / max(count, 1.0),
-                    "airflow_recall": float(metrics.get("airflow_recall_sum", 0.0)) / max(count, 1.0),
-                    "airflow_f1": float(metrics.get("airflow_f1_sum", 0.0)) / max(count, 1.0),
-                    "airflow_tp": int(metrics.get("airflow_tp", 0)),
-                    "airflow_fp": int(metrics.get("airflow_fp", 0)),
-                    "airflow_tn": int(metrics.get("airflow_tn", 0)),
-                    "airflow_fn": int(metrics.get("airflow_fn", 0)),
-                    "change_accuracy": float(metrics.get("change_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "change_precision": float(metrics.get("change_precision_sum", 0.0)) / max(count, 1.0),
-                    "change_recall": float(metrics.get("change_recall_sum", 0.0)) / max(count, 1.0),
-                    "change_f1": float(metrics.get("change_f1_sum", 0.0)) / max(count, 1.0),
-                    "change_tp": int(metrics.get("change_tp", 0)),
-                    "change_fp": int(metrics.get("change_fp", 0)),
-                    "change_tn": int(metrics.get("change_tn", 0)),
-                    "change_fn": int(metrics.get("change_fn", 0)),
-                }
-            )
+            accumulate_eval_metrics(summary, metrics, count)
+            room_rows.append(build_room_metric_row(server_round, int(eval_res.num_examples), float(eval_res.loss), metrics))
 
-        count = max(summary["evaluated_examples"], 1.0)
-        airflow_tp = summary["airflow_tp"]
-        airflow_tn = summary["airflow_tn"]
-        airflow_fp = summary["airflow_fp"]
-        airflow_fn = summary["airflow_fn"]
-        change_tp = summary["change_tp"]
-        change_tn = summary["change_tn"]
-        change_fp = summary["change_fp"]
-        change_fn = summary["change_fn"]
-
-        airflow_total = max(airflow_tp + airflow_tn + airflow_fp + airflow_fn, 1.0)
-        airflow_precision = airflow_tp / max(airflow_tp + airflow_fp, 1.0)
-        airflow_recall = airflow_tp / max(airflow_tp + airflow_fn, 1.0)
-        airflow_f1 = 0.0
-        if airflow_precision + airflow_recall > 0:
-            airflow_f1 = 2.0 * airflow_precision * airflow_recall / (airflow_precision + airflow_recall)
-        airflow_accuracy = (airflow_tp + airflow_tn) / airflow_total
-
-        change_total = max(change_tp + change_tn + change_fp + change_fn, 1.0)
-        change_precision = change_tp / max(change_tp + change_fp, 1.0)
-        change_recall = change_tp / max(change_tp + change_fn, 1.0)
-        change_f1 = 0.0
-        if change_precision + change_recall > 0:
-            change_f1 = 2.0 * change_precision * change_recall / (change_precision + change_recall)
-        change_accuracy = (change_tp + change_tn) / change_total
-
-        self.latest_eval_summary = {
-            "round": int(server_round),
-            "global_loss": float(aggregated_loss) if aggregated_loss is not None else 0.0,
-            "mae_y_temp_main": summary["mae_sum_y_temp_main"] / count,
-            "mse_y_temp_main": summary["mse_sum_y_temp_main"] / count,
-            "mae_y_temp_toilet": summary["mae_sum_y_temp_toilet"] / count,
-            "mse_y_temp_toilet": summary["mse_sum_y_temp_toilet"] / count,
-            "mae_y_light": summary["mae_sum_y_light"] / count,
-            "mse_y_light": summary["mse_sum_y_light"] / count,
-            "mae_y_sound": summary["mae_sum_y_sound"] / count,
-            "mse_y_sound": summary["mse_sum_y_sound"] / count,
-            "rmse_y_temp_main": (summary["mse_sum_y_temp_main"] / count) ** 0.5,
-            "rmse_y_temp_toilet": (summary["mse_sum_y_temp_toilet"] / count) ** 0.5,
-            "rmse_y_light": (summary["mse_sum_y_light"] / count) ** 0.5,
-            "rmse_y_sound": (summary["mse_sum_y_sound"] / count) ** 0.5,
-            "threshold_accuracy_y_temp_main": summary["threshold_correct_y_temp_main"] / max(summary["threshold_correct_y_temp_main"] + summary["threshold_wrong_y_temp_main"], 1.0),
-            "threshold_accuracy_y_temp_toilet": summary["threshold_correct_y_temp_toilet"] / max(summary["threshold_correct_y_temp_toilet"] + summary["threshold_wrong_y_temp_toilet"], 1.0),
-            "threshold_accuracy_y_light": summary["threshold_correct_y_light"] / max(summary["threshold_correct_y_light"] + summary["threshold_wrong_y_light"], 1.0),
-            "threshold_accuracy_y_sound": summary["threshold_correct_y_sound"] / max(summary["threshold_correct_y_sound"] + summary["threshold_wrong_y_sound"], 1.0),
-            "regression_correct": int(summary["regression_correct"]),
-            "regression_wrong": int(summary["regression_wrong"]),
-            "regression_correct_rate": summary["regression_correct"] / max(summary["regression_correct"] + summary["regression_wrong"], 1.0),
-            "airflow_accuracy": airflow_accuracy,
-            "airflow_precision": airflow_precision,
-            "airflow_recall": airflow_recall,
-            "airflow_f1": airflow_f1,
-            "airflow_correct": int(summary["airflow_correct"]),
-            "airflow_incorrect": int(summary["airflow_incorrect"]),
-            "airflow_tp": int(summary["airflow_tp"]),
-            "airflow_tn": int(summary["airflow_tn"]),
-            "airflow_fp": int(summary["airflow_fp"]),
-            "airflow_fn": int(summary["airflow_fn"]),
-            "change_accuracy": change_accuracy,
-            "change_precision": change_precision,
-            "change_recall": change_recall,
-            "change_f1": change_f1,
-            "change_correct": int(summary["change_correct"]),
-            "change_incorrect": int(summary["change_incorrect"]),
-            "change_tp": int(summary["change_tp"]),
-            "change_tn": int(summary["change_tn"]),
-            "change_fp": int(summary["change_fp"]),
-            "change_fn": int(summary["change_fn"]),
-            "evaluated_examples": int(summary["evaluated_examples"]),
-        }
-        append_rows(os.path.join(self.weights_out_dir, "total_metrics.csv"), [self.latest_eval_summary])
-        append_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows)
+        self.latest_eval_summary = build_latest_eval_summary(
+            server_round,
+            aggregated_loss,
+            summary,
+            recompute_binary_metrics=True,
+        )
+        append_metric_rows(os.path.join(self.weights_out_dir, "total_metrics.csv"), [self.latest_eval_summary])
+        append_metric_rows(os.path.join(self.weights_out_dir, "room_metrics.csv"), room_rows)
         print(f"saved_total_metrics={os.path.join(self.weights_out_dir, 'total_metrics.csv')}")
         print(
             f"[round {server_round}] evaluation_summary "
@@ -333,7 +176,7 @@ def main() -> None:
     args = parse_args()
     split_dir = os.path.abspath(args.split_dir)
     weights_out_dir = os.path.abspath(args.weights_out_dir)
-    rooms = count_rooms(split_dir)
+    rooms = count_split_rooms(split_dir)
 
     strategy = make_strategy(
         aggregation_method=args.aggregation_method,

@@ -1,27 +1,36 @@
 import argparse
 import json
 import os
-import threading
-import time
 
 import flwr as fl
-import pandas as pd
+from per_room_data import list_room_ids
+from fl_shared import room_ids_from_stats, room_sort_key
+
+_PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PARENT_DIR not in os.sys.path:
+    os.sys.path.insert(0, _PARENT_DIR)
 
 try:
     from k_hours_based.fl_lstm_mlp_client import (
+        CHANGE_BASELINE_COLUMNS,
+        INPUT_COLUMNS,
         RoomHybridClient,
         TARGET_COLUMNS,
         build_hybrid_arrays,
         get_input_dim,
+        load_room_df,
         sanitize_targets,
     )
     from k_hours_based.fl_lstm_mlp_server import TrackingFedAvg, TrackingFedProx, make_initial_parameters
 except ModuleNotFoundError:
     from fl_lstm_mlp_client import (
+        CHANGE_BASELINE_COLUMNS,
+        INPUT_COLUMNS,
         RoomHybridClient,
         TARGET_COLUMNS,
         build_hybrid_arrays,
         get_input_dim,
+        load_room_df,
         sanitize_targets,
     )
     from fl_lstm_mlp_server import TrackingFedAvg, TrackingFedProx, make_initial_parameters
@@ -45,7 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights-out-dir", default="ai/fl_weights_sim_lstm_mlp", help="Directory to write global weights per round")
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
-    parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
+    parser.add_argument("--chunksize", type=int, default=50000, help="CSV chunksize")
+    parser.add_argument("--prebuild-workers", type=int, default=0, help="Client CSV prebuild workers; 0 derives from available workers * 2")
     parser.add_argument("--change-hidden-layers", default="128,64", help="Comma-separated hidden layer sizes for the change MLP branch")
     parser.add_argument("--lstm-hidden-dim", type=int, default=64, help="Hidden dimension size for the target LSTM branch")
     parser.add_argument("--lstm-num-layers", type=int, default=1, help="Number of stacked LSTM layers in the target branch")
@@ -56,39 +66,55 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lstm-activation", choices=["relu", "tanh", "gelu"], default="relu", help="Activation function for the hybrid LSTM dense head")
     parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
     parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
-    parser.add_argument("--server-address", default="127.0.0.1:8093", help="Used for threaded fallback mode")
-    parser.add_argument("--server-start-wait", type=float, default=2.0, help="Seconds to wait before starting fallback clients")
-    parser.add_argument("--client-retries", type=int, default=60, help="Retries for fallback client connections")
-    parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between fallback client retries")
     return parser.parse_args()
 
+def load_room_hybrid_dataset(
+    split_dir: str,
+    rid: str,
+    chunksize: int,
+    sequence_length: int,
+) -> tuple:
+    room_train_df = sanitize_targets(load_room_df(split_dir, "train", room_id=rid, chunksize=chunksize))
+    room_test_df = sanitize_targets(load_room_df(split_dir, "test", room_id=rid, chunksize=chunksize))
+    x_train_seq, x_train_flat, y_train, current_train, change_train = build_hybrid_arrays(room_train_df, sequence_length)
+    x_test_seq, x_test_flat, y_test, current_test, change_true = build_hybrid_arrays(room_test_df, sequence_length)
+    if len(y_train) == 0:
+        raise RuntimeError(f"Not enough training rows for room_id={rid} and sequence_length={sequence_length}")
+    return (
+        x_train_seq,
+        x_train_flat,
+        y_train,
+        current_train,
+        change_train,
+        x_test_seq,
+        x_test_flat,
+        y_test,
+        current_test,
+        change_true,
+    )
 
-def unique_room_ids(path: str, chunksize: int) -> list[str]:
-    ids: set[str] = set()
-    for chunk in pd.read_csv(path, usecols=["client_id"], chunksize=chunksize):
-        ids.update(chunk["client_id"].astype(str).tolist())
-    return sorted(ids, key=lambda x: int(x) if x.isdigit() else x)
 
-
-def room_ids_from_stats(stats_path: str) -> list[str]:
-    if not os.path.exists(stats_path):
-        return []
-    df = pd.read_csv(stats_path, usecols=["client_id"])
-    ids = df["client_id"].astype(str).dropna().unique().tolist()
-    return sorted(ids, key=lambda x: int(x) if x.isdigit() else x)
-
-
-def load_filtered(path: str, room_ids: set[str], chunksize: int) -> pd.DataFrame:
-    parts: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, usecols=lambda c: True, chunksize=chunksize):
-        filtered = chunk[chunk["client_id"].astype(str).isin(room_ids)]
-        if not filtered.empty:
-            parts.append(filtered)
-    if not parts:
-        return pd.DataFrame(columns=["client_id", "t", "y_any_change", *TARGET_COLUMNS])
-    df = pd.concat(parts, ignore_index=True)
-    df["client_id"] = df["client_id"].astype(str)
-    return df.loc[:, ~df.columns.duplicated()]
+def cleanup_previous_outputs(weights_out_dir: str) -> None:
+    os.makedirs(weights_out_dir, exist_ok=True)
+    for name in [
+        "total_metrics.csv",
+        "room_metrics.csv",
+        "train_metrics.csv",
+        "train_room_metrics.csv",
+        "local_test_metrics.csv",
+        "local_test_room_metrics.csv",
+        "latest_global_weights.npz",
+    ]:
+        path = os.path.join(weights_out_dir, name)
+        if os.path.exists(path):
+            os.remove(path)
+    for name in os.listdir(weights_out_dir):
+        if name.startswith("round_") and (
+            name.endswith("_global_weights.npz")
+            or name.endswith("_total_metrics.csv")
+            or name.endswith("_room_metrics.csv")
+        ):
+            os.remove(os.path.join(weights_out_dir, name))
 
 
 class VerboseTrackingFedAvg(TrackingFedAvg):
@@ -110,7 +136,6 @@ class VerboseTrackingFedAvg(TrackingFedAvg):
         print(f"[round {server_round}] aggregate_evaluate received_results={len(results)} failures={len(failures)}")
         return super().aggregate_evaluate(server_round, results, failures)
 
-
 class VerboseTrackingFedProx(TrackingFedProx):
     def configure_fit(self, server_round, parameters, client_manager):
         fit_cfg = super().configure_fit(server_round, parameters, client_manager)
@@ -131,150 +156,38 @@ class VerboseTrackingFedProx(TrackingFedProx):
         return super().aggregate_evaluate(server_round, results, failures)
 
 
-def run_threaded_fallback(args: argparse.Namespace, strategy: TrackingFedAvg | TrackingFedProx, room_ids: list[str], room_data: dict[str, tuple], input_dim: int) -> None:
-    print("[fallback] starting local threaded Flower server+clients")
-
-    server_errors: list[Exception] = []
-    client_errors: list[tuple[str, str]] = []
-
-    def server_target() -> None:
-        try:
-            fl.server.start_server(
-                server_address=args.server_address,
-                config=fl.server.ServerConfig(num_rounds=args.rounds),
-                strategy=strategy,
-            )
-        except Exception as e:
-            server_errors.append(e)
-
-    def client_target(rid: str) -> None:
-        (
-            x_train_seq,
-            x_train_flat,
-            y_train,
-            change_train,
-            x_test_seq,
-            x_test_flat,
-            y_test,
-            current_test,
-            change_true,
-        ) = room_data[rid]
-        client = RoomHybridClient(
-            room_id=rid,
-            x_train_seq=x_train_seq,
-            x_train_flat=x_train_flat,
-            y_train=y_train,
-            change_train=change_train,
-            x_test_seq=x_test_seq,
-            x_test_flat=x_test_flat,
-            y_test=y_test,
-            current_test=current_test,
-            change_true=change_true,
-            input_dim=input_dim,
-            local_epochs=args.local_epochs,
-            batch_size=args.batch_size,
-            change_hidden_layers=tuple(int(part.strip()) for part in args.change_hidden_layers.split(",") if part.strip()),
-            lstm_hidden_dim=args.lstm_hidden_dim,
-            lstm_num_layers=args.lstm_num_layers,
-            lstm_head_hidden_dim=args.lstm_head_hidden_dim,
-            learning_rate=args.learning_rate,
-            optimizer=args.optimizer,
-            change_activation=args.change_activation,
-            lstm_activation=args.lstm_activation,
-        )
-        tries = 0
-        while tries < args.client_retries:
-            tries += 1
-            try:
-                fl.client.start_client(server_address=args.server_address, client=client.to_client())
-                return
-            except Exception as e:
-                if tries >= args.client_retries:
-                    client_errors.append((rid, str(e)))
-                    return
-                time.sleep(args.retry_wait)
-
-    server_thread = threading.Thread(target=server_target, name="fl_lstm_mlp_server")
-    server_thread.start()
-    time.sleep(args.server_start_wait)
-
-    client_threads: list[threading.Thread] = []
-    for rid in room_ids:
-        thread = threading.Thread(target=client_target, args=(rid,), name=f"fl_lstm_mlp_client_{rid}")
-        thread.start()
-        client_threads.append(thread)
-
-    for thread in client_threads:
-        thread.join()
-    server_thread.join()
-
-    if server_errors:
-        raise RuntimeError(f"Threaded fallback server failed: {server_errors[0]}")
-    if client_errors:
-        sample = ", ".join([f"{rid}: {err}" for rid, err in client_errors[:3]])
-        raise RuntimeError(f"Threaded fallback had {len(client_errors)} client failures. Sample: {sample}")
-    print("[done] simulation finished (threaded fallback)")
-
-
 def main() -> None:
     args = parse_args()
     split_dir = os.path.abspath(args.split_dir)
     stats_path = os.path.abspath(args.stats_path) if args.stats_path else os.path.join(split_dir, "split_stats_by_room.csv")
-    train_path = os.path.join(split_dir, "next_hour_train.csv")
-    test_path = os.path.join(split_dir, "next_hour_test.csv")
-    if not os.path.exists(train_path):
-        raise FileNotFoundError(f"Missing file: {train_path}")
-    if not os.path.exists(test_path):
-        raise FileNotFoundError(f"Missing file: {test_path}")
+    train_dir = os.path.join(split_dir, "train")
+    test_dir = os.path.join(split_dir, "test")
+    if not os.path.isdir(train_dir):
+        raise FileNotFoundError(f"Missing directory: {train_dir}")
+    if not os.path.isdir(test_dir):
+        raise FileNotFoundError(f"Missing directory: {test_dir}")
+
+    train_room_id_set = set(list_room_ids(split_dir, "train"))
+    test_room_id_set = set(list_room_ids(split_dir, "test"))
 
     room_ids = room_ids_from_stats(stats_path)
     room_source = "split_stats_by_room.csv"
     if not room_ids:
-        room_ids = unique_room_ids(train_path, chunksize=args.chunksize)
-        room_source = "next_hour_train.csv"
+        room_ids = sorted(train_room_id_set, key=room_sort_key)
+        room_source = "train/*.csv"
+    room_ids = [rid for rid in room_ids if rid in train_room_id_set and rid in test_room_id_set]
     if args.room_id is not None:
         requested_room_id = str(args.room_id)
         room_ids = [rid for rid in room_ids if str(rid) == requested_room_id]
         room_source = f"requested_room_id={requested_room_id}"
+    if not room_ids:
+        raise RuntimeError("No clients with both training and test rows were found.")
     if args.max_rooms is not None:
         room_ids = room_ids[: max(1, args.max_rooms)]
 
-    room_set = set(room_ids)
-    print("[load] reading train split...")
-    train_df = sanitize_targets(load_filtered(train_path, room_set, chunksize=args.chunksize))
-    print("[load] reading test split...")
-    test_df = sanitize_targets(load_filtered(test_path, room_set, chunksize=args.chunksize))
-    print(f"[load] train_rows={len(train_df)} test_rows={len(test_df)}")
-
-    print("[load] preparing room hybrid datasets...")
-    room_data: dict[str, tuple] = {}
-    for idx, rid in enumerate(room_ids, start=1):
-        room_train_df = train_df[train_df["client_id"] == rid]
-        room_test_df = test_df[test_df["client_id"] == rid]
-        x_train_seq, x_train_flat, y_train, _, change_train = build_hybrid_arrays(room_train_df, args.sequence_length)
-        x_test_seq, x_test_flat, y_test, current_test, change_true = build_hybrid_arrays(room_test_df, args.sequence_length)
-        if len(y_train) == 0:
-            continue
-        room_data[rid] = (
-            x_train_seq,
-            x_train_flat,
-            y_train,
-            change_train,
-            x_test_seq,
-            x_test_flat,
-            y_test,
-            current_test,
-            change_true,
-        )
-        if idx % 25 == 0:
-            print(f"[prep] rooms_prepared={idx}/{len(room_ids)}")
-
-    room_ids = sorted(room_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
-    if not room_ids:
-        raise RuntimeError("No room sequence training data loaded for hybrid LSTM+MLP simulation.")
-
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
+    cleanup_previous_outputs(weights_out_dir)
     strategy_cls = VerboseTrackingFedProx if args.aggregation_method == "fedprox" else VerboseTrackingFedAvg
     strategy = strategy_cls(
         weights_out_dir=weights_out_dir,
@@ -298,18 +211,20 @@ def main() -> None:
             x_train_seq,
             x_train_flat,
             y_train,
+            current_train,
             change_train,
             x_test_seq,
             x_test_flat,
             y_test,
             current_test,
             change_true,
-        ) = room_data[rid]
+        ) = load_room_hybrid_dataset(split_dir, rid, args.chunksize, args.sequence_length)
         return RoomHybridClient(
             room_id=rid,
             x_train_seq=x_train_seq,
             x_train_flat=x_train_flat,
             y_train=y_train,
+            current_train=current_train,
             change_train=change_train,
             x_test_seq=x_test_seq,
             x_test_flat=x_test_flat,
@@ -352,20 +267,16 @@ def main() -> None:
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
 
-    try:
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=len(room_ids),
-            config=fl.server.ServerConfig(num_rounds=args.rounds),
-            strategy=strategy,
-            client_resources={"num_cpus": args.client_cpu},
-        )
-        print("[done] simulation finished (ray backend)")
-        if history.losses_distributed:
-            print(f"[done] distributed_losses={history.losses_distributed}")
-    except ImportError as exc:
-        print(f"[fallback] ray simulation backend unavailable: {exc}")
-        run_threaded_fallback(args, strategy, room_ids, room_data, input_dim)
+    history = fl.simulation.start_simulation(
+        client_fn=client_fn,
+        num_clients=len(room_ids),
+        config=fl.server.ServerConfig(num_rounds=args.rounds),
+        strategy=strategy,
+        client_resources={"num_cpus": args.client_cpu},
+    )
+    print("[done] simulation finished")
+    if history.losses_distributed:
+        print(f"[done] distributed_losses={history.losses_distributed}")
 
     if args.summary_out and strategy.latest_eval_summary is not None:
         out_path = os.path.abspath(args.summary_out)

@@ -7,8 +7,6 @@ from datetime import datetime, timedelta, timezone
 from ble import BLEManager, Device, Sensor
 from ble.characteristics import LIGHT_CHAR_UUID, TEMP_CHAR_UUID
 from ble.sensor import parse_light_thingy, parse_temp_thingy
-from data_collection.data_collector import DataCollector
-from data_collection.db_sink import db_sink
 from hybrid.comfort_service import run_cli
 from hybrid.event_adapter import event_worker, handle_ble_event
 from hybrid.hybrid_context import ensure_room_and_patient
@@ -66,8 +64,6 @@ async def run_sim(args: argparse.Namespace) -> None:
         os.remove(db_path)
 
     init_db(args.db, echo=args.echo)
-    collector = DataCollector(sinks=[db_sink])
-    await collector.start()
 
     devices = seed_simulated_world(
         patient_count=args.patient_count,
@@ -77,6 +73,11 @@ async def run_sim(args: argparse.Namespace) -> None:
         min_days_before_transfer=args.min_days_before_transfer,
         min_days_after_transfer=args.min_days_after_transfer,
         seed=args.random_seed,
+        create_devices=(
+            args.enable_toilet_usage
+            or args.enable_sensor_emit
+            or args.enable_utility_usage
+        ),
     )
     seed_devices_and_sensors(devices)
 
@@ -85,7 +86,7 @@ async def run_sim(args: argparse.Namespace) -> None:
     sim = SimulationOrchestrator(
         start_time=start,
         end_time=end,
-        on_event=collector.ingest,
+        on_event=lambda event: None,
         config=OrchestratorConfig(
             step_s=args.sim_step_s,
             sample_every_s=args.sensor_sample_every_s,
@@ -96,12 +97,12 @@ async def run_sim(args: argparse.Namespace) -> None:
             enable_visits=args.enable_visits,
             enable_toilet_usage=args.enable_toilet_usage,
             enable_sensor_emit=args.enable_sensor_emit,
+            enable_utility_usage=args.enable_utility_usage,
         ),
         seed=args.random_seed,
     )
 
     await sim.start()
-    await collector.stop()
     print("SIMULATION finished")
 
 

@@ -39,13 +39,6 @@ def _normalize_uuid(u: Any) -> Optional[str]:
 
 
 def _get_device_from_event(session, event: dict) -> Optional[DeviceModel]:
-    """
-    Supported device identifiers (in priority order):
-      1) device_id
-      2) mac / mac_address / device_mac
-      3) composite: room_id + device_type + location
-    """
-    # 1) device_id
     device_id = event.get("device_id")
     if device_id is not None:
         try:
@@ -59,7 +52,6 @@ def _get_device_from_event(session, event: dict) -> Optional[DeviceModel]:
                 .one_or_none()
             )
 
-    # 2) MAC
     mac = event.get("mac_address") or event.get("device_mac") or event.get("mac")
     if isinstance(mac, str):
         mac = mac.strip().upper()
@@ -70,7 +62,6 @@ def _get_device_from_event(session, event: dict) -> Optional[DeviceModel]:
             .one_or_none()
         )
 
-    # 3) composite identity: room_id + device_type + location
     room_id = event.get("room_id")
     device_type = event.get("device_type")
     location = event.get("location")
@@ -93,20 +84,7 @@ def _get_device_from_event(session, event: dict) -> Optional[DeviceModel]:
     return None
 
 
-async def db_sink(event: dict):
-    print(f"db_sink received event: {event}")
-    """
-    Resolves device and sensor, then inserts a row into Data.
-
-    Device resolution (priority):
-      - event["device_id"]
-      - event["mac"] / ["mac_address"] / ["device_mac"]
-      - event["room_id"] + event["device_type"] + event["location"]
-
-    Sensor resolution (priority):
-      - device_id + uuid
-      - device_id + sensor_type
-    """
+async def db_sink(event: dict) -> None:
     value = event.get("value")
     if value is None:
         return
@@ -128,12 +106,9 @@ async def db_sink(event: dict):
         q = session.query(SensorModel).filter(SensorModel.device_id == db_device.device_id)
 
         db_sensor = None
-
-        # Prefer UUID match if available
         if uuid and hasattr(SensorModel, "uuid"):
             db_sensor = q.filter(SensorModel.uuid == uuid).one_or_none()
 
-        # Fallback to sensor_type
         if db_sensor is None:
             if not sensor_type:
                 raise ValueError(f"db_sink: missing sensor_type in event: {event}")
@@ -149,13 +124,4 @@ async def db_sink(event: dict):
         if ts is not None:
             row.timestamp = ts
 
-    
-        # before saving, we change if there is big change in temperarture, humifity etc
-        # check from data base if there big change and then we only save if we have +- number
-        # for this type of sensor type and sensor id
-
-
-        current_value = session.query
-
         session.add(row)
-        # session_scope() handles commit/rollback

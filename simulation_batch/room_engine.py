@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Tuple
@@ -11,10 +12,11 @@ from persistence.models.room_assignment import RoomAssignment
 from persistence.models.device import Device as DeviceModel
 from persistence.models.ventilation import Ventilation
 from persistence.models.toilet_heater import ToiletHeater
+from persistence.models.toilet_light import ToiletLight
 
-from domain.utility_calculator import calculate_energy_usage_kwh
-from simulation_batch.utility_usage_writer import insert_utility_usage
-from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.generators.utility_calculator import calculate_energy_usage_kwh
+from simulation_batch.utility_usage_writer import insert_utility_usage, flush_utility_usage_writes
+from simulation_batch.csv_filestorage import write_model_rows
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -33,6 +35,7 @@ class EngineConfig:
     hvac_power_w: float = 1500.0
     ventilation_power_w: float = 80.0
     toilet_heater_power_w: float = 600.0
+    toilet_light_power_w: float = 10.0
     toilet_heater_run_s: int = 15 * 60
     enable_utility_usage: bool = False
 
@@ -43,6 +46,24 @@ class EngineConfig:
 
     # Merge tiny target changes into existing session
     merge_target_delta_c: float = 0.30     # if new target within this delta, don't restart session
+    preload_batch_size: int = 50000
+
+
+@dataclass(frozen=True)
+class AssignmentWindow:
+    patient_id: int
+    start_time: datetime
+    end_time: datetime
+
+
+@dataclass(frozen=True)
+class PreferenceSnapshot:
+    timestamp: datetime
+    temperature_main: Optional[float]
+    light_intensity: Optional[float]
+    sound_level: Optional[float]
+    airflow: bool
+    toilet_heater_requested: bool
 
 
 class RoomState:
@@ -64,6 +85,7 @@ class RoomState:
         # Requests derived from preferences
         self.airflow_requested: bool = False
         self.toilet_heater_requested: bool = False
+        self.toilet_light_requested: bool = False
 
         # Occupancy tracking
         self._occupied_this_tick: bool = False
@@ -84,11 +106,15 @@ class RoomState:
         self._toilet_heater_session_start: Optional[datetime] = None
         self._toilet_heater_active_until: Optional[datetime] = None
         self._last_toilet_heater_pref_ts: Optional[datetime] = None
+        self._toilet_light_session_start: Optional[datetime] = None
+        self._toilet_light_active_until: Optional[datetime] = None
+        self._last_toilet_light_pref_ts: Optional[datetime] = None
 
         # Avoid duplicate actuator history inserts
         self._last_vent_mode: Optional[str] = None
         self._last_vent_level: Optional[float] = None
         self._last_toilet_heater_state: Optional[bool] = None
+        self._last_toilet_light_state: Optional[bool] = None
 
     def step_dynamics(self) -> None:
         # Simple convergence dynamics
@@ -105,18 +131,184 @@ class RoomEngine:
     def __init__(self, rooms: Dict[int, RoomState], *, config: Optional[EngineConfig] = None):
         self.rooms = rooms
         self.cfg = config or EngineConfig()
+        self._write_batch_size = 50000
+        self._ventilation_rows: list[tuple[int, str, float, datetime]] = []
+        self._toilet_heater_rows: list[tuple[int, bool, datetime]] = []
+        self._toilet_light_rows: list[tuple[int, bool, datetime]] = []
+        self._device_ids: dict[tuple[int, str], int] = {}
+        self._assignments_by_room: dict[int, list[AssignmentWindow]] = {room_id: [] for room_id in rooms}
+        self._assignment_start_times: dict[int, list[datetime]] = {room_id: [] for room_id in rooms}
+        self._preferences_by_key: dict[tuple[int, int], list[PreferenceSnapshot]] = {}
+        self._preference_times: dict[tuple[int, int], list[datetime]] = {}
+        self._preloaded_window: Optional[tuple[datetime, datetime]] = None
+
+    def _flush_model_buffer(self, model, buffer_name: str) -> None:
+        rows = getattr(self, buffer_name)
+        if not rows:
+            return
+        setattr(self, buffer_name, [])
+        if model is Ventilation:
+            serialized_rows = [
+                {"device_id": device_id, "mode": mode, "level": level, "timestamp": timestamp}
+                for device_id, mode, level, timestamp in rows
+            ]
+        else:
+            serialized_rows = [
+                {"device_id": device_id, "state": state, "timestamp": timestamp}
+                for device_id, state, timestamp in rows
+            ]
+        write_model_rows(model, serialized_rows)
+        with session_scope() as session:
+            session.bulk_insert_mappings(model, serialized_rows)
 
     # -------------------------
     # DB helpers
     # -------------------------
     def _get_device_id(self, session, *, room_id: int, device_type: str) -> Optional[int]:
+        cached = self._device_ids.get((room_id, device_type))
+        if cached is not None:
+            return cached
         d = (
             session.query(DeviceModel)
             .filter(DeviceModel.room_id == room_id)
             .filter(DeviceModel.device_type == device_type)
             .one_or_none()
         )
-        return int(d.device_id) if d else None
+        if not d:
+            return None
+        device_id = int(d.device_id)
+        self._device_ids[(room_id, device_type)] = device_id
+        return device_id
+
+    def preload_simulation_window(self, start_time: datetime, end_time: datetime) -> None:
+        start_time = _as_utc(start_time)
+        end_time = _as_utc(end_time)
+        room_ids = tuple(sorted(self.rooms))
+        self._assignments_by_room = {room_id: [] for room_id in room_ids}
+        self._assignment_start_times = {room_id: [] for room_id in room_ids}
+        self._preferences_by_key = {}
+        self._preference_times = {}
+        self._device_ids = {}
+
+        with session_scope() as session:
+            device_rows = (
+                session.query(DeviceModel.room_id, DeviceModel.device_type, DeviceModel.device_id)
+                .filter(DeviceModel.room_id.in_(room_ids))
+                .yield_per(self.cfg.preload_batch_size)
+            )
+            for room_id, device_type, device_id in device_rows:
+                if room_id is None or device_type is None or device_id is None:
+                    continue
+                self._device_ids[(int(room_id), str(device_type))] = int(device_id)
+
+            assignment_rows = (
+                session.query(
+                    RoomAssignment.room_id,
+                    RoomAssignment.patient_id,
+                    RoomAssignment.start_time,
+                    RoomAssignment.end_time,
+                )
+                .filter(RoomAssignment.room_id.in_(room_ids))
+                .filter(RoomAssignment.start_time < end_time)
+                .filter(RoomAssignment.end_time > start_time)
+                .order_by(RoomAssignment.room_id, RoomAssignment.start_time)
+                .yield_per(self.cfg.preload_batch_size)
+            )
+            pref_keys: set[tuple[int, int]] = set()
+            for room_id, patient_id, assignment_start, assignment_end in assignment_rows:
+                if room_id is None or patient_id is None or assignment_start is None or assignment_end is None:
+                    continue
+                room_key = int(room_id)
+                start_utc = _as_utc(assignment_start)
+                end_utc = _as_utc(assignment_end)
+                window = AssignmentWindow(
+                    patient_id=int(patient_id),
+                    start_time=start_utc,
+                    end_time=end_utc,
+                )
+                self._assignments_by_room.setdefault(room_key, []).append(window)
+                self._assignment_start_times.setdefault(room_key, []).append(start_utc)
+                pref_keys.add((int(patient_id), room_key))
+
+            if pref_keys:
+                patient_ids = sorted({patient_id for patient_id, _ in pref_keys})
+                pref_rows = (
+                    session.query(
+                        ComfortPreference.patient_id,
+                        ComfortPreference.room_id,
+                        ComfortPreference.timestamp,
+                        ComfortPreference.temperature_main,
+                        ComfortPreference.light_intensity,
+                        ComfortPreference.sound_level,
+                        ComfortPreference.airflow,
+                        ComfortPreference.temperature_toilet,
+                    )
+                    .filter(ComfortPreference.patient_id.in_(patient_ids))
+                    .filter(ComfortPreference.room_id.in_(room_ids))
+                    .filter(ComfortPreference.timestamp <= end_time)
+                    .order_by(
+                        ComfortPreference.patient_id,
+                        ComfortPreference.room_id,
+                        ComfortPreference.timestamp,
+                    )
+                    .yield_per(self.cfg.preload_batch_size)
+                )
+                for (
+                    patient_id,
+                    room_id,
+                    pref_ts,
+                    temperature_main,
+                    light_intensity,
+                    sound_level,
+                    airflow,
+                    temperature_toilet,
+                ) in pref_rows:
+                    if patient_id is None or room_id is None or pref_ts is None:
+                        continue
+                    key = (int(patient_id), int(room_id))
+                    if key not in pref_keys:
+                        continue
+                    self._preferences_by_key.setdefault(key, []).append(
+                        PreferenceSnapshot(
+                            timestamp=_as_utc(pref_ts),
+                            temperature_main=float(temperature_main) if temperature_main is not None else None,
+                            light_intensity=float(light_intensity) if light_intensity is not None else None,
+                            sound_level=float(sound_level) if sound_level is not None else None,
+                            airflow=bool(airflow),
+                            toilet_heater_requested=temperature_toilet is not None,
+                        )
+                    )
+                    self._preference_times.setdefault(key, []).append(_as_utc(pref_ts))
+
+        self._preloaded_window = (start_time, end_time)
+
+    def _get_active_assignment(self, room_id: int, now: datetime) -> Optional[AssignmentWindow]:
+        starts = self._assignment_start_times.get(room_id)
+        if not starts:
+            return None
+        idx = bisect_right(starts, now) - 1
+        if idx < 0:
+            return None
+        assignment = self._assignments_by_room[room_id][idx]
+        if assignment.start_time <= now < assignment.end_time:
+            return assignment
+        return None
+
+    def _get_latest_preference(
+        self,
+        *,
+        patient_id: int,
+        room_id: int,
+        now: datetime,
+    ) -> Optional[PreferenceSnapshot]:
+        prefs = self._preferences_by_key.get((patient_id, room_id))
+        if not prefs:
+            return None
+        pref_times = self._preference_times[(patient_id, room_id)]
+        idx = bisect_right(pref_times, now) - 1
+        if idx < 0:
+            return None
+        return prefs[idx]
 
     # -------------------------
     # Ventilation mode logic
@@ -180,9 +372,10 @@ class RoomEngine:
             dev_id = self._get_device_id(session, room_id=room.room_id, device_type="ventilation")
             if dev_id is None:
                 return
-            row = Ventilation(device_id=dev_id, mode=mode, level=level, timestamp=when)
-            write_model_row(row)
-            session.add(row)
+
+        self._ventilation_rows.append((int(dev_id), str(mode), float(level), when))
+        if len(self._ventilation_rows) >= self._write_batch_size:
+            self._flush_model_buffer(Ventilation, "_ventilation_rows")
 
     # -------------------------
     # Toilet heater state logging
@@ -200,119 +393,126 @@ class RoomEngine:
             dev_id = self._get_device_id(session, room_id=room.room_id, device_type="toilet_heater")
             if dev_id is None:
                 return
-            row = ToiletHeater(device_id=dev_id, state=state, timestamp=when)
-            write_model_row(row)
-            session.add(row)
+
+        self._toilet_heater_rows.append((int(dev_id), bool(state), when))
+        if len(self._toilet_heater_rows) >= self._write_batch_size:
+            self._flush_model_buffer(ToiletHeater, "_toilet_heater_rows")
+
+    def _log_toilet_light_if_changed(self, room: RoomState, *, when: datetime, state: bool) -> None:
+        if not self.cfg.enable_utility_usage:
+            return
+        when = _as_utc(when)
+
+        if room._last_toilet_light_state == state:
+            return
+        room._last_toilet_light_state = state
+
+        with session_scope() as session:
+            dev_id = self._get_device_id(session, room_id=room.room_id, device_type="toilet_light")
+            if dev_id is None:
+                return
+
+        self._toilet_light_rows.append((int(dev_id), bool(state), when))
+        if len(self._toilet_light_rows) >= self._write_batch_size:
+            self._flush_model_buffer(ToiletLight, "_toilet_light_rows")
 
     # -------------------------
     # Apply DB preferences + manage sessions
     # -------------------------
     def apply_targets_from_db(self, now: datetime) -> None:
         now = _as_utc(now)
+        if self._preloaded_window is None:
+            raise RuntimeError("RoomEngine.preload_simulation_window() must be called before apply_targets_from_db().")
 
         # reset occupancy flags
         for r in self.rooms.values():
             r._occupied_this_tick = False
 
-        with session_scope() as session:
-            active = (
-                session.query(RoomAssignment)
-                .filter(RoomAssignment.start_time <= now)
-                .filter(RoomAssignment.end_time > now)
-                .all()
+        for room_id, room in self.rooms.items():
+            assignment = self._get_active_assignment(room_id, now)
+            if assignment is None:
+                continue
+
+            room._occupied_this_tick = True
+            room._occupied_until = assignment.end_time
+
+            pref = self._get_latest_preference(
+                patient_id=assignment.patient_id,
+                room_id=room_id,
+                now=now,
             )
 
-            for a in active:
-                room = self.rooms.get(a.room_id)
-                if not room:
-                    continue
+            # If no preference, just keep everything OFF but DO NOT log ventilation baseline.
+            if pref is None:
+                room.airflow_requested = False
+                room.toilet_heater_requested = False
+                room.toilet_light_requested = False
+                self._update_onoff_utilities(room, when=now, airflow=False, toilet_heater=False, toilet_light=False)
+                self._log_toilet_heater_if_changed(room, when=now, state=False)
+                self._log_toilet_light_if_changed(room, when=now, state=False)
+                continue
 
-                room._occupied_this_tick = True
-                room._occupied_until = _as_utc(a.end_time)
+            pref_ts = pref.timestamp
+            is_new_pref = (room._last_pref_ts is None) or (pref_ts > room._last_pref_ts)
 
-                # latest preference
-                pref = (
-                    session.query(ComfortPreference)
-                    .filter(ComfortPreference.patient_id == a.patient_id)
-                    .filter(ComfortPreference.room_id == a.room_id)
-                    .filter(ComfortPreference.timestamp <= now)
-                    .order_by(ComfortPreference.timestamp.desc())
-                    .first()
-                )
+            if pref.temperature_main is not None:
+                room.target_temperature = pref.temperature_main
+            if pref.light_intensity is not None:
+                room.target_light = pref.light_intensity
+            if pref.sound_level is not None:
+                room.target_sound = pref.sound_level
 
-                # If no preference, just keep everything OFF but DO NOT log ventilation baseline.
-                if not pref:
-                    room.airflow_requested = False
-                    room.toilet_heater_requested = False
-                    self._update_onoff_utilities(room, when=now, airflow=False, toilet_heater=False)
-                    # do not log ventilation here
-                    self._log_toilet_heater_if_changed(room, when=now, state=False)
-                    continue
+            airflow_req = pref.airflow
+            toilet_heater_req = pref.toilet_heater_requested
+            toilet_light_req = toilet_heater_req
 
-                pref_ts = _as_utc(pref.timestamp)
-                is_new_pref = (room._last_pref_ts is None) or (pref_ts > room._last_pref_ts)
+            room.airflow_requested = airflow_req
+            room.toilet_heater_requested = toilet_heater_req
+            room.toilet_light_requested = toilet_light_req
 
-                # Apply continuous targets
+            transition_time = pref_ts if is_new_pref else now
+
+            if is_new_pref:
+                room._last_pref_ts = pref_ts
+
                 if pref.temperature_main is not None:
-                    room.target_temperature = float(pref.temperature_main)
-                if pref.light_intensity is not None:
-                    room.target_light = float(pref.light_intensity)
-                if pref.sound_level is not None:
-                    room.target_sound = float(pref.sound_level)
+                    new_target = pref.temperature_main
 
-                airflow_req = bool(getattr(pref, "airflow", False))
-                toilet_heater_req = pref.temperature_toilet is not None
+                    if (
+                        room._hvac_session_target is not None
+                        and abs(new_target - room._hvac_session_target) < self.cfg.merge_target_delta_c
+                    ):
+                        room._hvac_session_target = new_target
+                    else:
+                        if room._hvac_session_start is not None and room._hvac_session_target is not None:
+                            self._close_hvac_session(room, end_time=pref_ts)
 
-                room.airflow_requested = airflow_req
-                room.toilet_heater_requested = toilet_heater_req
+                        room._hvac_session_start = pref_ts
+                        room._hvac_session_target = new_target
+                        room._hvac_stable_ticks = 0
 
-                # If a preference just became active, treat that pref_ts as transition moment
-                transition_time = pref_ts if is_new_pref else now
+                if toilet_heater_req and room._last_toilet_heater_pref_ts != pref_ts:
+                    room._last_toilet_heater_pref_ts = pref_ts
+                    room._toilet_heater_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
+                    if room._toilet_heater_session_start is None:
+                        room._toilet_heater_session_start = pref_ts
+                if toilet_light_req and room._last_toilet_light_pref_ts != pref_ts:
+                    room._last_toilet_light_pref_ts = pref_ts
+                    room._toilet_light_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
+                    if room._toilet_light_session_start is None:
+                        room._toilet_light_session_start = pref_ts
 
-                if is_new_pref:
-                    room._last_pref_ts = pref_ts
+            self._update_onoff_utilities(
+                room,
+                when=transition_time,
+                airflow=airflow_req,
+                toilet_heater=toilet_heater_req,
+                toilet_light=toilet_light_req,
+            )
 
-                    # HVAC session logic only when temperature_main is set
-                    if pref.temperature_main is not None:
-                        new_target = float(pref.temperature_main)
-
-                        # If a session exists and targets are very close: MERGE (avoid restart)
-                        if (
-                            room._hvac_session_target is not None
-                            and abs(new_target - room._hvac_session_target) < self.cfg.merge_target_delta_c
-                        ):
-                            room._hvac_session_target = new_target
-                            # don't restart; keep current start time
-                        else:
-                            # If there is an active session and target changes meaningfully -> close early
-                            if room._hvac_session_start is not None and room._hvac_session_target is not None:
-                                self._close_hvac_session(room, end_time=pref_ts)
-
-                            # Start new session
-                            room._hvac_session_start = pref_ts
-                            room._hvac_session_target = new_target
-                            room._hvac_stable_ticks = 0
-
-                    # If temperature_main is None: Option A (do nothing)
-                    if toilet_heater_req and room._last_toilet_heater_pref_ts != pref_ts:
-                        room._last_toilet_heater_pref_ts = pref_ts
-                        room._toilet_heater_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
-                        if room._toilet_heater_session_start is None:
-                            room._toilet_heater_session_start = pref_ts
-
-                # ON/OFF energy sessions (airflow + toilet heater)
-                self._update_onoff_utilities(
-                    room,
-                    when=transition_time,
-                    airflow=airflow_req,
-                    toilet_heater=toilet_heater_req,
-                )
-
-                # Log meaningful ventilation transitions ONLY (no baseline/off)
-                self._log_ventilation_if_changed(room, when=transition_time)
-
-                # Log toilet heater ON/OFF history
-                self._log_toilet_heater_if_changed(room, when=transition_time, state=toilet_heater_req)
+            self._log_ventilation_if_changed(room, when=transition_time)
+            self._log_toilet_heater_if_changed(room, when=transition_time, state=toilet_heater_req)
+            self._log_toilet_light_if_changed(room, when=transition_time, state=toilet_light_req)
 
         # Close sessions on departure
         for room in self.rooms.values():
@@ -323,8 +523,10 @@ class RoomEngine:
                 # On departure, turn off requests and log heater OFF
                 room.airflow_requested = False
                 room.toilet_heater_requested = False
+                room.toilet_light_requested = False
                 # ventilation OFF is intentionally NOT logged
                 self._log_toilet_heater_if_changed(room, when=dep, state=False)
+                self._log_toilet_light_if_changed(room, when=dep, state=False)
 
                 room._occupied_until = None
 
@@ -343,6 +545,12 @@ class RoomEngine:
                 and now >= room._toilet_heater_active_until
             ):
                 self._close_toilet_heater_session(room, end_time=room._toilet_heater_active_until)
+            if (
+                room._toilet_light_session_start is not None
+                and room._toilet_light_active_until is not None
+                and now >= room._toilet_light_active_until
+            ):
+                self._close_toilet_light_session(room, end_time=room._toilet_light_active_until)
 
             # If airflow is ON, we still want ventilation rows only on changes,
             # so no need to log here every tick.
@@ -350,7 +558,7 @@ class RoomEngine:
     # -------------------------
     # ON/OFF utility sessions (airflow + toilet heater)
     # -------------------------
-    def _update_onoff_utilities(self, room: RoomState, *, when: datetime, airflow: bool, toilet_heater: bool) -> None:
+    def _update_onoff_utilities(self, room: RoomState, *, when: datetime, airflow: bool, toilet_heater: bool, toilet_light: bool) -> None:
         when = _as_utc(when)
         hvac_active = room._hvac_session_start is not None and room._hvac_session_target is not None
 
@@ -366,6 +574,10 @@ class RoomEngine:
             room._toilet_heater_active_until = None
             if room._toilet_heater_session_start is not None:
                 self._close_toilet_heater_session(room, end_time=when)
+        if not toilet_light:
+            room._toilet_light_active_until = None
+            if room._toilet_light_session_start is not None:
+                self._close_toilet_light_session(room, end_time=when)
 
     # -------------------------
     # HVAC stabilization
@@ -464,6 +676,30 @@ class RoomEngine:
         room._toilet_heater_session_start = None
         room._toilet_heater_active_until = None
 
+    def _close_toilet_light_session(self, room: RoomState, *, end_time: datetime) -> None:
+        start = room._toilet_light_session_start
+        if start is None:
+            return
+
+        start = _as_utc(start)
+        end_time = _as_utc(end_time)
+
+        hours = max(0.0, (end_time - start).total_seconds() / 3600.0)
+        kwh = calculate_energy_usage_kwh(self.cfg.toilet_light_power_w, hours)
+
+        if self.cfg.enable_utility_usage:
+            insert_utility_usage(
+                room_id=room.room_id,
+                category="toilet_light",
+                start_time=start,
+                end_time=end_time,
+                power_kwh=kwh,
+                water_liters=None,
+            )
+
+        room._toilet_light_session_start = None
+        room._toilet_light_active_until = None
+
     def _close_all_open_sessions(self, room: RoomState, *, end_time: datetime) -> None:
         end_time = _as_utc(end_time)
 
@@ -475,6 +711,8 @@ class RoomEngine:
 
         if room._toilet_heater_session_start is not None:
             self._close_toilet_heater_session(room, end_time=end_time)
+        if room._toilet_light_session_start is not None:
+            self._close_toilet_light_session(room, end_time=end_time)
 
     def close_all_sessions(self, end_time: datetime) -> None:
         """
@@ -484,3 +722,7 @@ class RoomEngine:
         end_time = _as_utc(end_time)
         for room in self.rooms.values():
             self._close_all_open_sessions(room, end_time=end_time)
+        self._flush_model_buffer(Ventilation, "_ventilation_rows")
+        self._flush_model_buffer(ToiletHeater, "_toilet_heater_rows")
+        self._flush_model_buffer(ToiletLight, "_toilet_light_rows")
+        flush_utility_usage_writes()

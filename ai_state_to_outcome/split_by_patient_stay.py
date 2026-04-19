@@ -5,9 +5,13 @@ import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from per_room_data import room_file_path
+
+
 DEFAULT_INPUT_DIR = "rows"
 DEFAULT_OUTPUT_DIR = "splits"
 DEFAULT_CHUNK_SIZE = 50000
+CSV_WRITE_BATCH_SIZE = 50000
 
 
 def parse_ts(value: str | None) -> datetime:
@@ -40,30 +44,31 @@ def append_rows(path: str, fieldnames: list[str], rows: list[dict[str, str]]) ->
         return
     with open(path, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writerows(rows)
+        for start_idx in range(0, len(rows), CSV_WRITE_BATCH_SIZE):
+            writer.writerows(rows[start_idx:start_idx + CSV_WRITE_BATCH_SIZE])
 
 
-def _flush_admission_chunk_groups(
+def _flush_room_chunk_groups(
     chunk_groups: dict[str, list[dict[str, str]]],
-    admission_paths: dict[str, str],
+    room_paths: dict[str, str],
     initialized: set[str],
     fieldnames: list[str],
 ) -> None:
-    for admission_id, rows in chunk_groups.items():
-        admission_path = admission_paths[admission_id]
-        if admission_path not in initialized:
-            initialize_csv(admission_path, fieldnames)
-            initialized.add(admission_path)
-        append_rows(admission_path, fieldnames, rows)
+    for room_id, rows in chunk_groups.items():
+        room_path = room_paths[room_id]
+        if room_path not in initialized:
+            initialize_csv(room_path, fieldnames)
+            initialized.add(room_path)
+        append_rows(room_path, fieldnames, rows)
 
 
-def spool_admission_files(
+def spool_room_files(
     in_path: str,
     chunk_size: int,
-    temp_admissions_dir: str,
+    temp_rooms_dir: str,
 ) -> tuple[list[str], list[str], int, list[str]]:
-    admission_paths: dict[str, str] = {}
-    admission_order: list[str] = []
+    room_paths: dict[str, str] = {}
+    room_order: list[str] = []
     initialized: set[str] = set()
     total_rows = 0
 
@@ -75,50 +80,45 @@ def spool_admission_files(
 
         chunk_groups: dict[str, list[dict[str, str]]] = defaultdict(list)
         for row in reader:
-            admission_id = (row.get("admission_id") or "").strip()
-            if admission_id == "":
+            room_id = str(row.get("room_id") or "").strip()
+            if room_id == "":
                 continue
-            if admission_id not in admission_paths:
-                admission_index = len(admission_order)
-                admission_order.append(admission_id)
-                admission_paths[admission_id] = os.path.join(temp_admissions_dir, f"admission_{admission_index:06d}.csv")
-            chunk_groups[admission_id].append(row)
+            if room_id not in room_paths:
+                room_index = len(room_order)
+                room_order.append(room_id)
+                room_paths[room_id] = os.path.join(temp_rooms_dir, f"room_{room_index:06d}.csv")
+            chunk_groups[room_id].append(row)
             total_rows += 1
             if total_rows % chunk_size == 0:
-                _flush_admission_chunk_groups(chunk_groups, admission_paths, initialized, fieldnames)
-                print(f"[split] rows_read={total_rows} admissions_seen={len(admission_order)}", flush=True)
+                _flush_room_chunk_groups(chunk_groups, room_paths, initialized, fieldnames)
+                print(f"[split] rows_read={total_rows} rooms_seen={len(room_order)}", flush=True)
                 chunk_groups = defaultdict(list)
 
         if chunk_groups:
-            _flush_admission_chunk_groups(chunk_groups, admission_paths, initialized, fieldnames)
-            print(f"[split] rows_read={total_rows} admissions_seen={len(admission_order)}", flush=True)
+            _flush_room_chunk_groups(chunk_groups, room_paths, initialized, fieldnames)
+            print(f"[split] rows_read={total_rows} rooms_seen={len(room_order)}", flush=True)
 
-    admission_files = [admission_paths[admission_id] for admission_id in admission_order]
-    return admission_order, admission_files, total_rows, fieldnames
+    room_files = [room_paths[room_id] for room_id in room_order]
+    return room_order, room_files, total_rows, fieldnames
 
 
-def split_admission_file(
-    admission_path: str,
-    test_fraction: float,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    with open(admission_path, "r", encoding="utf-8", newline="") as f:
+def split_room_file(room_path: str, train_ratio: float, min_train_rows: int) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    with open(room_path, "r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
 
     rows.sort(key=lambda row: parse_ts(row.get("event_time")))
-    if len(rows) <= 1:
-        return rows, []
-
-    split_idx = int(len(rows) * (1.0 - test_fraction))
-    split_idx = max(1, min(split_idx, len(rows) - 1))
+    split_idx = max(min_train_rows, int(len(rows) * train_ratio))
+    split_idx = min(split_idx, len(rows))
     return rows[:split_idx], rows[split_idx:]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Split Task #2 event rows by patient stay in time order.")
+    parser = argparse.ArgumentParser(description="Split state-to-outcome rows into time-based per-room train/test sets.")
     parser.add_argument("--input-dir", default=DEFAULT_INPUT_DIR, help="Directory containing state_to_outcome_rows.csv")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write train/test CSV files")
-    parser.add_argument("--test-fraction", type=float, default=0.2, help="Fraction of each admission to reserve for testing")
-    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="Rows read per CSV chunk while spooling admissions")
+    parser.add_argument("--train-ratio", type=float, default=0.8, help="Train ratio per room")
+    parser.add_argument("--min-train-rows", type=int, default=1, help="Minimum rows kept in train per room")
+    parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="Rows read per CSV chunk while spooling rooms")
     return parser.parse_args()
 
 
@@ -132,50 +132,53 @@ def main() -> None:
         raise FileNotFoundError(f"Missing input rows file: {input_path}")
 
     os.makedirs(output_dir, exist_ok=True)
-    train_path = os.path.join(output_dir, "state_to_outcome_train.csv")
-    test_path = os.path.join(output_dir, "state_to_outcome_test.csv")
+    train_dir = os.path.join(output_dir, "train")
+    test_dir = os.path.join(output_dir, "test")
     temp_root = os.path.join(output_dir, "_split_tmp")
-    temp_admissions_dir = os.path.join(temp_root, "admissions")
+    temp_rooms_dir = os.path.join(temp_root, "rooms")
 
+    shutil.rmtree(train_dir, ignore_errors=True)
+    shutil.rmtree(test_dir, ignore_errors=True)
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
     if os.path.exists(temp_root):
         shutil.rmtree(temp_root, ignore_errors=True)
-    os.makedirs(temp_admissions_dir, exist_ok=True)
+    os.makedirs(temp_rooms_dir, exist_ok=True)
 
     total_rows = 0
     train_rows = 0
     test_rows = 0
 
     try:
-        admission_ids, admission_files, total_rows, fieldnames = spool_admission_files(
+        room_ids, room_files, total_rows, fieldnames = spool_room_files(
             input_path,
             args.chunk_size,
-            temp_admissions_dir,
+            temp_rooms_dir,
         )
 
         if not fieldnames:
-            initialize_csv(train_path, ["admission_id"])
-            initialize_csv(test_path, ["admission_id"])
             print("split_by_patient_stay.py complete")
             print("rows_total=0")
             print("rows_train=0")
             print("rows_test=0")
-            print(f"train_path={train_path}")
-            print(f"test_path={test_path}")
+            print(f"train_dir={train_dir}")
+            print(f"test_dir={test_dir}")
             return
 
-        initialize_csv(train_path, fieldnames)
-        initialize_csv(test_path, fieldnames)
-
-        total_admissions = len(admission_files)
-        for idx, admission_path in enumerate(admission_files, start=1):
-            train_part, test_part = split_admission_file(admission_path, args.test_fraction)
+        total_rooms = len(room_files)
+        for idx, (room_id, room_path) in enumerate(zip(room_ids, room_files, strict=False), start=1):
+            train_part, test_part = split_room_file(room_path, args.train_ratio, args.min_train_rows)
+            train_path = room_file_path(output_dir, "train", room_id)
+            test_path = room_file_path(output_dir, "test", room_id)
+            initialize_csv(train_path, fieldnames)
+            initialize_csv(test_path, fieldnames)
             append_rows(train_path, fieldnames, train_part)
             append_rows(test_path, fieldnames, test_part)
             train_rows += len(train_part)
             test_rows += len(test_part)
-            if idx % 500 == 0 or idx == total_admissions:
+            if idx % 100 == 0 or idx == total_rooms:
                 print(
-                    f"[split] admissions_processed={idx}/{total_admissions} train_rows={train_rows} test_rows={test_rows}",
+                    f"[split] rooms_processed={idx}/{total_rooms} train_rows={train_rows} test_rows={test_rows}",
                     flush=True,
                 )
     finally:
@@ -185,8 +188,8 @@ def main() -> None:
     print(f"rows_total={total_rows}")
     print(f"rows_train={train_rows}")
     print(f"rows_test={test_rows}")
-    print(f"train_path={train_path}")
-    print(f"test_path={test_path}")
+    print(f"train_dir={train_dir}")
+    print(f"test_dir={test_dir}")
 
 
 if __name__ == "__main__":

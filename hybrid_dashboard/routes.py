@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import func
 
+from hybrid.ai_comfort_service import predict_live_comfort
+from hybrid.ai_config import is_room_ai_enabled, load_ai_config, set_room_ai_enabled, update_ai_config
 from hybrid.controller import evaluate_room_control
 from hybrid_dashboard.ble_runtime import get_runtime_status, start_runtime, stop_runtime
 from hybrid.hospital_initializer import (
@@ -64,6 +66,94 @@ def _parse_positive_int(value: str | None) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _save_comfort_preference(room_id: int, patient_id: int | None, redirect_endpoint: str):
+    submitted_main = (request.form.get("temperature_main") or "").strip()
+    submitted_toilet = (request.form.get("temperature_toilet") or "").strip()
+    with session_scope() as session:
+        latest_preference = (
+            session.query(ComfortPreference)
+            .filter(ComfortPreference.room_id == room_id)
+            .order_by(ComfortPreference.timestamp.desc())
+            .first()
+        )
+
+        def _carry_float(field_name: str, latest_value: float | None) -> float | None:
+            raw = request.form.get(field_name)
+            if raw is None:
+                return latest_value
+            raw = raw.strip()
+            if raw == "":
+                return latest_value
+            return float(raw)
+
+        temperature_main = _carry_float(
+            "temperature_main",
+            latest_preference.temperature_main if latest_preference else None,
+        )
+        if temperature_main is None:
+            flash("Main temperature is required at least once before partial updates can be used.")
+            return redirect(url_for(redirect_endpoint, room_id=room_id))
+
+        preference = ComfortPreference(
+            room_id=room_id,
+            patient_id=patient_id,
+            temperature_main=temperature_main,
+            temperature_toilet=_carry_float(
+                "temperature_toilet",
+                latest_preference.temperature_toilet if latest_preference else None,
+            ),
+            light_intensity=_carry_float(
+                "light_intensity",
+                latest_preference.light_intensity if latest_preference else None,
+            ),
+            sound_level=_carry_float(
+                "sound_level",
+                latest_preference.sound_level if latest_preference else None,
+            ),
+            airflow=(
+                True
+                if request.form.get("airflow_choice") == "on"
+                else False
+                if request.form.get("airflow_choice") == "off"
+                else (latest_preference.airflow if latest_preference else False)
+            ),
+            source="manual",
+            timestamp=_utc_now(),
+        )
+        session.add(preference)
+        session.flush()
+        if submitted_main:
+            evaluate_room_control(session, room_id, preference, location="main")
+        if submitted_toilet:
+            evaluate_room_control(session, room_id, preference, location="toilet")
+        if not submitted_main and not submitted_toilet:
+            evaluate_room_control(session, room_id, preference, location="main")
+    flash("Comfort preference saved.")
+    return redirect(url_for(redirect_endpoint, room_id=room_id))
+
+
+def _save_ai_comfort_preference(room_id: int, patient_id: int | None, redirect_endpoint: str):
+    with session_scope() as session:
+        prediction, metadata = predict_live_comfort(session, room_id, patient_id)
+        preference = ComfortPreference(
+            room_id=room_id,
+            patient_id=metadata["patient_id"],
+            temperature_main=prediction["temperature_main"],
+            temperature_toilet=prediction["temperature_toilet"],
+            light_intensity=prediction["light_intensity"],
+            sound_level=prediction["sound_level"],
+            airflow=bool(prediction["airflow"]),
+            source="ai",
+            timestamp=_utc_now(),
+        )
+        session.add(preference)
+        session.flush()
+        evaluate_room_control(session, room_id, preference, location="main")
+        evaluate_room_control(session, room_id, preference, location="toilet")
+    flash(f"AI comfort applied using {metadata['source']} / {metadata['model_type']} weights.")
+    return redirect(url_for(redirect_endpoint, room_id=room_id))
 
 
 def _active_assignment_for_room(session, room_id: int) -> RoomAssignment | None:
@@ -256,10 +346,32 @@ def landing():
 
 @hybrid_bp.route("/admin")
 def admin_home():
+    ai_config = load_ai_config()
     with session_scope() as session:
         rooms = session.query(Room).filter(Room.room_id.in_(list(DEFAULT_ROOM_MAP.values()))).order_by(Room.room_id.asc()).all()
         room_cards = [_room_card(session, room) for room in rooms]
-    return render_template("admin_home.html", rooms=room_cards)
+    return render_template("admin_home.html", rooms=room_cards, ai_config=ai_config)
+
+
+@hybrid_bp.route("/admin/ai-config", methods=["POST"])
+def admin_update_ai_config():
+    current_config = load_ai_config()
+    selected_source = str(request.form.get("selected_source") or "k_hours").strip()
+    k_hours_model_type = str(request.form.get("k_hours_model_type") or "mlp").strip()
+    state_to_outcome_model_type = "mlp"
+    k_hours_weights_path = str(request.form.get("k_hours_weights_path") or "").strip() or current_config["k_hours_weights_path"]
+    state_to_outcome_weights_path = (
+        str(request.form.get("state_to_outcome_weights_path") or "").strip() or current_config["state_to_outcome_weights_path"]
+    )
+    update_ai_config(
+        selected_source=selected_source,
+        k_hours_model_type=k_hours_model_type,
+        state_to_outcome_model_type=state_to_outcome_model_type,
+        k_hours_weights_path=k_hours_weights_path,
+        state_to_outcome_weights_path=state_to_outcome_weights_path,
+    )
+    flash(f"AI configuration updated. Active source: {selected_source} ({k_hours_model_type if selected_source == 'k_hours' else 'mlp'}).")
+    return redirect(url_for("hybrid_bp.admin_home"))
 
 
 @hybrid_bp.route("/admin/initialize", methods=["POST"])
@@ -275,6 +387,7 @@ def admin_initialize():
 
 @hybrid_bp.route("/admin/rooms/<int:room_id>")
 def admin_room(room_id: int):
+    ai_config = load_ai_config()
     with session_scope() as session:
         room = session.get(Room, room_id)
         if room is None:
@@ -348,6 +461,7 @@ def admin_room(room_id: int):
             medications=medications,
             visits=visits,
             latest_comfort=latest_comfort,
+            ai_config=ai_config,
             sensor_type_options=SENSOR_TYPE_OPTIONS,
             unit_by_sensor_type=UNIT_BY_SENSOR_TYPE,
         )
@@ -545,6 +659,8 @@ def patient_home():
 
 @hybrid_bp.route("/patient/rooms/<int:room_id>")
 def patient_room(room_id: int):
+    ai_config = load_ai_config()
+    ai_enabled = is_room_ai_enabled(room_id)
     with session_scope() as session:
         room = session.get(Room, room_id)
         if room is None:
@@ -566,6 +682,8 @@ def patient_room(room_id: int):
             latest_comfort=latest_comfort,
             sensor_rows=sensor_rows,
             actuator_rows=actuator_rows,
+            ai_config=ai_config,
+            ai_enabled=ai_enabled,
         )
 
 
@@ -629,66 +747,34 @@ def patient_go_to_toilet(room_id: int):
 @hybrid_bp.route("/patient/rooms/<int:room_id>/comfort", methods=["POST"])
 def save_patient_comfort(room_id: int):
     patient_id = int(request.form["patient_id"]) if request.form.get("patient_id") else None
-    submitted_main = (request.form.get("temperature_main") or "").strip()
-    submitted_toilet = (request.form.get("temperature_toilet") or "").strip()
-    with session_scope() as session:
-        latest_preference = (
-            session.query(ComfortPreference)
-            .filter(ComfortPreference.room_id == room_id)
-            .order_by(ComfortPreference.timestamp.desc())
-            .first()
-        )
-
-        def _carry_float(field_name: str, latest_value: float | None) -> float | None:
-            raw = request.form.get(field_name)
-            if raw is None:
-                return latest_value
-            raw = raw.strip()
-            if raw == "":
-                return latest_value
-            return float(raw)
-
-        temperature_main = _carry_float(
-            "temperature_main",
-            latest_preference.temperature_main if latest_preference else None,
-        )
-        if temperature_main is None:
-            flash("Main temperature is required at least once before partial updates can be used.")
+    if is_room_ai_enabled(room_id):
+        try:
+            return _save_ai_comfort_preference(room_id, patient_id, "hybrid_bp.patient_room")
+        except Exception as exc:
+            flash(f"AI mode failed: {exc}")
             return redirect(url_for("hybrid_bp.patient_room", room_id=room_id))
+    return _save_comfort_preference(room_id, patient_id, "hybrid_bp.patient_room")
 
-        preference = ComfortPreference(
-            room_id=room_id,
-            patient_id=patient_id,
-            temperature_main=temperature_main,
-            temperature_toilet=_carry_float(
-                "temperature_toilet",
-                latest_preference.temperature_toilet if latest_preference else None,
-            ),
-            light_intensity=_carry_float(
-                "light_intensity",
-                latest_preference.light_intensity if latest_preference else None,
-            ),
-            sound_level=_carry_float(
-                "sound_level",
-                latest_preference.sound_level if latest_preference else None,
-            ),
-            airflow=(
-                True
-                if request.form.get("airflow_choice") == "on"
-                else False
-                if request.form.get("airflow_choice") == "off"
-                else (latest_preference.airflow if latest_preference else False)
-            ),
-            source="manual",
-            timestamp=_utc_now(),
-        )
-        session.add(preference)
-        session.flush()
-        if submitted_main:
-            evaluate_room_control(session, room_id, preference, location="main")
-        if submitted_toilet:
-            evaluate_room_control(session, room_id, preference, location="toilet")
-        if not submitted_main and not submitted_toilet:
-            evaluate_room_control(session, room_id, preference, location="main")
-    flash("Comfort preference saved.")
+
+@hybrid_bp.route("/patient/rooms/<int:room_id>/ai-mode", methods=["POST"])
+def toggle_patient_ai_mode(room_id: int):
+    next_enabled = request.form.get("enabled") == "true"
+    if next_enabled:
+        patient_id = int(request.form["patient_id"]) if request.form.get("patient_id") else None
+        try:
+            response = _save_ai_comfort_preference(room_id, patient_id, "hybrid_bp.patient_room")
+        except Exception as exc:
+            set_room_ai_enabled(room_id, False)
+            flash(f"AI mode could not be enabled: {exc}")
+            return redirect(url_for("hybrid_bp.patient_room", room_id=room_id))
+        set_room_ai_enabled(room_id, True)
+        return response
+    set_room_ai_enabled(room_id, False)
+    flash(f"AI mode disabled for room {room_id}.")
     return redirect(url_for("hybrid_bp.patient_room", room_id=room_id))
+
+
+@hybrid_bp.route("/admin/rooms/<int:room_id>/comfort", methods=["POST"])
+def save_admin_comfort(room_id: int):
+    patient_id = int(request.form["patient_id"]) if request.form.get("patient_id") else None
+    return _save_comfort_preference(room_id, patient_id, "hybrid_bp.admin_room")

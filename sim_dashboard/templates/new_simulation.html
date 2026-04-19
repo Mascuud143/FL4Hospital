@@ -139,18 +139,89 @@
     padding: 16px;
     overflow: auto;
   }
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .help-trigger {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .help-inline {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .help-pop {
+    position: fixed;
+    top: 96px;
+    right: 32px;
+    width: min(360px, calc(100vw - 32px));
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    padding: 14px 16px;
+    z-index: 1001;
+  }
+  .help-pop.hidden { display: none; }
+  .help-pop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .help-pop-head h4 {
+    margin: 0;
+    font-size: 0.95rem;
+  }
+  .help-close {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    cursor: pointer;
+    padding: 2px 8px;
+  }
   @media (max-width: 900px) {
     .section-grid, .summary-grid, .field-grid { grid-template-columns: 1fr; }
+    .help-pop {
+      top: 84px;
+      right: 16px;
+      width: calc(100vw - 32px);
+    }
   }
 </style>
 
 <div class="page-grid">
   <section class="card">
-    <h2 style="margin:0;">New Simulation</h2>
+    <div class="title-row">
+      <h2 style="margin:0;">New Simulation</h2>
+      <button id="pageHelpBtn" class="help-trigger" type="button" aria-label="Open page help">?</button>
+    </div>
   </section>
 
   <section class="card">
-    <h3 style="margin-top:0;">Last Run Time Summary</h3>
+    <h3 style="margin-top:0;">Last Run Time Summary<button class="help-inline" type="button" data-help-title="Last Run Time Summary" data-help-text="Shows the most recent simulation runtime and the machine CPU and RAM information saved by the backend.">?</button></h3>
     <div class="summary-grid">
     
       <div class="summary-box">
@@ -180,28 +251,28 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Simulation Horizon</h3>
+      <h3 style="margin-top:0;">Simulation Horizon<button class="help-inline" type="button" data-help-title="Simulation Horizon" data-help-text="Controls when the simulation starts and how many simulated days are generated. Longer horizons create more rows and usually take longer to run.">?</button></h3>
       <div class="field-grid">
         <div class="field">
           <label for="startDate">Start date</label>
           <input id="startDate" type="date" value="{{ config_defaults.start_date.isoformat() if config_defaults.start_date else '' }}" />
         </div>
         <div class="field">
-          <label for="days">Days</label>
+          <label for="days">Days<button class="help-inline" type="button" data-help-title="Days" data-help-text="The number of simulated days to generate. This is simulated time, not real execution time.">?</button></label>
           <input id="days" type="number" min="1" step="1" value="{{ config_defaults.days }}" />
         </div>
       </div>
     </section>
 
     <section class="card">
-      <h3 style="margin-top:0;">Population</h3>
+      <h3 style="margin-top:0;">Population<button class="help-inline" type="button" data-help-title="Population" data-help-text="Controls how many patients are included in the generated dataset and the random seed used to make runs repeatable.">?</button></h3>
       <div class="field-grid">
         <div class="field">
-          <label for="patientCount">Patient count</label>
+          <label for="patientCount">Patient count<button class="help-inline" type="button" data-help-title="Patient count" data-help-text="Higher patient counts produce larger datasets, more dynamic room usage, and longer generation time.">?</button></label>
           <input id="patientCount" type="number" min="1" step="1" value="{{ config_defaults.patient_count }}" />
         </div>
         <div class="field">
-          <label for="randomSeed">Random seed</label>
+          <label for="randomSeed">Random seed<button class="help-inline" type="button" data-help-title="Random seed" data-help-text="Use the same seed to make the random parts of generation more repeatable across runs.">?</button></label>
           <input id="randomSeed" type="number" step="1" value="{{ config_defaults.random_seed }}" />
         </div>
       </div>
@@ -210,7 +281,7 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Room Transfers</h3>
+      <h3 style="margin-top:0;">Room Transfers<button class="help-inline" type="button" data-help-title="Room Transfers" data-help-text="Controls how often patients may move between rooms and the minimum gap before and after a transfer.">?</button></h3>
       <div class="field-grid">
         <div class="field">
           <label for="changeRoomProb">Change room probability</label>
@@ -240,25 +311,25 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Simulation Timing</h3>
+      <h3 style="margin-top:0;">Simulation Timing<button class="help-inline" type="button" data-help-title="Simulation Timing" data-help-text="Controls the simulation step size, sensor sampling interval, and optional wall-clock delay between steps.">?</button></h3>
       <div class="field-grid">
         <div class="field">
-          <label for="simStepS">Simulation step (seconds)</label>
+          <label for="simStepS">Simulation step (seconds)<button class="help-inline" type="button" data-help-title="Simulation step" data-help-text="Smaller step sizes simulate more often and can improve detail, but they usually increase runtime.">?</button></label>
           <input id="simStepS" type="number" min="1" step="1" value="{{ config_defaults.sim_step_s }}" />
         </div>
         <div class="field">
-          <label for="sensorSampleEveryS">Sensor sample every (seconds)</label>
+          <label for="sensorSampleEveryS">Sensor sample every (seconds)<button class="help-inline" type="button" data-help-title="Sensor sample interval" data-help-text="How often sensor readings are emitted during the simulation loop. Smaller intervals create more sensor rows.">?</button></label>
           <input id="sensorSampleEveryS" type="number" min="1" step="1" value="{{ config_defaults.sensor_sample_every_s }}" />
         </div>
         <div class="field">
-          <label for="wallSleepS">Wall sleep (seconds)</label>
+          <label for="wallSleepS">Wall sleep (seconds)<button class="help-inline" type="button" data-help-title="Wall sleep" data-help-text="Adds a real-time delay between simulated steps. Use 0 for fastest execution.">?</button></label>
           <input id="wallSleepS" type="number" min="0" step="0.01" value="{{ config_defaults.wall_sleep_s }}" />
         </div>
       </div>
     </section>
 
     <section class="card">
-      <h3 style="margin-top:0;">Generation Toggles</h3>
+      <h3 style="margin-top:0;">Generation Toggles<button class="help-inline" type="button" data-help-title="Generation Toggles" data-help-text="Turn major data generators on or off. Disabling generators reduces data volume and usually speeds up the run.">?</button></h3>
       <div class="field-grid">
         <div class="field">
           <label for="enableComfort">Comfort</label>
@@ -268,14 +339,14 @@
           </select>
         </div>
         <div class="field">
-          <label for="enableMedication">Medication</label>
+          <label for="enableMedication">Medication<button class="help-inline" type="button" data-help-title="Medication" data-help-text="Enables or disables medication event generation for admissions in the selected horizon.">?</button></label>
           <select id="enableMedication">
             <option value="true" {% if config_defaults.enable_medication %}selected{% endif %}>True</option>
             <option value="false" {% if not config_defaults.enable_medication %}selected{% endif %}>False</option>
           </select>
         </div>
         <div class="field">
-          <label for="enableVisits">Visits</label>
+          <label for="enableVisits">Visits<button class="help-inline" type="button" data-help-title="Visits" data-help-text="Enables or disables visit generation. Visit rows can increase data size and generation time.">?</button></label>
           <select id="enableVisits">
             <option value="true" {% if config_defaults.enable_visits %}selected{% endif %}>True</option>
             <option value="false" {% if not config_defaults.enable_visits %}selected{% endif %}>False</option>
@@ -305,6 +376,14 @@
       </div>
     </section>
   </div>
+</div>
+
+<div id="pageHelpPopup" class="help-pop hidden" aria-hidden="true">
+  <div class="help-pop-head">
+    <h4 id="pageHelpTitle">Page Help</h4>
+    <button id="pageHelpCloseBtn" class="help-close" type="button" aria-label="Close help">X</button>
+  </div>
+  <p id="pageHelpText" class="hint" style="margin:0;">Use this page to configure and run simulation data generation only. Set the horizon, patient volume, transfer behavior, timing, and generation toggles, then start or stop the simulation from the runtime panel.</p>
 </div>
 
 <div id="simRuntimeHistoryModal" class="modal hidden" aria-hidden="true">
@@ -405,7 +484,7 @@
           return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
         }
         if (item.kind === "split") {
-          if (cfg.mode === "event") return `event | test=${cfg.test_fraction ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+          if (cfg.mode === "event") return `event | train=${cfg.train_ratio ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
           return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
         }
         if (item.kind === "federated" || item.kind === "training") {
@@ -478,9 +557,19 @@
       return response.json();
     }
 
+    async function fetchActiveJobs() {
+      const response = await fetch("/api/ai/jobs/active");
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const data = await response.json();
+      return Array.isArray(data.jobs) ? data.jobs : [];
+    }
+
     function pollJob(jobId) {
       let cursor = 0;
+      let polling = false;
       const timer = setInterval(async () => {
+        if (polling) return;
+        polling = true;
         try {
           const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
           if (!response.ok) throw new Error(`status ${response.status}`);
@@ -493,18 +582,24 @@
           if (["completed", "failed", "stopped"].includes(data.status)) {
             clearInterval(timer);
             currentJobId = null;
+            startBtn.disabled = false;
           }
         } catch (error) {
           clearInterval(timer);
           stateEl.textContent = `poll failed: ${error.message}`;
           appendLog([`[dashboard] polling error: ${error.message}`]);
           currentJobId = null;
+          startBtn.disabled = false;
+        } finally {
+          polling = false;
         }
       }, 1000);
     }
 
     startBtn.addEventListener("click", async () => {
+      if (startBtn.disabled) return;
       try {
+        startBtn.disabled = true;
         logEl.textContent = "[dashboard] waiting...";
         stateEl.textContent = "starting...";
         setProgress(0);
@@ -513,6 +608,7 @@
         pollJob(currentJobId);
       } catch (error) {
         stateEl.textContent = `start failed: ${error.message}`;
+        startBtn.disabled = false;
       }
     });
 
@@ -524,6 +620,26 @@
         appendLog([`[dashboard] stop failed: ${error.message}`]);
       }
     });
+    function openHelp(title, text) {
+      const popup = document.getElementById("pageHelpPopup");
+      document.getElementById("pageHelpTitle").textContent = title;
+      document.getElementById("pageHelpText").textContent = text;
+      popup?.classList.remove("hidden");
+      popup?.setAttribute("aria-hidden", "false");
+    }
+    document.getElementById("pageHelpBtn")?.addEventListener("click", () => {
+      openHelp("Page Help", "Use this page to configure and run simulation data generation only. Set the horizon, patient volume, transfer behavior, timing, and generation toggles, then start or stop the simulation from the runtime panel.");
+    });
+    document.getElementById("pageHelpCloseBtn")?.addEventListener("click", () => {
+      const popup = document.getElementById("pageHelpPopup");
+      popup?.classList.add("hidden");
+      popup?.setAttribute("aria-hidden", "true");
+    });
+    document.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-help-title]");
+      if (!trigger) return;
+      openHelp(trigger.dataset.helpTitle || "Help", trigger.dataset.helpText || "");
+    });
     toggleHistoryBtn?.addEventListener("click", () => {
       historyModal.classList.remove("hidden");
     });
@@ -533,6 +649,21 @@
     historyModal?.addEventListener("click", (event) => {
       if (event.target === historyModal) historyModal.classList.add("hidden");
     });
+
+    (async () => {
+      try {
+        const jobs = await fetchActiveJobs();
+        const activeSimulation = jobs.find((job) => job.kind === "simulation");
+        if (!activeSimulation) return;
+        currentJobId = activeSimulation.id;
+        startBtn.disabled = true;
+        stateEl.textContent = `running (${activeSimulation.progress ?? 0}%)`;
+        appendLog([`[dashboard] reconnected to simulation job ${activeSimulation.id}`]);
+        pollJob(currentJobId);
+      } catch (error) {
+        appendLog([`[dashboard] active job lookup failed: ${error.message}`]);
+      }
+    })();
   })();
 </script>
 {% endblock %}

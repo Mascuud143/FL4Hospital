@@ -19,6 +19,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 from schema import FEATURE_COLUMNS, REGRESSION_TARGET_COLUMNS, TARGET_COLUMNS, row_to_input_vector
+from per_room_data import load_room_df as load_room_df_from_split
 
 AIRFLOW_OUTPUT_INDEX = 4
 DEFAULT_OUTPUT_THRESHOLDS = {
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per FL round")
     parser.add_argument("--connect-retries", type=int, default=60, help="Connection retries")
     parser.add_argument("--retry-wait", type=float, default=1.0, help="Seconds between retries")
-    parser.add_argument("--chunksize", type=int, default=100000, help="CSV chunksize for room filtering")
+    parser.add_argument("--chunksize", type=int, default=50000, help="CSV chunksize for room filtering")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
     parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
@@ -119,16 +120,9 @@ def set_params(model: StateOutcomeMLP, params: list[np.ndarray]) -> None:
     model.load_state_dict(new_state, strict=True)
 
 
-def load_room_df(path: str, room_id: str, chunksize: int) -> pd.DataFrame:
+def load_room_df(split_dir: str, subset: str, room_id: str, chunksize: int) -> pd.DataFrame:
     keep_cols = ["room_id", *FEATURE_COLUMNS, *TARGET_COLUMNS, "event_type"]
-    chunks: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, usecols=lambda c: c in keep_cols, chunksize=chunksize):
-        room_chunk = chunk[chunk["room_id"].astype(str) == room_id]
-        if not room_chunk.empty:
-            chunks.append(room_chunk)
-    if not chunks:
-        return pd.DataFrame(columns=keep_cols)
-    df = pd.concat(chunks, ignore_index=True)
+    df = load_room_df_from_split(split_dir, subset, room_id, usecols=keep_cols)
     return df.loc[:, ~df.columns.duplicated()]
 
 
@@ -205,6 +199,8 @@ class RoomClient(fl.client.NumPyClient):
             return get_params(self.model), 0, {"room_id": self.room_id}
 
         self.model.train()
+        proximal_mu = float(config.get("proximal_mu", 0.0) or 0.0)
+        global_params = [param.detach().clone() for param in self.model.parameters()]
         dataset = TensorDataset(
             torch.tensor(self.x_train, dtype=torch.float32, device=self.device),
             torch.tensor(self.y_train, dtype=torch.float32, device=self.device),
@@ -223,7 +219,13 @@ class RoomClient(fl.client.NumPyClient):
                 # a weighted binary classification problem.
                 reg_loss = reg_loss_fn(preds[:, :4], batch_y[:, :4])
                 airflow_loss = airflow_loss_fn(preds[:, AIRFLOW_OUTPUT_INDEX], batch_y[:, AIRFLOW_OUTPUT_INDEX])
-                (reg_loss + airflow_loss).backward()
+                loss = reg_loss + airflow_loss
+                if proximal_mu > 0.0:
+                    prox_reg = torch.zeros((), device=self.device)
+                    for param, global_param in zip(self.model.parameters(), global_params):
+                        prox_reg = prox_reg + torch.sum((param - global_param) ** 2)
+                    loss = loss + (proximal_mu / 2.0) * prox_reg
+                loss.backward()
                 optimizer.step()
         return get_params(self.model), int(self.y_train.shape[0]), {"room_id": self.room_id}
 
@@ -323,15 +325,15 @@ def main() -> None:
     args = parse_args()
     room_id = str(args.room_id)
     split_dir = os.path.abspath(args.split_dir)
-    train_path = os.path.join(split_dir, "state_to_outcome_train.csv")
-    test_path = os.path.join(split_dir, "state_to_outcome_test.csv")
-    if not os.path.exists(train_path):
-        raise FileNotFoundError(f"Missing file: {train_path}")
-    if not os.path.exists(test_path):
-        raise FileNotFoundError(f"Missing file: {test_path}")
+    train_dir = os.path.join(split_dir, "train")
+    test_dir = os.path.join(split_dir, "test")
+    if not os.path.isdir(train_dir):
+        raise FileNotFoundError(f"Missing directory: {train_dir}")
+    if not os.path.isdir(test_dir):
+        raise FileNotFoundError(f"Missing directory: {test_dir}")
 
-    train_df = sanitize_rows(load_room_df(train_path, room_id=room_id, chunksize=args.chunksize))
-    test_df = sanitize_rows(load_room_df(test_path, room_id=room_id, chunksize=args.chunksize))
+    train_df = sanitize_rows(load_room_df(split_dir, "train", room_id=room_id, chunksize=args.chunksize))
+    test_df = sanitize_rows(load_room_df(split_dir, "test", room_id=room_id, chunksize=args.chunksize))
     if len(train_df) == 0:
         raise RuntimeError(f"No training rows for room_id={room_id}")
 

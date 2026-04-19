@@ -167,6 +167,46 @@
       {% else %}
       <p class="muted">No ventilation data available.</p>
       {% endif %}
+
+      <h3>Toilet Heater</h3>
+      {% if toilet_heater_data %}
+      <table>
+        <tr>
+          <th>Device</th>
+          <th>State</th>
+          <th>Time</th>
+        </tr>
+        {% for item in toilet_heater_data %}
+        <tr>
+          <td>{{ item.device_id }}</td>
+          <td>{% if item.state is sameas true %}ON{% elif item.state is sameas false %}OFF{% else %}--{% endif %}</td>
+          <td>{% if item.timestamp %}{{ item.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No toilet heater data available.</p>
+      {% endif %}
+
+      <h3>Toilet Light</h3>
+      {% if toilet_light_data %}
+      <table>
+        <tr>
+          <th>Device</th>
+          <th>State</th>
+          <th>Time</th>
+        </tr>
+        {% for item in toilet_light_data %}
+        <tr>
+          <td>{{ item.device_id }}</td>
+          <td>{% if item.state is sameas true %}ON{% elif item.state is sameas false %}OFF{% else %}--{% endif %}</td>
+          <td>{% if item.timestamp %}{{ item.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No toilet light data available.</p>
+      {% endif %}
     </div>
   </div>
 </div>

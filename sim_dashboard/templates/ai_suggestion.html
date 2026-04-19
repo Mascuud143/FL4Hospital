@@ -18,6 +18,11 @@
     background: #fff;
     font: inherit;
   }
+  .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .field .label-row label { margin-bottom: 0; }
+  .manual-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.74rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .field input:disabled, .field select:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
   .hint { color: var(--muted); font-size: 0.86rem; line-height: 1.45; }
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .btn {
@@ -199,23 +204,110 @@
     padding: 16px;
     overflow: auto;
   }
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .help-trigger {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .help-inline {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .help-pop {
+    position: fixed;
+    top: 96px;
+    right: 32px;
+    width: min(360px, calc(100vw - 32px));
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    padding: 14px 16px;
+    z-index: 1001;
+  }
+  .help-pop.hidden { display: none; }
+  .help-pop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .help-pop-head h4 {
+    margin: 0;
+    font-size: 0.95rem;
+  }
+  .help-close {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    cursor: pointer;
+    padding: 2px 8px;
+  }
+  .help-actions { margin-top: 10px; }
+  .help-link {
+    border: 0;
+    background: transparent;
+    color: #0f766e;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+  .help-link.hidden { display: none; }
+  .help-details {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .help-details.hidden { display: none; }
   .hidden { display: none; }
   @media (max-width: 1100px) {
     .section-grid, .chart-grid, .results-toolbar, .pie-grid, .metrics-grid, .field-grid {
       grid-template-columns: 1fr;
+    }
+    .help-pop {
+      top: 84px;
+      right: 16px;
+      width: calc(100vw - 32px);
     }
   }
 </style>
 
 <div class="page-grid">
   <section class="card">
-    <h2 style="margin:0;">AI Forecast Dashboard</h2>
+    <div class="title-row">
+      <h2 style="margin:0;">AI Forecast Dashboard</h2>
+      <button id="pageHelpBtn" class="help-trigger" type="button" aria-label="Open page help">?</button>
+    </div>
     <p class="hint" style="margin:8px 0 0;">
       Choose either the k-hours based pipeline or the event-based pipeline, then run the matching build, split, and federated training flow.
     </p>
     <div class="field-grid" style="margin-top:16px;">
       <div class="field">
-        <label for="taskType">Pipeline type</label>
+        <label for="taskType">Pipeline type<button class="help-inline" type="button" data-help-title="Pipeline type" data-help-text="Choose the k-hours based or event-based AI pipeline. This changes the build, split, training, and results behavior shown on the page.">?</button></label>
         <select id="taskType">
           <option value="k_hours">k-hours based</option>
           <option value="event">event based</option>
@@ -260,7 +352,7 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 id="buildSectionTitle" style="margin-top:0;">1) Build Next-Hour Rows</h3>
+      <h3 id="buildSectionTitle" style="margin-top:0;">1) Build Next-Hour Rows<button class="help-inline" type="button" data-help-title="Build" data-help-text="Creates the training rows used by the selected AI pipeline. Worker count and chunk size are advanced performance settings when manual control is enabled.">?</button></h3>
       <div class="field-grid">
         <div class="field" data-tasks="k_hours">
           <label for="buildStepMinutes">Step minutes</label>
@@ -271,12 +363,18 @@
           <input id="buildHorizonMinutes" type="number" min="1" step="1" value="60" />
         </div>
         <div class="field" data-tasks="k_hours">
-          <label for="buildWorkers">Number of workers</label>
-          <input id="buildWorkers" type="number" min="1" step="1" value="4" />
+          <div class="label-row">
+            <label for="buildWorkers">Number of workers<button class="help-inline" type="button" data-help-title="Number of workers" data-help-text="Advanced setting. Controls how many worker processes run in parallel for build. More workers can be faster but use more CPU and memory.">?</button></label>
+            <label class="manual-toggle"><input id="buildWorkersEnabled" type="checkbox" /> Set manually</label>
+          </div>
+          <input id="buildWorkers" type="number" min="1" step="1" value="4" disabled />
         </div>
         <div class="field" data-tasks="k_hours">
-          <label for="buildChunkSize">Chunk size</label>
-          <input id="buildChunkSize" type="number" min="1" step="1" value="250" />
+          <div class="label-row">
+            <label for="buildChunkSize">Chunk size<button class="help-inline" type="button" data-help-title="Chunk size" data-help-text="Advanced setting. Controls how much work each build worker handles at once. Larger chunks reduce overhead but can use more memory.">?</button></label>
+            <label class="manual-toggle"><input id="buildChunkSizeEnabled" type="checkbox" /> Set manually</label>
+          </div>
+          <input id="buildChunkSize" type="number" min="1" step="1" value="100" disabled />
         </div>
         <div class="field hidden" data-tasks="event">
           <label for="eventMedicationEffectMinutes">Medication effect delay (minutes)</label>
@@ -298,7 +396,7 @@
     </section>
 
     <section class="card">
-      <h3 id="splitSectionTitle" style="margin-top:0;">2) Split By Room</h3>
+      <h3 id="splitSectionTitle" style="margin-top:0;">2) Split By Room<button class="help-inline" type="button" data-help-title="Split" data-help-text="Splits the built rows into train and evaluation data for the selected pipeline. Worker count and chunk size are advanced performance settings.">?</button></h3>
       <div class="field-grid">
         <div class="field" data-tasks="k_hours">
           <label for="splitTrainRatio">Train ratio</label>
@@ -308,13 +406,12 @@
           <label for="eventTestFraction">Test fraction</label>
           <input id="eventTestFraction" type="number" min="0.05" max="0.95" step="0.05" value="0.20" />
         </div>
-        <div class="field" data-tasks="k_hours">
-          <label for="splitWorkers">Number of workers</label>
-          <input id="splitWorkers" type="number" min="1" step="1" value="4" />
-        </div>
         <div class="field">
-          <label for="splitChunkSize">Chunk size for CSV loading</label>
-          <input id="splitChunkSize" type="number" min="1000" step="1000" value="200000" />
+          <div class="label-row">
+            <label for="splitChunkSize">Chunk size for CSV loading<button class="help-inline" type="button" data-help-title="Split chunk size" data-help-text="Advanced setting. Larger chunks can be faster, but they require more memory. Leave manual control off to use the backend default.">?</button></label>
+            <label class="manual-toggle"><input id="splitChunkSizeEnabled" type="checkbox" /> Set manually</label>
+          </div>
+          <input id="splitChunkSize" type="number" min="1000" step="1000" value="50000" disabled />
         </div>
       </div>
       <div class="btn-row">
@@ -329,7 +426,7 @@
   </div>
 
   <section class="card">
-    <h3 style="margin-top:0;">3) Federated Training</h3>
+    <h3 style="margin-top:0;">3) Federated Training<button class="help-inline" type="button" data-help-title="Federated Training" data-help-text="Runs the federated learning simulation for the selected model and pipeline. Advanced settings such as room limit, client CPU, and chunk size can be left on backend defaults.">?</button></h3>
     <div class="field-grid">
       <div class="field">
         <label for="modelType">Model type</label>
@@ -438,16 +535,28 @@
         </select>
       </div>
       <div class="field">
-        <label for="flMaxRooms">Maximum number of rooms</label>
-        <input id="flMaxRooms" type="number" min="1" step="1" value="20" />
+        <div class="label-row">
+          <label for="flMaxRooms">Maximum number of rooms</label>
+          <label class="manual-toggle" for="flMaxRoomsEnabled"><input id="flMaxRoomsEnabled" type="checkbox" /><span class="sr-only">Enable maximum number of rooms</span></label>
+          <button class="help-inline" type="button" data-help-title="Maximum number of rooms" data-help-text="When room limiting is enabled, this caps how many rooms are included in training. If disabled, all available rooms are used.">?</button>
+        </div>
+        <input id="flMaxRooms" class="manual-input" type="number" min="1" step="1" value="" disabled aria-label="Maximum number of rooms" />
       </div>
       <div class="field">
-        <label for="flClientCpu">CPU resources per client</label>
-        <input id="flClientCpu" type="number" min="0.1" step="0.1" value="1.0" />
+        <div class="label-row">
+          <label for="flWorkers">Workers</label>
+          <label class="manual-toggle" for="flWorkersEnabled"><input id="flWorkersEnabled" type="checkbox" /><span class="sr-only">Enable workers</span></label>
+          <button class="help-inline" type="button" data-help-title="Workers" data-help-text="Advanced setting. Controls how many federated clients can run at the same time. The dashboard leaves one CPU core free by default.">?</button>
+        </div>
+        <input id="flWorkers" class="manual-input" type="number" min="1" step="1" value="15" disabled aria-label="Workers" />
       </div>
       <div class="field">
-        <label for="flChunkSize">Chunk size for CSV loading</label>
-        <input id="flChunkSize" type="number" min="1000" step="1000" value="200000" />
+        <div class="label-row">
+          <label for="flChunkSize">Chunk size for CSV loading</label>
+          <label class="manual-toggle" for="flChunkSizeEnabled"><input id="flChunkSizeEnabled" type="checkbox" /><span class="sr-only">Enable chunk size for CSV loading</span></label>
+          <button class="help-inline" type="button" data-help-title="Training chunk size" data-help-text="Advanced setting. Controls CSV loading chunk size during training. Larger chunks can speed up loading but use more memory.">?</button>
+        </div>
+        <input id="flChunkSize" class="manual-input" type="number" min="1000" step="1000" value="50000" disabled aria-label="Chunk size for CSV loading" />
       </div>
     </div>
 
@@ -476,14 +585,21 @@
         <label for="resultsScope">Analysis scope</label>
         <select id="resultsScope">
           <option value="global">Global</option>
-          <option value="local">Room</option>
+          <option value="local">Local</option>
         </select>
       </div>
-      <div class="field">
-        <label for="resultsSet">Result set</label>
-        <select id="resultsSet">
+      <div class="field" id="resultsViewField">
+        <label for="resultsView">View</label>
+        <select id="resultsView">
+          <option value="aggregated">Aggregated</option>
+          <option value="by_room">By Room</option>
+        </select>
+      </div>
+      <div class="field hidden" id="resultsDatasetField">
+        <label for="resultsDataset">Dataset</label>
+        <select id="resultsDataset">
           <option value="test">Test</option>
-          <option value="train">Train</option>
+          <option value="training">Training</option>
         </select>
       </div>
       <div class="field" id="roomField">
@@ -508,6 +624,18 @@
     <div id="resultsCharts" class="chart-grid"></div>
     <div id="resultsPies" class="pie-grid"></div>
   </section>
+</div>
+
+<div id="pageHelpPopup" class="help-pop hidden" aria-hidden="true">
+  <div class="help-pop-head">
+    <h4 id="pageHelpTitle">Page Help</h4>
+    <button id="pageHelpCloseBtn" class="help-close" type="button" aria-label="Close help">X</button>
+  </div>
+  <p id="pageHelpText" class="hint" style="margin:0;">Use this page to run the AI pipeline directly. Choose `k_hours` or `state_to_outcome`, then run build, split, federated training, and review the resulting metrics and charts.</p>
+  <div class="help-actions">
+    <button id="pageHelpToggleBtn" class="help-link hidden" type="button">More</button>
+  </div>
+  <p id="pageHelpDetails" class="hint help-details hidden" style="margin-bottom:0;"></p>
 </div>
 
 <div id="runtimeHistoryModal" class="modal hidden" aria-hidden="true">
@@ -563,7 +691,6 @@
     const splitTrainRatio = document.getElementById("splitTrainRatio");
     const eventTestFraction = document.getElementById("eventTestFraction");
     const splitChunkSize = document.getElementById("splitChunkSize");
-    const splitWorkers = document.getElementById("splitWorkers");
     const runSplitBtn = document.getElementById("runSplitBtn");
     const stopSplitBtn = document.getElementById("stopSplitBtn");
     const splitBar = document.getElementById("splitBar");
@@ -593,7 +720,7 @@
     const flHybridChangeHiddenLayers = document.getElementById("flHybridChangeHiddenLayers");
     const flHybridChangeActivation = document.getElementById("flHybridChangeActivation");
     const flMaxRooms = document.getElementById("flMaxRooms");
-    const flClientCpu = document.getElementById("flClientCpu");
+    const flWorkers = document.getElementById("flWorkers");
     const flChunkSize = document.getElementById("flChunkSize");
     const runTrainBtn = document.getElementById("runTrainBtn");
     const stopTrainBtn = document.getElementById("stopTrainBtn");
@@ -604,10 +731,13 @@
 
     const resultsModelType = document.getElementById("resultsModelType");
     const resultsScope = document.getElementById("resultsScope");
-    const resultsSet = document.getElementById("resultsSet");
+    const resultsView = document.getElementById("resultsView");
+    const resultsDataset = document.getElementById("resultsDataset");
     const resultsRoomId = document.getElementById("resultsRoomId");
     const resultsFigureDetail = document.getElementById("resultsFigureDetail");
     const roomField = document.getElementById("roomField");
+    const resultsViewField = document.getElementById("resultsViewField");
+    const resultsDatasetField = document.getElementById("resultsDatasetField");
     const downloadResultsPdfBtn = document.getElementById("downloadResultsPdfBtn");
     const refreshResultsBtn = document.getElementById("refreshResultsBtn");
     const resultsState = document.getElementById("resultsState");
@@ -619,6 +749,13 @@
     let splitJobId = null;
     let trainJobId = null;
     let latestResultsData = null;
+    function updateResultsControls() {
+      const isLocal = resultsScope.value === "local";
+      const needsRoom = isLocal || resultsView.value === "by_room";
+      resultsViewField.classList.toggle("hidden", isLocal);
+      resultsDatasetField.classList.toggle("hidden", !isLocal);
+      roomField.classList.toggle("hidden", !needsRoom);
+    }
     const modelOptionsByTask = {
       k_hours: [
         { value: "mlp", label: "MLP" },
@@ -662,6 +799,16 @@
         container.appendChild(card);
       });
     }
+    function bindManualToggle(toggleId, inputId) {
+      const toggle = document.getElementById(toggleId);
+      const input = document.getElementById(inputId);
+      if (!toggle || !input) return;
+      const sync = () => {
+        input.disabled = !toggle.checked;
+      };
+      toggle.addEventListener("change", sync);
+      sync();
+    }
 
     async function startJob(url, payload) {
       const response = await fetch(url, {
@@ -677,6 +824,13 @@
       const response = await fetch(`/api/ai/jobs/${jobId}/stop`, { method: "POST" });
       if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
       return response.json();
+    }
+
+    async function fetchActiveJobs() {
+      const response = await fetch("/api/ai/jobs/active");
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const data = await response.json();
+      return Array.isArray(data.jobs) ? data.jobs : [];
     }
 
     function renderRuntimeHistory(summary, pcSpec) {
@@ -707,13 +861,13 @@
           return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
         }
         if (item.kind === "split") {
-          if (cfg.mode === "event") return `event | test=${cfg.test_fraction ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
+          if (cfg.mode === "event") return `event | train=${cfg.train_ratio ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
           return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
         }
         if (item.kind === "federated" || item.kind === "training") {
           const agg = cfg.aggregation_method ?? "FedAvg";
           const base = `${agg} | ${cfg.mode ?? "-"} ${cfg.model_type ?? "-"} | ${cfg.rounds ?? "-"} rounds | ${cfg.local_epochs ?? "-"} epoch(s)`;
-          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | client cpu ${cfg.client_cpu ?? "-"}`;
+          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | workers ${cfg.workers ?? "-"}`;
           if (cfg.model_type === "mlp") return `${base} | batch ${cfg.batch_size ?? "-"} | lr ${cfg.learning_rate ?? "-"} | ${cfg.optimizer ?? "-"} | ${cfg.activation ?? "-"} | ${cfg.max_rooms ?? "-"} rooms`;
           if (cfg.model_type === "lstm") return `${base} | seq ${cfg.sequence_length ?? "-"} | batch ${cfg.batch_size ?? "-"} | hidden ${cfg.hidden_dim ?? "-"} | layers ${cfg.num_layers ?? "-"} | lr ${cfg.learning_rate ?? "-"}`;
           return `${base} | seq ${cfg.sequence_length ?? "-"} | lstm batch ${cfg.lstm_batch_size ?? "-"} | mlp batch ${cfg.mlp_batch_size ?? "-"} | hidden ${cfg.lstm_hidden_dim ?? "-"} | lr ${cfg.lstm_learning_rate ?? "-"}`;
@@ -758,7 +912,10 @@
 
     function pollJob(jobId, stateEl, logEl, barEl, metricsEl, onDone) {
       let cursor = 0;
+      let polling = false;
       const timer = setInterval(async () => {
+        if (polling) return;
+        polling = true;
         try {
           const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
           if (!response.ok) throw new Error(`status ${response.status}`);
@@ -778,6 +935,8 @@
           stateEl.textContent = `poll failed: ${error.message}`;
           appendLog(logEl, [`[dashboard] polling error: ${error.message}`]);
           if (typeof onDone === "function") onDone(null);
+        } finally {
+          polling = false;
         }
       }, 1000);
     }
@@ -1182,7 +1341,7 @@
     function updateTaskText() {
       const isEvent = taskType.value === "event";
       buildSectionTitle.textContent = isEvent ? "1) Build Event Rows" : "1) Build Next-Hour Rows";
-      splitSectionTitle.textContent = isEvent ? "2) Split By Admission" : "2) Split By Room";
+      splitSectionTitle.textContent = "2) Split By Room";
       document.querySelectorAll("[data-tasks]").forEach((el) => {
         const supported = (el.dataset.tasks || "")
           .split(",")
@@ -1219,7 +1378,7 @@
         const hiddenForTask = supportedTasks.length > 0 && !supportedTasks.includes(taskType.value);
         el.classList.toggle("hidden", hiddenForModel || hiddenForTask);
       });
-      flProximalMuField.classList.toggle("hidden", isEvent || !isFedProx);
+      flProximalMuField.classList.toggle("hidden", !isFedProx);
     }
 
     async function loadResults() {
@@ -1231,11 +1390,13 @@
         const params = new URLSearchParams({
           task_type: taskType.value,
           model_type: resultsModelType.value,
-          result_set: resultsSet.value,
           scope: resultsScope.value,
+          view: resultsView.value,
+          dataset: resultsDataset.value,
           figure_detail: resultsFigureDetail.value
         });
-        if (resultsScope.value === "local" && resultsRoomId.value) {
+        const needsRoom = resultsScope.value === "local" || resultsView.value === "by_room";
+        if (needsRoom && resultsRoomId.value) {
           params.set("room_id", resultsRoomId.value);
         }
         const response = await fetch(`/api/ai/results?${params.toString()}`);
@@ -1246,12 +1407,13 @@
         const roomIds = data.room_ids || [];
         resultsRoomId.innerHTML = roomIds.map((roomId) => `<option value="${roomId}">${roomId}</option>`).join("");
         if (data.room_id) resultsRoomId.value = data.room_id;
-        roomField.classList.toggle("hidden", resultsScope.value !== "local");
+        updateResultsControls();
 
         renderMetricCards(resultsCards, data.latest_cards || []);
         renderLineCharts(data.line_charts || []);
         renderPieCharts(data.pie_charts || []);
-        resultsState.textContent = `${data.result_set || "test"} ${data.scope} analysis loaded.`;
+        const modeText = data.scope === "global" ? `global ${data.view || resultsView.value}` : `local ${data.dataset || resultsDataset.value}`;
+        resultsState.textContent = `${modeText} analysis loaded.`;
       } catch (error) {
         resultsState.textContent = `results unavailable: ${error.message}`;
       }
@@ -1264,15 +1426,16 @@
       buildMetrics.innerHTML = "";
       setProgress(buildBar, 0);
       try {
-        const data = await startJob("/api/ai/build/start", {
+        const payload = {
           task_type: taskType.value,
           step_minutes: Number(buildStepMinutes.value || 30),
           horizon_minutes: Number(buildHorizonMinutes.value || 60),
-          workers: Number(buildWorkers.value || 1),
-          chunk_size: Number(buildChunkSize.value || 250),
           medication_effect_minutes: Number(eventMedicationEffectMinutes.value || 5),
           medication_active_hours: Number(eventMedicationActiveHours.value || 24)
-        });
+        };
+        if (document.getElementById("buildWorkersEnabled").checked) payload.workers = Number(buildWorkers.value || 1);
+        if (document.getElementById("buildChunkSizeEnabled").checked) payload.chunk_size = Number(buildChunkSize.value || 100);
+        const data = await startJob("/api/ai/build/start", payload);
         buildJobId = data.job_id;
         pollJob(data.job_id, buildState, buildLog, buildBar, buildMetrics, () => {
           buildJobId = null;
@@ -1301,14 +1464,13 @@
       splitMetrics.innerHTML = "";
       setProgress(splitBar, 0);
       try {
-        const data = await startJob("/api/ai/split/start", {
+        const payload = {
           task_type: taskType.value,
           train_ratio: Number(splitTrainRatio.value || 0.8),
-          test_fraction: Number(eventTestFraction.value || 0.2),
           min_train_rows: 1,
-          chunk_size: Number(splitChunkSize.value || 200000),
-          workers: Number(splitWorkers.value || 1)
-        });
+        };
+        if (document.getElementById("splitChunkSizeEnabled").checked) payload.chunk_size = Number(splitChunkSize.value || 50000);
+        const data = await startJob("/api/ai/split/start", payload);
         splitJobId = data.job_id;
         pollJob(data.job_id, splitState, splitLog, splitBar, splitMetrics, () => {
           splitJobId = null;
@@ -1347,11 +1509,14 @@
           model_type: modelType.value,
           aggregation_method: flAggregationMethod.value || "fedavg",
           rounds: Number(flRounds.value || 5),
-          local_epochs: Number(flLocalEpochs.value || 1),
-          max_rooms: Number(flMaxRooms.value || 20),
-          client_cpu: Number(flClientCpu.value || 1.0),
-          chunksize: Number(flChunkSize.value || 200000)
+          local_epochs: Number(flLocalEpochs.value || 1)
         };
+        if (document.getElementById("flMaxRoomsEnabled").checked) {
+          const maxRoomsValue = flMaxRooms.value.trim();
+          if (maxRoomsValue !== "") payload.max_rooms = Number(maxRoomsValue);
+        }
+        if (document.getElementById("flWorkersEnabled").checked) payload.workers = Number(flWorkers.value || 1);
+        if (document.getElementById("flChunkSizeEnabled").checked) payload.chunksize = Number(flChunkSize.value || 50000);
         if (payload.aggregation_method === "fedprox") {
           payload.proximal_mu = Number(flProximalMu.value || 0.01);
         }
@@ -1411,13 +1576,70 @@
       updateModelText();
     });
     modelType.addEventListener("change", updateModelText);
+    const HELP_DETAILS = {
+      "Pipeline type": "The pipeline changes how the data is prepared and what the model tries to predict.",
+      "Build": "Build turns the source data into training rows for the chosen pipeline.",
+      "Number of workers": "More workers can make build faster, but they also use more CPU and memory.",
+      "Chunk size": "Larger chunks can be faster, but they use more memory.",
+      "Split": "Split creates the training and evaluation parts of the data.",
+      "Split chunk size": "Larger chunks can speed up loading, but they use more memory.",
+      "Federated Training": "This is the stage where the model is trained after build and split finish.",
+      "Maximum number of rooms": "Lower values are useful for quick tests. Higher values include more rooms and take longer.",
+      "Workers": "Controls how many federated clients are allowed to run at once. The dashboard converts this into the per-client CPU setting used by Flower.",
+      "Training chunk size": "Larger chunks can be faster, but they use more memory."
+    };
+    let helpExpanded = false;
+    function openHelp(title, text, details = "") {
+      const popup = document.getElementById("pageHelpPopup");
+      const detailsEl = document.getElementById("pageHelpDetails");
+      const toggleBtn = document.getElementById("pageHelpToggleBtn");
+      document.getElementById("pageHelpTitle").textContent = title;
+      document.getElementById("pageHelpText").textContent = text;
+      detailsEl.textContent = details;
+      helpExpanded = false;
+      detailsEl.classList.toggle("hidden", !details);
+      if (details) detailsEl.classList.add("hidden");
+      toggleBtn.textContent = "More";
+      toggleBtn.classList.toggle("hidden", !details);
+      popup?.classList.remove("hidden");
+      popup?.setAttribute("aria-hidden", "false");
+    }
+    document.getElementById("pageHelpBtn")?.addEventListener("click", () => {
+      openHelp(
+        "Page Help",
+        "Use this page to run the AI pipeline directly. Choose k_hours or state_to_outcome, then run build, split, federated training, and review the resulting metrics and charts.",
+        "The usual flow is: pick a pipeline, build the rows, split the data, train the model, then inspect the results."
+      );
+    });
+    document.getElementById("pageHelpCloseBtn")?.addEventListener("click", () => {
+      const popup = document.getElementById("pageHelpPopup");
+      popup?.classList.add("hidden");
+      popup?.setAttribute("aria-hidden", "true");
+    });
+    document.getElementById("pageHelpToggleBtn")?.addEventListener("click", () => {
+      const detailsEl = document.getElementById("pageHelpDetails");
+      const toggleBtn = document.getElementById("pageHelpToggleBtn");
+      helpExpanded = !helpExpanded;
+      detailsEl?.classList.toggle("hidden", !helpExpanded);
+      if (toggleBtn) toggleBtn.textContent = helpExpanded ? "Less" : "More";
+    });
+    document.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-help-title]");
+      if (!trigger) return;
+      const title = trigger.dataset.helpTitle || "Help";
+      openHelp(title, trigger.dataset.helpText || "", HELP_DETAILS[title] || "");
+    });
     [flAggregationMethod, flProximalMu, flMlpHiddenLayers, flMlpBatchSize, flMlpLearningRate, flMlpOptimizer, flMlpActivation, flBatchSize, flSeqLen, flLstmHiddenDim, flLstmNumLayers, flLstmHeadHiddenDim, flLstmLearningRate, flLstmOptimizer, flLstmActivation, flHybridChangeHiddenLayers, flHybridChangeActivation]
       .forEach((input) => input.addEventListener("input", updateModelText));
     resultsScope.addEventListener("change", () => {
-      roomField.classList.toggle("hidden", resultsScope.value !== "local");
+      updateResultsControls();
       loadResults();
     });
-    resultsSet.addEventListener("change", loadResults);
+    resultsView.addEventListener("change", () => {
+      updateResultsControls();
+      loadResults();
+    });
+    resultsDataset.addEventListener("change", loadResults);
     resultsModelType.addEventListener("change", loadResults);
     resultsRoomId.addEventListener("change", loadResults);
     resultsFigureDetail.addEventListener("change", loadResults);
@@ -1435,8 +1657,60 @@
 
     updateTaskText();
     updateModelText();
+    updateResultsControls();
+    bindManualToggle("buildWorkersEnabled", "buildWorkers");
+    bindManualToggle("buildChunkSizeEnabled", "buildChunkSize");
+    bindManualToggle("splitChunkSizeEnabled", "splitChunkSize");
+    bindManualToggle("flMaxRoomsEnabled", "flMaxRooms");
+    bindManualToggle("flWorkersEnabled", "flWorkers");
+    bindManualToggle("flChunkSizeEnabled", "flChunkSize");
     roomField.classList.add("hidden");
     loadResults();
+
+    (async () => {
+      try {
+        const jobs = await fetchActiveJobs();
+        const activeBuild = jobs.find((job) => job.kind === "build");
+        if (activeBuild) {
+          buildJobId = activeBuild.id;
+          runBuildBtn.disabled = true;
+          buildState.textContent = `running (${activeBuild.progress ?? 0}%)`;
+          appendLog(buildLog, [`[dashboard] reconnected to build job ${activeBuild.id}`]);
+          pollJob(activeBuild.id, buildState, buildLog, buildBar, buildMetrics, () => {
+            buildJobId = null;
+            runBuildBtn.disabled = false;
+          });
+        }
+
+        const activeSplit = jobs.find((job) => job.kind === "split");
+        if (activeSplit) {
+          splitJobId = activeSplit.id;
+          runSplitBtn.disabled = true;
+          splitState.textContent = `running (${activeSplit.progress ?? 0}%)`;
+          appendLog(splitLog, [`[dashboard] reconnected to split job ${activeSplit.id}`]);
+          pollJob(activeSplit.id, splitState, splitLog, splitBar, splitMetrics, () => {
+            splitJobId = null;
+            runSplitBtn.disabled = false;
+          });
+        }
+
+        const activeTrain = jobs.find((job) => job.kind === "federated");
+        if (activeTrain) {
+          trainJobId = activeTrain.id;
+          runTrainBtn.disabled = true;
+          trainState.textContent = `running (${activeTrain.progress ?? 0}%)`;
+          appendLog(trainLog, [`[dashboard] reconnected to training job ${activeTrain.id}`]);
+          pollJob(activeTrain.id, trainState, trainLog, trainBar, trainMetrics, async () => {
+            trainJobId = null;
+            runTrainBtn.disabled = false;
+            resultsModelType.value = modelType.value;
+            await loadResults();
+          });
+        }
+      } catch (error) {
+        appendLog(buildLog, [`[dashboard] active job lookup failed: ${error.message}`]);
+      }
+    })();
   })();
 </script>
 {% endblock %}

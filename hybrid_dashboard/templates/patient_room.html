@@ -23,6 +23,7 @@
   .sensor-meta { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-top:10px; }
   .sensor-meta div { background:rgba(255,255,255,0.45); border-radius:8px; padding:6px 8px; }
   .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+  .form-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
   .toilet-toggle {
     border: 1px solid #c6d2cc;
     background: #eff3ef;
@@ -32,6 +33,17 @@
     background: #ffd978;
     border-color: #d39a00;
     color: #3f2b00;
+  }
+  .ai-toggle {
+    background:#f2f5f2;
+    color:#203127;
+    border:1px solid #b8cbbd;
+  }
+  .ai-toggle.is-on {
+    background:#1d7c42;
+    border-color:#146232;
+    color:#fff;
+    box-shadow: 0 0 0 3px rgba(29,124,66,0.18);
   }
   @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
 </style>
@@ -102,6 +114,12 @@
 
   <div class="card">
     <h3 style="margin-top:0;">Save New Comfort Setting</h3>
+    <p class="muted">
+      AI mode is {% if ai_enabled %}<strong>active</strong>{% else %}<strong>off</strong>{% endif %}.
+      Active source: <strong>{{ ai_config.selected_source }}</strong>
+      {% if ai_config.selected_source == 'k_hours' %}/ <strong>{{ ai_config.k_hours_model_type }}</strong>{% else %}/ <strong>mlp</strong>{% endif %}.
+      {% if ai_enabled %}While AI mode is active, save uses model weights instead of the form values.{% endif %}
+    </p>
     <form method="post" action="{{ url_for('hybrid_bp.save_patient_comfort', room_id=room.room_id) }}">
       <input type="hidden" name="patient_id" value="{{ patient.patient_id if patient else '' }}" />
       <div class="two-col">
@@ -130,7 +148,18 @@
           </select>
         </div>
       </div>
-      <button type="submit">Save Comfort Preference</button>
+      <div class="form-actions">
+        <button type="submit">{% if ai_enabled %}Apply AI Comfort{% else %}Save Comfort Preference{% endif %}</button>
+      </div>
+    </form>
+    <form method="post" action="{{ url_for('hybrid_bp.toggle_patient_ai_mode', room_id=room.room_id) }}">
+      <input type="hidden" name="patient_id" value="{{ patient.patient_id if patient else '' }}" />
+      <input type="hidden" name="enabled" value="{{ 'false' if ai_enabled else 'true' }}" />
+      <div class="form-actions">
+        <button type="submit" class="ai-toggle{% if ai_enabled %} is-on{% endif %}">
+          {% if ai_enabled %}AI Mode On{% else %}AI Mode Off{% endif %}
+        </button>
+      </div>
     </form>
   </div>
 </div>

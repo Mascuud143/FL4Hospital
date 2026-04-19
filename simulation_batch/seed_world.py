@@ -106,6 +106,7 @@ def seed_simulated_world(
     change_room_prob: float = CHANGE_ROOM_PROB,
     min_days_before_transfer: int = MIN_DAYS_BEFORE_TRANSFER,
     min_days_after_transfer: int = MIN_DAYS_AFTER_TRANSFER,
+    create_devices: bool = True,
     include_speaker: bool = True,
 ) -> List[BLEDevice]:
     """
@@ -474,63 +475,64 @@ def seed_simulated_world(
 
         session.flush()
 
-        # --------- Create runtime devices per room ----------
-        for room in rooms:
-            # MAIN sensor device
-            mac_main = _random_mac(rng)
-            dev_main = BLEDevice(mac_address=mac_main, label=f"Room {room.room_number} Main Sensor")
-            dev_main.room_id = room.room_id
-            dev_main.device_type = "sensor"
-            dev_main.location = "main"
+        if create_devices:
+            # --------- Create runtime devices per room ----------
+            for room in rooms:
+                # MAIN sensor device
+                mac_main = _random_mac(rng)
+                dev_main = BLEDevice(mac_address=mac_main, label=f"Room {room.room_number} Main Sensor")
+                dev_main.room_id = room.room_id
+                dev_main.device_type = "sensor"
+                dev_main.location = "main"
 
-            for st in main_sensor_types:
-                uuid = f"{mac_main}-{st}"
-                dev_main.add_sensor(
-                    BLESensor(uuid=uuid, sensor_type=st, unit=_unit_for(st), parser=lambda b: None)
-                )
-            ble_devices.append(dev_main)
+                for st in main_sensor_types:
+                    uuid = f"{mac_main}-{st}"
+                    dev_main.add_sensor(
+                        BLESensor(uuid=uuid, sensor_type=st, unit=_unit_for(st), parser=lambda b: None)
+                    )
+                ble_devices.append(dev_main)
 
-            # TOILET sensor device
-            mac_toilet = _random_mac(rng)
-            dev_toilet = BLEDevice(mac_address=mac_toilet, label=f"Room {room.room_number} Toilet Sensor")
-            dev_toilet.room_id = room.room_id
-            dev_toilet.device_type = "sensor"
-            dev_toilet.location = "toilet"
+                # TOILET sensor device
+                mac_toilet = _random_mac(rng)
+                dev_toilet = BLEDevice(mac_address=mac_toilet, label=f"Room {room.room_number} Toilet Sensor")
+                dev_toilet.room_id = room.room_id
+                dev_toilet.device_type = "sensor"
+                dev_toilet.location = "toilet"
 
-            for st in toilet_sensor_types:
-                uuid = f"{mac_toilet}-{st}"
-                dev_toilet.add_sensor(
-                    BLESensor(uuid=uuid, sensor_type=st, unit=_unit_for(st), parser=lambda b: None)
-                )
-            ble_devices.append(dev_toilet)
+                for st in toilet_sensor_types:
+                    uuid = f"{mac_toilet}-{st}"
+                    dev_toilet.add_sensor(
+                        BLESensor(uuid=uuid, sensor_type=st, unit=_unit_for(st), parser=lambda b: None)
+                    )
+                ble_devices.append(dev_toilet)
 
-            # Ventilation device (actuator, no sensors)
-            vent = BLEDevice(mac_address=None, label=f"Room {room.room_number} Ventilation")
-            vent.room_id = room.room_id
-            vent.device_type = "ventilation"
-            vent.location = "main"
-            ble_devices.append(vent)
+                # Ventilation device (actuator, no sensors)
+                vent = BLEDevice(mac_address=None, label=f"Room {room.room_number} Ventilation")
+                vent.room_id = room.room_id
+                vent.device_type = "ventilation"
+                vent.location = "main"
+                ble_devices.append(vent)
 
-            # Speaker device (actuator, no sensors)
-            if include_speaker:
-                spk = BLEDevice(mac_address=None, label=f"Room {room.room_number} Speaker")
-                spk.room_id = room.room_id
-                spk.device_type = "speaker"
-                spk.location = "main"
-                ble_devices.append(spk)
+                # Speaker device (actuator, no sensors)
+                if include_speaker:
+                    spk = BLEDevice(mac_address=None, label=f"Room {room.room_number} Speaker")
+                    spk.room_id = room.room_id
+                    spk.device_type = "speaker"
+                    spk.location = "main"
+                    ble_devices.append(spk)
 
-            # Toilet heater device (actuator, no sensors)
-            th = BLEDevice(mac_address=None, label=f"Room {room.room_number} Toilet Heater")
-            th.room_id = room.room_id
-            th.device_type = "toilet_heater"
-            th.location = "toilet"
-            ble_devices.append(th)
+                # Toilet heater device (actuator, no sensors)
+                th = BLEDevice(mac_address=None, label=f"Room {room.room_number} Toilet Heater")
+                th.room_id = room.room_id
+                th.device_type = "toilet_heater"
+                th.location = "toilet"
+                ble_devices.append(th)
 
-            # Toilet light device (actuator, no sensors)
-            tl = BLEDevice(mac_address=None, label=f"Room {room.room_number} Toilet Light")
-            tl.room_id = room.room_id
-            tl.device_type = "toilet_light"
-            tl.location = "toilet"
-            ble_devices.append(tl)
+                # Toilet light device (actuator, no sensors)
+                tl = BLEDevice(mac_address=None, label=f"Room {room.room_number} Toilet Light")
+                tl.room_id = room.room_id
+                tl.device_type = "toilet_light"
+                tl.location = "toilet"
+                ble_devices.append(tl)
 
     return ble_devices

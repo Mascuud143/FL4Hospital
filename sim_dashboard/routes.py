@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime, time, timedelta, timezone
 from statistics import mean, pstdev
 import math
@@ -20,6 +21,16 @@ from flask import Blueprint, jsonify, render_template, request
 from sim_dashboard.csv_store import load_data
 from simulation_batch.config import DAYS, START_DATE
 import simulation_batch.config as sim_config
+from k_hours_based.runtime_defaults import (
+    BUILD_CSV_WRITE_BATCH_SIZE as _DEFAULT_BUILD_CSV_WRITE_BATCH_SIZE,
+    BUILD_DEFAULT_CHUNK_SIZE as _DEFAULT_BUILD_CHUNK_SIZE,
+    FEDERATED_DEFAULT_CHUNKSIZE as _DEFAULT_FEDERATED_CHUNKSIZE,
+    SPLIT_CSV_WRITE_BATCH_SIZE as _DEFAULT_SPLIT_CSV_WRITE_BATCH_SIZE,
+    SPLIT_DEFAULT_CHUNK_SIZE as _DEFAULT_SPLIT_CHUNK_SIZE,
+    default_build_workers,
+    default_federated_client_cpu,
+    default_federated_workers,
+)
 
 sim_bp = Blueprint("sim_bp", __name__)
 _ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -31,7 +42,24 @@ _MAX_LOG_LINES = 2000
 _RUN_METADATA_DIR = _ROOT_DIR / "sim_dashboard" / "run_metadata"
 _LAST_RUNTIME_SUMMARY_PATH = _RUN_METADATA_DIR / "last_run_time_summary.json"
 _PC_SPEC_PATH = _RUN_METADATA_DIR / "pc_specification.json"
+_BENCHMARK_RUNS_PATH = _RUN_METADATA_DIR / "benchmark_runs.csv"
 _RUNTIME_HISTORY_LIMIT = 50
+_DEFAULT_BUILD_WORKERS = default_build_workers()
+_DEFAULT_SPLIT_WORKERS = default_build_workers()
+_BENCHMARK_FIELDNAMES = [
+    "timestamp",
+    "rooms",
+    "patients",
+    "days",
+    "data_generation_time",
+    "data_generation_peak_memory",
+    "training_time",
+    "training_peak_memory",
+    "predictions_choice",
+    "ai_config",
+    "run_status",
+    "stop_stage",
+]
 _TASK_DIRS = {
     "k_hours": _K_HOURS_DIR,
     "event": _EVENT_DIR,
@@ -54,6 +82,41 @@ _MODEL_OUTPUT_DIRS = {
         "mlp": _EVENT_DIR / "fl_weights_dashboard_mlp",
     },
 }
+_ADMISSIONS_CSV_PATH = _ROOT_DIR / "filestorage" / "admissions.csv"
+
+
+def _simulation_period_from_admissions() -> str:
+    if not _ADMISSIONS_CSV_PATH.exists():
+        return f"{START_DATE} to {(START_DATE + timedelta(days=DAYS)).strftime('%Y-%m-%d')}"
+
+    min_admitted: datetime | None = None
+    max_discharged: datetime | None = None
+    with _ADMISSIONS_CSV_PATH.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            admitted_raw = str(row.get("admitted_at") or "").strip()
+            discharged_raw = str(row.get("discharged_at") or "").strip()
+            try:
+                admitted_at = datetime.fromisoformat(admitted_raw)
+                discharged_at = datetime.fromisoformat(discharged_raw)
+            except ValueError:
+                continue
+            if min_admitted is None or admitted_at < min_admitted:
+                min_admitted = admitted_at
+            if max_discharged is None or discharged_at > max_discharged:
+                max_discharged = discharged_at
+
+    if min_admitted is None or max_discharged is None:
+        return f"{START_DATE} to {(START_DATE + timedelta(days=DAYS)).strftime('%Y-%m-%d')}"
+    return f"{min_admitted.strftime('%Y-%m-%d')} to {max_discharged.strftime('%Y-%m-%d')}"
+
+
+def _default_federated_client_cpu() -> float:
+    return default_federated_client_cpu()
+
+
+def _default_federated_workers() -> int:
+    return default_federated_workers()
 
 try:
     if str(_K_HOURS_DIR) not in sys.path:
@@ -103,8 +166,102 @@ def _new_job(kind: str, command: list[str]) -> str:
             "pid": None,
             "current_process": None,
             "metadata": {},
+            "peak_memory_bytes": 0,
         }
     return job_id
+
+
+def _format_memory_bytes(num_bytes: int | float | None) -> str:
+    if not num_bytes:
+        return "Pending"
+    value = float(num_bytes)
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit_index = 0
+    while value >= 1024.0 and unit_index < len(units) - 1:
+        value /= 1024.0
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(value)} {units[unit_index]}"
+    return f"{value:.2f} {units[unit_index]}"
+
+
+def _process_tree_memory_bytes(root_pid: int) -> int:
+    if root_pid <= 0 or platform.system().lower() != "windows":
+        return 0
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,ParentProcessId,WorkingSetSize | ConvertTo-Json -Compress"
+    )
+    raw = _run_powershell_query(script)
+    if not raw:
+        return 0
+    try:
+        rows = json.loads(raw)
+    except Exception:
+        return 0
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return 0
+
+    by_parent: dict[int, list[int]] = {}
+    working_set: dict[int, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("ProcessId"))
+            parent_pid = int(row.get("ParentProcessId"))
+            rss = int(row.get("WorkingSetSize") or 0)
+        except Exception:
+            continue
+        by_parent.setdefault(parent_pid, []).append(pid)
+        working_set[pid] = rss
+
+    if root_pid not in working_set:
+        return 0
+
+    total = 0
+    stack = [root_pid]
+    seen: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        total += working_set.get(pid, 0)
+        stack.extend(by_parent.get(pid, []))
+    return total
+
+
+def _start_memory_monitor(job_id: str, root_pid: int) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+
+    def _monitor() -> None:
+        peak = 0
+        while not stop_event.wait(1.0):
+            current = _process_tree_memory_bytes(root_pid)
+            if current <= 0:
+                continue
+            peak = max(peak, current)
+            with _AI_JOBS_LOCK:
+                job = _AI_JOBS.get(job_id)
+                if job is None:
+                    return
+                job["peak_memory_bytes"] = max(int(job.get("peak_memory_bytes") or 0), peak)
+
+        current = _process_tree_memory_bytes(root_pid)
+        if current > 0:
+            peak = max(peak, current)
+        if peak > 0:
+            with _AI_JOBS_LOCK:
+                job = _AI_JOBS.get(job_id)
+                if job is not None:
+                    job["peak_memory_bytes"] = max(int(job.get("peak_memory_bytes") or 0), peak)
+
+    thread = threading.Thread(target=_monitor, daemon=True)
+    thread.start()
+    return stop_event, thread
 
 
 def _append_log(job_id: str, line: str) -> None:
@@ -154,6 +311,20 @@ def _append_log(job_id: str, line: str) -> None:
                 job["progress"] = max(job["progress"], 95)
 
 
+def _reset_job_peak_memory(job_id: str) -> None:
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        if job is not None:
+            job["peak_memory_bytes"] = 0
+
+
+def _log_peak_memory(job_id: str, prefix: str) -> None:
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        peak_memory_bytes = int(job.get("peak_memory_bytes") or 0) if job else 0
+    _append_log(job_id, f"{prefix} peak_memory={_format_memory_bytes(peak_memory_bytes)}")
+
+
 def _finish_job(job_id: str, ok: bool, return_code: int | None) -> None:
     snapshot = None
     with _AI_JOBS_LOCK:
@@ -194,6 +365,7 @@ def _run_ai_commands(job_id: str, commands: list[list[str]]) -> None:
                 _mark_stopped(job_id, return_code=None)
                 return
 
+        _reset_job_peak_memory(job_id)
         _append_log(job_id, f"[dashboard] step {idx}/{len(commands)} command: {' '.join(command)}")
         try:
             process = subprocess.Popen(
@@ -217,11 +389,15 @@ def _run_ai_commands(job_id: str, commands: list[list[str]]) -> None:
                 job["pid"] = process.pid
                 job["current_process"] = process
 
+        monitor_stop, monitor_thread = _start_memory_monitor(job_id, process.pid)
+
         if process.stdout is not None:
             for line in process.stdout:
                 _append_log(job_id, line)
 
         return_code = process.wait()
+        monitor_stop.set()
+        monitor_thread.join(timeout=2.0)
         with _AI_JOBS_LOCK:
             job = _AI_JOBS.get(job_id)
             stop_requested = bool(job and job.get("stop_requested"))
@@ -230,15 +406,19 @@ def _run_ai_commands(job_id: str, commands: list[list[str]]) -> None:
                 job["current_process"] = None
 
         if stop_requested:
+            if return_code == 0:
+                _log_peak_memory(job_id, "[dashboard] job stopped")
             _append_log(job_id, "[dashboard] job stopped by user")
             _mark_stopped(job_id, return_code=return_code)
             return
 
         if return_code != 0:
+            _log_peak_memory(job_id, f"[dashboard] job failed with exit code {return_code}")
             _append_log(job_id, f"[dashboard] job failed with exit code {return_code}")
             _finish_job(job_id, ok=False, return_code=return_code)
             return
 
+    _log_peak_memory(job_id, "[dashboard] job completed successfully")
     _append_log(job_id, "[dashboard] job completed successfully")
     _finish_job(job_id, ok=True, return_code=0)
 
@@ -251,6 +431,550 @@ def _start_ai_job(kind: str, commands: list[list[str]], *, metadata: dict[str, o
             if job is not None:
                 job["metadata"] = metadata
     thread = threading.Thread(target=_run_ai_commands, args=(job_id, commands), daemon=True)
+    thread.start()
+    return job_id
+
+
+def _active_job_id(kind: str) -> str | None:
+    with _AI_JOBS_LOCK:
+        for job_id, job in _AI_JOBS.items():
+            if job.get("kind") != kind:
+                continue
+            if job.get("status") == "running":
+                return job_id
+    return None
+
+
+def _update_job_metadata(job_id: str, **values: object) -> None:
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        if not job:
+            return
+        metadata = job.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            job["metadata"] = metadata
+        metadata.update(values)
+
+
+def _simulation_command_and_config(payload: dict[str, object]) -> tuple[list[str], dict[str, object]]:
+    months_raw = payload.get("months")
+    months = None
+    if months_raw not in (None, ""):
+        try:
+            months = max(1, int(months_raw))  # type: ignore[arg-type]
+        except Exception:
+            months = None
+    default_days = int(getattr(sim_config, "DAYS", 1))
+    resolved_days = max(1, round(months * 365 / 12)) if months is not None else int(payload.get("days", default_days))
+    config_payload = {
+        "start_date": str(payload.get("start_date") or _simulation_config_defaults().get("start_date")),
+        "days": resolved_days,
+        "months": months if months is not None else max(1, round(default_days * 12 / 365)),
+        "patient_count": int(payload.get("patient_count", getattr(sim_config, "PATIENT_COUNT", 1))),
+        "random_seed": int(payload.get("random_seed", getattr(sim_config, "RANDOM_SEED", 42))),
+        "change_room_prob": float(payload.get("change_room_prob", getattr(sim_config, "CHANGE_ROOM_PROB", 0.3))),
+        "min_days_before_transfer": int(payload.get("min_days_before_transfer", getattr(sim_config, "MIN_DAYS_BEFORE_TRANSFER", 1))),
+        "min_days_after_transfer": int(payload.get("min_days_after_transfer", getattr(sim_config, "MIN_DAYS_AFTER_TRANSFER", 1))),
+        "comfort_max_changes_per_day": int(payload.get("comfort_max_changes_per_day", getattr(sim_config, "COMFORT_MAX_CHANGES_PER_DAY", 6))),
+        "sim_step_s": int(payload.get("sim_step_s", getattr(sim_config, "SIM_STEP_S", 60))),
+        "sensor_sample_every_s": int(payload.get("sensor_sample_every_s", getattr(sim_config, "SENSOR_SAMPLE_EVERY_S", 300))),
+        "wall_sleep_s": float(payload.get("wall_sleep_s", getattr(sim_config, "WALL_SLEEP_S", 0.0))),
+        "enable_comfort": bool(payload.get("enable_comfort", getattr(sim_config, "ENABLE_COMFORT", True))),
+        "enable_medication": bool(payload.get("enable_medication", getattr(sim_config, "ENABLE_MEDICATION", True))),
+        "enable_visits": bool(payload.get("enable_visits", getattr(sim_config, "ENABLE_VISITS", True))),
+        "enable_toilet_usage": bool(payload.get("enable_toilet_usage", getattr(sim_config, "ENABLE_TOILET_USAGE", False))),
+        "enable_sensor_emit": bool(payload.get("enable_sensor_emit", getattr(sim_config, "ENABLE_SENSOR_EMIT", False))),
+        "enable_utility_usage": bool(payload.get("enable_utility_usage", getattr(sim_config, "ENABLE_UTILITY_USAGE", False))),
+    }
+    command = [
+        sys.executable,
+        "-u",
+        str((_ROOT_DIR / "main.py").resolve()),
+        "--mode",
+        "simulation",
+        "--start-date",
+        config_payload["start_date"],
+        "--days",
+        str(config_payload["days"]),
+        "--patient-count",
+        str(config_payload["patient_count"]),
+        "--random-seed",
+        str(config_payload["random_seed"]),
+        "--change-room-prob",
+        str(config_payload["change_room_prob"]),
+        "--min-days-before-transfer",
+        str(config_payload["min_days_before_transfer"]),
+        "--min-days-after-transfer",
+        str(config_payload["min_days_after_transfer"]),
+        "--comfort-max-changes-per-day",
+        str(config_payload["comfort_max_changes_per_day"]),
+        "--sim-step-s",
+        str(config_payload["sim_step_s"]),
+        "--sensor-sample-every-s",
+        str(config_payload["sensor_sample_every_s"]),
+        "--wall-sleep-s",
+        str(config_payload["wall_sleep_s"]),
+    ]
+    for flag_key, flag_name in (
+        ("enable_comfort", "comfort"),
+        ("enable_medication", "medication"),
+        ("enable_visits", "visits"),
+        ("enable_toilet_usage", "toilet-usage"),
+        ("enable_sensor_emit", "sensor-emit"),
+        ("enable_utility_usage", "utility-usage"),
+    ):
+        command.append(f"--{'enable' if config_payload[flag_key] else 'no-enable'}-{flag_name}")
+    return command, config_payload
+
+
+def _build_command_and_config(payload: dict[str, object], task_type: str) -> tuple[list[str], dict[str, object]]:
+    if task_type == "event":
+        medication_effect_minutes = int(payload.get("medication_effect_minutes", 5))
+        medication_active_hours = int(payload.get("medication_active_hours", 24))
+        command = [
+            sys.executable, "-u", _ai_script(task_type, "build_event_rows.py"),
+            "--data-dir", "filestorage",
+            "--out-dir", str(_BUILD_OUTPUT_DIRS[task_type]),
+            "--medication-effect-minutes", str(medication_effect_minutes),
+            "--medication-active-hours", str(medication_active_hours),
+        ]
+        config = {
+            "mode": task_type,
+            "data_dir": "filestorage",
+            "out_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
+            "medication_effect_minutes": medication_effect_minutes,
+            "medication_active_hours": medication_active_hours,
+        }
+        return command, config
+    step_minutes = int(payload.get("step_minutes", 30))
+    horizon_minutes = int(payload.get("horizon_minutes", 60))
+    workers = int(payload.get("workers", _DEFAULT_BUILD_WORKERS))
+    chunk_size = int(payload.get("chunk_size", _DEFAULT_BUILD_CHUNK_SIZE))
+    csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_BUILD_CSV_WRITE_BATCH_SIZE))
+    command = [
+        sys.executable, "-u", _ai_script(task_type, "build_next_hour_rows.py"),
+        "--data-dir", "filestorage",
+        "--out-dir", str(_BUILD_OUTPUT_DIRS[task_type]),
+        "--step-minutes", str(step_minutes),
+        "--horizon-minutes", str(horizon_minutes),
+        "--workers", str(workers),
+        "--chunk-size", str(chunk_size),
+        "--csv-write-batch-size", str(csv_write_batch_size),
+    ]
+    config = {
+        "mode": task_type,
+        "data_dir": "filestorage",
+        "out_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
+        "step_minutes": step_minutes,
+        "horizon_minutes": horizon_minutes,
+        "workers": workers,
+        "chunk_size": chunk_size,
+        "csv_write_batch_size": csv_write_batch_size,
+    }
+    return command, config
+
+
+def _split_command_and_config(payload: dict[str, object], task_type: str) -> tuple[list[str], dict[str, object]]:
+    chunk_size = int(payload.get("chunk_size", _DEFAULT_SPLIT_CHUNK_SIZE))
+    workers = int(payload.get("workers", _DEFAULT_SPLIT_WORKERS))
+    csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_SPLIT_CSV_WRITE_BATCH_SIZE))
+    train_ratio = float(payload.get("train_ratio", 0.8))
+    min_train_rows = int(payload.get("min_train_rows", 1))
+    command = [
+        sys.executable, "-u", _ai_script(task_type, "split_by_patient_stay.py" if task_type == "event" else "split_next_hour_by_room.py"),
+        "--input-dir", str(_BUILD_OUTPUT_DIRS[task_type]),
+        "--output-dir", str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "--train-ratio", str(train_ratio),
+        "--min-train-rows", str(min_train_rows),
+        "--chunk-size", str(chunk_size),
+    ]
+    if task_type != "event":
+        command.extend([
+            "--workers", str(workers),
+            "--csv-write-batch-size", str(csv_write_batch_size),
+        ])
+    config = {
+        "mode": task_type,
+        "input_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
+        "output_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "chunk_size": chunk_size,
+        "workers": workers,
+        "csv_write_batch_size": csv_write_batch_size,
+        "train_ratio": train_ratio,
+        "min_train_rows": min_train_rows,
+    }
+    return command, config
+
+
+def _training_command_and_config(payload: dict[str, object], task_type: str) -> tuple[list[str], dict[str, object]]:
+    model_type = str(payload.get("model_type", "mlp"))
+    aggregation_method = str(payload.get("aggregation_method", "fedavg"))
+    proximal_mu = float(payload.get("proximal_mu", 0.0))
+    rounds = int(payload.get("rounds", 5))
+    local_epochs = int(payload.get("local_epochs", 1))
+    lstm_sequence_length = int(payload.get("lstm_sequence_length", 4))
+    lstm_batch_size = int(payload.get("lstm_batch_size", 32))
+    mlp_hidden_layers = str(payload.get("mlp_hidden_layers", "128,64,32"))
+    mlp_batch_size = int(payload.get("mlp_batch_size", 1 if task_type == "event" else 32))
+    mlp_learning_rate = float(payload.get("mlp_learning_rate", 1e-3))
+    mlp_optimizer = str(payload.get("mlp_optimizer", "adam"))
+    mlp_activation = str(payload.get("mlp_activation", "relu"))
+    lstm_hidden_dim = int(payload.get("lstm_hidden_dim", 64))
+    lstm_num_layers = int(payload.get("lstm_num_layers", 1))
+    lstm_head_hidden_dim = int(payload.get("lstm_head_hidden_dim", 64))
+    lstm_learning_rate = float(payload.get("lstm_learning_rate", 1e-3))
+    lstm_optimizer = str(payload.get("lstm_optimizer", "adam"))
+    lstm_activation = str(payload.get("lstm_activation", "relu"))
+    hybrid_change_hidden_layers = str(payload.get("hybrid_change_hidden_layers", "128,64"))
+    hybrid_change_activation = str(payload.get("hybrid_change_activation", "relu"))
+    max_rooms_raw = payload.get("max_rooms")
+    max_rooms = int(max_rooms_raw) if max_rooms_raw not in (None, "") else None
+    fraction_fit = float(payload.get("fraction_fit", 1.0))
+    fraction_evaluate = float(payload.get("fraction_evaluate", 1.0))
+    min_fit_clients = int(payload.get("min_fit_clients", 2))
+    min_evaluate_clients = int(payload.get("min_evaluate_clients", 2))
+    min_available_clients = int(payload.get("min_available_clients", 2))
+    workers_raw = payload.get("workers")
+    if workers_raw not in (None, ""):
+        workers = max(1, int(workers_raw))
+        total_cpus = max(1, int(os.cpu_count() or 1))
+        client_cpu = total_cpus / float(workers)
+    else:
+        workers = _default_federated_workers()
+        client_cpu = float(payload.get("client_cpu", _default_federated_client_cpu()))
+    chunksize = int(payload.get("chunksize", _DEFAULT_FEDERATED_CHUNKSIZE))
+
+    sim_map = {
+        "k_hours": {"mlp": "fl_mlp_simulation.py", "lstm": "fl_lstm_simulation.py", "mlp_lstm": "fl_lstm_mlp_simulation.py"},
+        "event": {"mlp": "fl_simulation.py"},
+    }
+    sim_script = sim_map.get(task_type, {}).get(model_type)
+    if not sim_script:
+        raise ValueError(f"Unsupported model type: {model_type}")
+    weights_out_dir = _weights_dir_for_model(task_type, model_type)
+    summary_dir = weights_out_dir / "summaries"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_name = (
+        {"mlp": "dashboard_summary.json", "lstm": "dashboard_lstm_summary.json", "mlp_lstm": "dashboard_mlp_lstm_summary.json"}.get(model_type, "dashboard_summary.json")
+        if task_type == "k_hours"
+        else "dashboard_event_summary.json"
+    )
+    command = [
+        sys.executable, "-u", _ai_script(task_type, sim_script),
+        "--split-dir", str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "--rounds", str(rounds),
+    ]
+    if task_type == "k_hours":
+        command.extend([
+            "--aggregation-method", aggregation_method,
+            "--local-epochs", str(local_epochs),
+            "--fraction-fit", str(fraction_fit),
+            "--fraction-evaluate", str(fraction_evaluate),
+            "--min-fit-clients", str(min_fit_clients),
+            "--min-evaluate-clients", str(min_evaluate_clients),
+            "--min-available-clients", str(min_available_clients),
+        ])
+    else:
+        command.extend(["--aggregation-method", aggregation_method, "--local-epochs", str(local_epochs)])
+    command.extend([
+        "--weights-out-dir", str(weights_out_dir),
+        "--summary-out", str(summary_dir / summary_name),
+        "--client-cpu", str(client_cpu),
+        "--chunksize", str(chunksize),
+    ])
+    if max_rooms is not None:
+        command.extend(["--max-rooms", str(max_rooms)])
+    if aggregation_method == "fedprox":
+        command.extend(["--proximal-mu", str(proximal_mu)])
+    if task_type == "k_hours" and model_type != "mlp":
+        command.extend(["--sequence-length", str(lstm_sequence_length), "--batch-size", str(lstm_batch_size)])
+    if task_type == "event" or model_type == "mlp":
+        command.extend([
+            "--hidden-layers", mlp_hidden_layers,
+            "--batch-size", str(mlp_batch_size),
+            "--learning-rate", str(mlp_learning_rate),
+            "--optimizer", mlp_optimizer,
+            "--activation", mlp_activation,
+        ])
+    elif model_type == "lstm":
+        command.extend([
+            "--hidden-dim", str(lstm_hidden_dim),
+            "--num-layers", str(lstm_num_layers),
+            "--head-hidden-dim", str(lstm_head_hidden_dim),
+            "--learning-rate", str(lstm_learning_rate),
+            "--optimizer", lstm_optimizer,
+            "--activation", lstm_activation,
+        ])
+    else:
+        command.extend([
+            "--change-hidden-layers", hybrid_change_hidden_layers,
+            "--lstm-hidden-dim", str(lstm_hidden_dim),
+            "--lstm-num-layers", str(lstm_num_layers),
+            "--lstm-head-hidden-dim", str(lstm_head_hidden_dim),
+            "--learning-rate", str(lstm_learning_rate),
+            "--optimizer", lstm_optimizer,
+            "--change-activation", hybrid_change_activation,
+            "--lstm-activation", lstm_activation,
+        ])
+    config = {
+        "mode": task_type,
+        "model_type": model_type,
+        "aggregation_method": aggregation_method,
+        "rounds": rounds,
+        "local_epochs": local_epochs,
+        "split_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "weights_out_dir": str(weights_out_dir),
+        "summary_out": str(summary_dir / summary_name),
+        "fraction_fit": fraction_fit,
+        "fraction_evaluate": fraction_evaluate,
+        "min_fit_clients": min_fit_clients,
+        "min_evaluate_clients": min_evaluate_clients,
+        "min_available_clients": min_available_clients,
+        "workers": workers,
+        "client_cpu": client_cpu,
+        "chunksize": chunksize,
+    }
+    if max_rooms is not None:
+        config["max_rooms"] = max_rooms
+    if aggregation_method == "fedprox":
+        config["proximal_mu"] = proximal_mu
+    if task_type == "event":
+        config.update({"hidden_layers": mlp_hidden_layers, "batch_size": mlp_batch_size, "learning_rate": mlp_learning_rate, "optimizer": mlp_optimizer, "activation": mlp_activation})
+    elif model_type == "mlp":
+        config.update({"hidden_layers": mlp_hidden_layers, "batch_size": mlp_batch_size, "learning_rate": mlp_learning_rate, "optimizer": mlp_optimizer, "activation": mlp_activation})
+    elif model_type == "lstm":
+        config.update({"sequence_length": lstm_sequence_length, "batch_size": lstm_batch_size, "hidden_dim": lstm_hidden_dim, "num_layers": lstm_num_layers, "head_hidden_dim": lstm_head_hidden_dim, "learning_rate": lstm_learning_rate, "optimizer": lstm_optimizer, "activation": lstm_activation})
+    else:
+        config.update({
+            "sequence_length": lstm_sequence_length,
+            "lstm_batch_size": lstm_batch_size,
+            "lstm_hidden_dim": lstm_hidden_dim,
+            "lstm_num_layers": lstm_num_layers,
+            "lstm_head_hidden_dim": lstm_head_hidden_dim,
+            "lstm_learning_rate": lstm_learning_rate,
+            "lstm_optimizer": lstm_optimizer,
+            "lstm_activation": lstm_activation,
+            "mlp_hidden_layers": mlp_hidden_layers,
+            "mlp_batch_size": mlp_batch_size,
+            "mlp_learning_rate": mlp_learning_rate,
+            "mlp_optimizer": mlp_optimizer,
+            "mlp_activation": mlp_activation,
+            "change_hidden_layers": hybrid_change_hidden_layers,
+            "change_activation": hybrid_change_activation,
+        })
+    return command, config
+
+
+def _summarize_ai_config(config: dict[str, object]) -> str:
+    ordered_keys = [
+        "model_type", "aggregation_method", "rounds", "local_epochs", "hidden_layers", "batch_size",
+        "learning_rate", "optimizer", "activation", "sequence_length", "lstm_batch_size",
+        "lstm_hidden_dim", "lstm_num_layers", "lstm_head_hidden_dim", "lstm_learning_rate",
+        "lstm_optimizer", "lstm_activation", "mlp_hidden_layers", "mlp_batch_size",
+        "mlp_learning_rate", "mlp_optimizer", "mlp_activation", "change_hidden_layers",
+        "change_activation", "max_rooms", "client_cpu", "chunksize", "proximal_mu",
+    ]
+    return " | ".join(f"{key}={config[key]}" for key in ordered_keys if key in config and config[key] not in (None, ""))
+
+
+def _workflow_benchmark_context(sim_config_payload: dict[str, object], training_config: dict[str, object]) -> dict[str, object]:
+    data = load_data()
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "rooms": data.get("total_rooms", 0),
+        "patients": sim_config_payload.get("patient_count", ""),
+        "days": sim_config_payload.get("days", ""),
+        "data_generation_time": "",
+        "data_generation_peak_memory": "",
+        "training_time": "",
+        "training_peak_memory": "",
+        "predictions_choice": "state_to_outcome" if training_config.get("mode") == "event" else "k_hours",
+        "ai_config": _summarize_ai_config(training_config),
+        "run_status": "running",
+        "stop_stage": "",
+    }
+
+
+def _run_workflow_stage(
+    job_id: str,
+    *,
+    stage_key: str,
+    stage_label: str,
+    stage_kind: str,
+    command: list[str],
+    task_type: str,
+    config: dict[str, object],
+    progress_running: int,
+    progress_done: int,
+) -> tuple[bool, str | None, float, int]:
+    started_at = datetime.now(timezone.utc)
+    _append_log(job_id, f"[workflow] {stage_label} starting")
+    _append_log(job_id, f"[workflow] {stage_label} command: {' '.join(command)}")
+    _append_log(job_id, f"[workflow] {stage_label} config: {json.dumps(config, ensure_ascii=True, sort_keys=True)}")
+    _reset_job_peak_memory(job_id)
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        if not job:
+            return False, "failed", 0.0, 0
+        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+        stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+        stages[stage_key] = "running"
+        metadata["workflow_stages"] = stages
+        job["metadata"] = metadata
+        job["progress"] = max(int(job.get("progress") or 0), progress_running)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(_ROOT_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"[workflow] failed to start {stage_label}: {exc}")
+        return False, "failed", 0.0, 0
+
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        if job:
+            job["pid"] = process.pid
+            job["current_process"] = process
+
+    monitor_stop, monitor_thread = _start_memory_monitor(job_id, process.pid)
+    if process.stdout is not None:
+        for line in process.stdout:
+            _append_log(job_id, line)
+    return_code = process.wait()
+    monitor_stop.set()
+    monitor_thread.join(timeout=2.0)
+    ended_at = datetime.now(timezone.utc)
+
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        stop_requested = bool(job and job.get("stop_requested"))
+        stage_peak = int(job.get("peak_memory_bytes") or 0) if job else 0
+        if job:
+            job["pid"] = None
+            job["current_process"] = None
+
+    synthetic_job = {
+        "kind": stage_kind,
+        "started_at": started_at.isoformat(),
+        "ended_at": ended_at.isoformat(),
+        "metadata": {"task_type": task_type, "config": config},
+        "status": "stopped" if stop_requested else ("completed" if return_code == 0 else "failed"),
+        "return_code": return_code,
+        "command": command,
+        "peak_memory_bytes": stage_peak,
+    }
+    if return_code == 0:
+        _persist_job_runtime(synthetic_job)
+
+    with _AI_JOBS_LOCK:
+        job = _AI_JOBS.get(job_id)
+        if job:
+            metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+            stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+            stages[stage_key] = "stopped" if stop_requested else ("completed" if return_code == 0 else "failed")
+            metadata["workflow_stages"] = stages
+            job["metadata"] = metadata
+            if return_code == 0:
+                job["progress"] = max(int(job.get("progress") or 0), progress_done)
+
+    if stop_requested:
+        if return_code == 0:
+            _append_log(job_id, f"[workflow] {stage_label} stopped peak_memory={_format_memory_bytes(stage_peak)}")
+        _append_log(job_id, f"[workflow] {stage_label} stopped")
+        return False, "stopped", max(0.0, (ended_at - started_at).total_seconds()), stage_peak
+    if return_code != 0:
+        _append_log(job_id, f"[workflow] {stage_label} failed peak_memory={_format_memory_bytes(stage_peak)}")
+        _append_log(job_id, f"[workflow] {stage_label} failed with exit code {return_code}")
+        return False, "failed", max(0.0, (ended_at - started_at).total_seconds()), stage_peak
+    _append_log(job_id, f"[workflow] {stage_label} completed peak_memory={_format_memory_bytes(stage_peak)}")
+    _append_log(job_id, f"[workflow] {stage_label} completed")
+    return True, None, max(0.0, (ended_at - started_at).total_seconds()), stage_peak
+
+
+def _run_workflow_job(job_id: str, simulation_payload: dict[str, object], training_payload: dict[str, object]) -> None:
+    task_type = _normalize_task_type(training_payload.get("task_type", "k_hours"))
+    build_payload: dict[str, object] = {"task_type": task_type}
+    split_payload: dict[str, object] = {"task_type": task_type}
+    if task_type == "k_hours":
+        split_payload["min_train_rows"] = 1
+
+    simulation_command, simulation_config = _simulation_command_and_config(simulation_payload)
+    build_command, build_config = _build_command_and_config(build_payload, task_type)
+    split_command, split_config = _split_command_and_config(split_payload, task_type)
+    training_command, training_config = _training_command_and_config(training_payload, task_type)
+    benchmark = _workflow_benchmark_context(simulation_config, training_config)
+    _update_job_metadata(job_id, task_type=task_type, workflow_stages={"simulation": "queued", "build": "queued", "split": "queued", "training": "queued"}, benchmark=benchmark)
+
+    stage_defs = [
+        ("simulation", "Simulation", "simulation", simulation_command, simulation_config, 5, 35),
+        ("build", "Build Event Rows" if task_type == "event" else "Build Next-Hour Rows", "build", build_command, build_config, 40, 50),
+        ("split", "Split By Room", "split", split_command, split_config, 55, 65),
+        ("training", "Federated Training", "federated", training_command, training_config, 70, 100),
+    ]
+
+    train_peak = 0
+    data_peak = 0
+    try:
+        for stage_key, stage_label, stage_kind, command, config, p_running, p_done in stage_defs:
+            ok, failure, duration_seconds, peak_memory = _run_workflow_stage(
+                job_id,
+                stage_key=stage_key,
+                stage_label=stage_label,
+                stage_kind=stage_kind,
+                command=command,
+                task_type=task_type if stage_kind != "simulation" else "simulation",
+                config=config,
+                progress_running=p_running,
+                progress_done=p_done,
+            )
+            if stage_key == "simulation":
+                benchmark["data_generation_time"] = _format_duration(duration_seconds)
+                benchmark["data_generation_peak_memory"] = _format_memory_bytes(peak_memory)
+                generated_data = load_data()
+                benchmark["rooms"] = generated_data.get("total_rooms", benchmark.get("rooms", 0))
+                data_peak = peak_memory
+            else:
+                train_peak = max(train_peak, peak_memory)
+                benchmark["training_peak_memory"] = _format_memory_bytes(train_peak)
+                runtime_summary = _load_runtime_summary_file()
+                benchmark["training_time"] = runtime_summary.get("total_runtime", "")
+            _update_job_metadata(job_id, benchmark=benchmark)
+            if not ok:
+                benchmark["run_status"] = failure or "failed"
+                benchmark["stop_stage"] = stage_key
+                _append_benchmark_row(benchmark)
+                if failure == "stopped":
+                    _mark_stopped(job_id, return_code=None)
+                else:
+                    _finish_job(job_id, ok=False, return_code=1)
+                return
+
+        benchmark["run_status"] = "completed"
+        benchmark["stop_stage"] = ""
+        _update_job_metadata(job_id, benchmark=benchmark)
+        _append_benchmark_row(benchmark)
+        _finish_job(job_id, ok=True, return_code=0)
+    except Exception as exc:  # noqa: BLE001
+        _append_log(job_id, f"[workflow] failed: {exc}")
+        benchmark["run_status"] = "failed"
+        benchmark["stop_stage"] = benchmark.get("stop_stage") or "workflow"
+        _update_job_metadata(job_id, benchmark=benchmark)
+        _append_benchmark_row(benchmark)
+        _finish_job(job_id, ok=False, return_code=1)
+
+
+def _start_workflow_job(simulation_payload: dict[str, object], training_payload: dict[str, object]) -> str:
+    job_id = _new_job("workflow", [])
+    _update_job_metadata(job_id, simulation_config=simulation_payload, training_config=training_payload)
+    thread = threading.Thread(target=_run_workflow_job, args=(job_id, simulation_payload, training_payload), daemon=True)
     thread.start()
     return job_id
 
@@ -470,6 +1194,7 @@ def _persist_job_runtime(job: dict[str, object]) -> None:
         runtime_summary["total_runtime"] = _format_duration(total_seconds if total_seconds > 0 else None)
 
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    peak_memory_bytes = int(job.get("peak_memory_bytes") or 0)
     last_configs = runtime_summary["last_configs"]
     config_payload = {
         "task_type": metadata.get("task_type"),
@@ -477,6 +1202,8 @@ def _persist_job_runtime(job: dict[str, object]) -> None:
         "status": job.get("status"),
         "return_code": job.get("return_code"),
         "duration_seconds": round(duration_seconds, 3),
+        "peak_memory_bytes": peak_memory_bytes,
+        "peak_memory": _format_memory_bytes(peak_memory_bytes),
         "started_at": job.get("started_at"),
         "ended_at": job.get("ended_at"),
         **(metadata.get("config") if isinstance(metadata.get("config"), dict) else {}),
@@ -496,6 +1223,8 @@ def _persist_job_runtime(job: dict[str, object]) -> None:
             "started_at": job.get("started_at"),
             "ended_at": job.get("ended_at"),
             "return_code": job.get("return_code"),
+            "peak_memory_bytes": peak_memory_bytes,
+            "peak_memory": _format_memory_bytes(peak_memory_bytes),
             "config": metadata.get("config", {}),
             "command": job.get("command"),
         },
@@ -525,7 +1254,55 @@ def _ensure_run_metadata_files() -> None:
             json.load(f)
     except Exception:
         _PC_SPEC_PATH.write_text(json.dumps(_default_pc_spec(), indent=2), encoding="utf-8")
+    _normalize_benchmark_runs_csv()
     _refresh_pc_spec()
+
+
+def _benchmark_rows_from_file() -> list[dict[str, str]]:
+    if not _BENCHMARK_RUNS_PATH.exists():
+        return []
+    try:
+        with _BENCHMARK_RUNS_PATH.open("r", encoding="utf-8", newline="") as handle:
+            first_line = handle.readline()
+            if not first_line:
+                return []
+            delimiter = ";" if ";" in first_line and "," not in first_line else ","
+            handle.seek(0)
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            rows: list[dict[str, str]] = []
+            for row in reader:
+                normalized = {name: row.get(name, "") for name in _BENCHMARK_FIELDNAMES}
+                if any(str(value).strip() for value in normalized.values()):
+                    rows.append(normalized)
+            return rows
+    except Exception:
+        return []
+
+
+def _write_benchmark_rows(rows: list[dict[str, object]]) -> None:
+    _RUN_METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    with _BENCHMARK_RUNS_PATH.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_BENCHMARK_FIELDNAMES)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in _BENCHMARK_FIELDNAMES})
+
+
+def _normalize_benchmark_runs_csv() -> None:
+    if not _BENCHMARK_RUNS_PATH.exists():
+        return
+    try:
+        with _BENCHMARK_RUNS_PATH.open("r", encoding="utf-8", newline="") as handle:
+            first_line = handle.readline()
+    except Exception:
+        return
+    if not first_line:
+        _write_benchmark_rows([])
+        return
+    if ";" not in first_line:
+        return
+    rows = _benchmark_rows_from_file()
+    _write_benchmark_rows(rows)
 
 
 def _load_run_metadata() -> tuple[dict[str, object], dict[str, object]]:
@@ -1013,6 +1790,7 @@ def _local_pies(frame: pd.DataFrame) -> list[dict[str, object]]:
 
 def _extract_job_metrics(job: dict) -> dict:
     raw = _parse_kv_lines(job.get("logs", []))
+    peak_memory = _format_memory_bytes(int(job.get("peak_memory_bytes") or 0))
     if job.get("kind") == "build":
         items = [
             {
@@ -1032,6 +1810,12 @@ def _extract_job_metrics(job: dict) -> dict:
                 "label": "Workers Used",
                 "value": raw.get("workers_used"),
                 "explain": "Parallel worker processes used during row generation.",
+            },
+            {
+                "key": "peak_memory",
+                "label": "Peak Memory",
+                "value": peak_memory,
+                "explain": "Peak RAM observed for the build process tree.",
             },
         ]
         return {"raw": raw, "items": items}
@@ -1098,6 +1882,12 @@ def _extract_job_metrics(job: dict) -> dict:
                 "value": raw.get("change_f1"),
                 "explain": "Balanced score for change/no-change detection.",
             },
+            {
+                "key": "peak_memory",
+                "label": "Peak Memory",
+                "value": peak_memory,
+                "explain": "Peak RAM observed for the training process tree.",
+            },
         ]
         return {"raw": raw, "items": items}
 
@@ -1122,10 +1912,10 @@ def _extract_job_metrics(job: dict) -> dict:
                 "explain": "Rows assigned to the evaluation split.",
             },
             {
-                "key": "workers_used",
-                "label": "Workers Used",
-                "value": raw.get("workers_used"),
-                "explain": "Parallel worker processes used for per-room splitting.",
+                "key": "peak_memory",
+                "label": "Peak Memory",
+                "value": peak_memory,
+                "explain": "Peak RAM observed for the split process tree.",
             },
         ]
         return {"raw": raw, "items": items}
@@ -1245,7 +2035,7 @@ def rooms():
         for room in data["rooms"]
     ]
 
-    simulation_period = f"{START_DATE} to {(START_DATE + timedelta(days=DAYS)).strftime('%Y-%m-%d')}"
+    simulation_period = _simulation_period_from_admissions()
     simulation_info = {
         "total_rooms": data["total_rooms"],
         "total_patients": data["total_patients"],
@@ -1325,6 +2115,8 @@ def room_detail(room_id: int):
 
     utility_usages = data["utility_by_room"].get(room_id, [])[:10]
     ventilation_data = data["ventilations_by_room"].get(room_id, [])
+    toilet_heater_data = data["toilet_heaters_by_room"].get(room_id, [])
+    toilet_light_data = data["toilet_lights_by_room"].get(room_id, [])
     room_data = {"room_id": room["room_id"], "room_number": room["room_number"], "devices": device_data}
 
     return render_template(
@@ -1334,6 +2126,8 @@ def room_detail(room_id: int):
         comfort_preferences=comfort_preferences,
         utility_usages=utility_usages,
         ventilation_data=ventilation_data,
+        toilet_heater_data=toilet_heater_data,
+        toilet_light_data=toilet_light_data,
     )
 
 
@@ -1399,8 +2193,9 @@ def api_ai_build_start():
     else:
         step_minutes = int(payload.get("step_minutes", 30))
         horizon_minutes = int(payload.get("horizon_minutes", 60))
-        workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
-        chunk_size = int(payload.get("chunk_size", 250))
+        workers = int(payload.get("workers", _DEFAULT_BUILD_WORKERS))
+        chunk_size = int(payload.get("chunk_size", _DEFAULT_BUILD_CHUNK_SIZE))
+        csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_BUILD_CSV_WRITE_BATCH_SIZE))
         build_command = [
             sys.executable,
             "-u",
@@ -1417,6 +2212,8 @@ def api_ai_build_start():
             str(workers),
             "--chunk-size",
             str(chunk_size),
+            "--csv-write-batch-size",
+            str(csv_write_batch_size),
         ]
     build_config = {
         "mode": task_type,
@@ -1437,6 +2234,7 @@ def api_ai_build_start():
                 "horizon_minutes": horizon_minutes,
                 "workers": workers,
                 "chunk_size": chunk_size,
+                "csv_write_batch_size": csv_write_batch_size,
             }
         )
     job_id = _start_ai_job("build", [build_command], metadata={"task_type": task_type, "config": build_config})
@@ -1447,57 +2245,56 @@ def api_ai_build_start():
 def api_ai_split_start():
     payload = request.get_json(silent=True) or {}
     task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
-    chunk_size = int(payload.get("chunk_size", 200000))
-    if task_type == "event":
-        test_fraction = float(payload.get("test_fraction", 0.2))
-        split_command = [
-            sys.executable,
-            "-u",
-            _ai_script(task_type, "split_by_patient_stay.py"),
-            "--input-dir",
-            str(_BUILD_OUTPUT_DIRS[task_type]),
-            "--output-dir",
-            str(_SPLIT_OUTPUT_DIRS[task_type]),
-            "--test-fraction",
-            str(test_fraction),
-            "--chunk-size",
-            str(chunk_size),
-        ]
-    else:
-        train_ratio = float(payload.get("train_ratio", 0.8))
-        min_train_rows = int(payload.get("min_train_rows", 1))
-        workers = int(payload.get("workers", max(1, (os.cpu_count() or 2) - 1)))
-        split_command = [
-            sys.executable,
-            "-u",
-            _ai_script(task_type, "split_next_hour_by_room.py"),
-            "--input-dir",
-            str(_BUILD_OUTPUT_DIRS[task_type]),
-            "--output-dir",
-            str(_SPLIT_OUTPUT_DIRS[task_type]),
-            "--train-ratio",
-            str(train_ratio),
-            "--min-train-rows",
-            str(min_train_rows),
-            "--chunk-size",
-            str(chunk_size),
-            "--workers",
-            str(workers),
-        ]
+    chunk_size = int(payload.get("chunk_size", _DEFAULT_SPLIT_CHUNK_SIZE))
+    workers = int(payload.get("workers", _DEFAULT_SPLIT_WORKERS))
+    csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_SPLIT_CSV_WRITE_BATCH_SIZE))
+    train_ratio = float(payload.get("train_ratio", 0.8))
+    min_train_rows = int(payload.get("min_train_rows", 1))
+    split_command = [
+        sys.executable,
+        "-u",
+        _ai_script(task_type, "split_by_patient_stay.py" if task_type == "event" else "split_next_hour_by_room.py"),
+        "--input-dir",
+        str(_BUILD_OUTPUT_DIRS[task_type]),
+        "--output-dir",
+        str(_SPLIT_OUTPUT_DIRS[task_type]),
+        "--train-ratio",
+        str(train_ratio),
+        "--min-train-rows",
+        str(min_train_rows),
+        "--chunk-size",
+        str(chunk_size),
+    ]
+    if task_type != "event":
+        split_command.extend(
+            [
+                "--workers",
+                str(workers),
+                "--csv-write-batch-size",
+                str(csv_write_batch_size),
+            ]
+        )
     split_config = {
         "mode": task_type,
         "input_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
         "output_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
         "chunk_size": chunk_size,
     }
-    if task_type == "event":
-        split_config["test_fraction"] = test_fraction
+    if task_type != "event":
+        split_config.update(
+            {
+                "chunk_size": chunk_size,
+                "workers": workers,
+                "csv_write_batch_size": csv_write_batch_size,
+                "train_ratio": train_ratio,
+                "min_train_rows": min_train_rows,
+            }
+        )
     else:
         split_config.update(
             {
                 "train_ratio": train_ratio,
                 "min_train_rows": min_train_rows,
-                "workers": workers,
             }
         )
     job_id = _start_ai_job("split", [split_command], metadata={"task_type": task_type, "config": split_config})
@@ -1528,14 +2325,22 @@ def api_ai_federated_start():
     lstm_activation = str(payload.get("lstm_activation", "relu"))
     hybrid_change_hidden_layers = str(payload.get("hybrid_change_hidden_layers", "128,64"))
     hybrid_change_activation = str(payload.get("hybrid_change_activation", "relu"))
-    max_rooms = int(payload.get("max_rooms", 20))
+    max_rooms_raw = payload.get("max_rooms")
+    max_rooms = int(max_rooms_raw) if max_rooms_raw not in (None, "") else None
     fraction_fit = float(payload.get("fraction_fit", 1.0))
     fraction_evaluate = float(payload.get("fraction_evaluate", 1.0))
     min_fit_clients = int(payload.get("min_fit_clients", 2))
     min_evaluate_clients = int(payload.get("min_evaluate_clients", 2))
     min_available_clients = int(payload.get("min_available_clients", 2))
-    client_cpu = float(payload.get("client_cpu", 1.0))
-    chunksize = int(payload.get("chunksize", 200000))
+    workers_raw = payload.get("workers")
+    if workers_raw not in (None, ""):
+        workers = max(1, int(workers_raw))
+        total_cpus = max(1, int(os.cpu_count() or 1))
+        client_cpu = total_cpus / float(workers)
+    else:
+        workers = _default_federated_workers()
+        client_cpu = float(payload.get("client_cpu", _default_federated_client_cpu()))
+    chunksize = int(payload.get("chunksize", _DEFAULT_FEDERATED_CHUNKSIZE))
 
     sim_map = {
         "k_hours": {
@@ -1592,6 +2397,8 @@ def api_ai_federated_start():
         ])
     else:
         command.extend([
+            "--aggregation-method",
+            aggregation_method,
             "--local-epochs",
             str(local_epochs),
         ])
@@ -1604,10 +2411,10 @@ def api_ai_federated_start():
         str(client_cpu),
         "--chunksize",
         str(chunksize),
-        "--max-rooms",
-        str(max_rooms),
     ])
-    if task_type == "k_hours" and aggregation_method == "fedprox":
+    if max_rooms is not None:
+        command.extend(["--max-rooms", str(max_rooms)])
+    if aggregation_method == "fedprox":
         command.extend(["--proximal-mu", str(proximal_mu)])
     if task_type == "k_hours" and model_type != "mlp":
         command.extend(
@@ -1700,10 +2507,12 @@ def api_ai_federated_start():
         "min_fit_clients": min_fit_clients,
         "min_evaluate_clients": min_evaluate_clients,
         "min_available_clients": min_available_clients,
+        "workers": workers,
         "client_cpu": client_cpu,
         "chunksize": chunksize,
-        "max_rooms": max_rooms,
     }
+    if max_rooms is not None:
+        training_config["max_rooms"] = max_rooms
     if aggregation_method == "fedprox":
         training_config["proximal_mu"] = proximal_mu
     if task_type == "event":
@@ -1800,67 +2609,51 @@ def new_simulation():
     )
 
 
+@sim_bp.route("/new-simulation-ai")
+def new_simulation_ai():
+    runtime_summary, pc_spec = _load_run_metadata()
+    config_defaults = _simulation_config_defaults()
+    return render_template(
+        "new_simulation_ai.html",
+        config_defaults=config_defaults,
+        runtime_summary=runtime_summary,
+        pc_spec=pc_spec,
+        runtime_summary_path=str(_LAST_RUNTIME_SUMMARY_PATH),
+        pc_spec_path=str(_PC_SPEC_PATH),
+        benchmark_csv_path=str(_BENCHMARK_RUNS_PATH),
+    )
+
+
 @sim_bp.route("/api/simulation/start", methods=["POST"])
 def api_simulation_start():
+    active_job_id = _active_job_id("simulation")
+    if active_job_id:
+        return jsonify({"error": "A simulation is already running.", "job_id": active_job_id}), 409
+
     payload = request.get_json(silent=True) or {}
-    config_payload = {
-        "start_date": str(payload.get("start_date") or _simulation_config_defaults().get("start_date")),
-        "days": int(payload.get("days", getattr(sim_config, "DAYS", 1))),
-        "patient_count": int(payload.get("patient_count", getattr(sim_config, "PATIENT_COUNT", 1))),
-        "random_seed": int(payload.get("random_seed", getattr(sim_config, "RANDOM_SEED", 42))),
-        "change_room_prob": float(payload.get("change_room_prob", getattr(sim_config, "CHANGE_ROOM_PROB", 0.3))),
-        "min_days_before_transfer": int(payload.get("min_days_before_transfer", getattr(sim_config, "MIN_DAYS_BEFORE_TRANSFER", 1))),
-        "min_days_after_transfer": int(payload.get("min_days_after_transfer", getattr(sim_config, "MIN_DAYS_AFTER_TRANSFER", 1))),
-        "comfort_max_changes_per_day": int(payload.get("comfort_max_changes_per_day", getattr(sim_config, "COMFORT_MAX_CHANGES_PER_DAY", 6))),
-        "sim_step_s": int(payload.get("sim_step_s", getattr(sim_config, "SIM_STEP_S", 60))),
-        "sensor_sample_every_s": int(payload.get("sensor_sample_every_s", getattr(sim_config, "SENSOR_SAMPLE_EVERY_S", 300))),
-        "wall_sleep_s": float(payload.get("wall_sleep_s", getattr(sim_config, "WALL_SLEEP_S", 0.0))),
-        "enable_comfort": bool(payload.get("enable_comfort", getattr(sim_config, "ENABLE_COMFORT", True))),
-        "enable_medication": bool(payload.get("enable_medication", getattr(sim_config, "ENABLE_MEDICATION", True))),
-        "enable_visits": bool(payload.get("enable_visits", getattr(sim_config, "ENABLE_VISITS", True))),
-        "enable_toilet_usage": bool(payload.get("enable_toilet_usage", getattr(sim_config, "ENABLE_TOILET_USAGE", False))),
-        "enable_sensor_emit": bool(payload.get("enable_sensor_emit", getattr(sim_config, "ENABLE_SENSOR_EMIT", False))),
-        "enable_utility_usage": bool(payload.get("enable_utility_usage", getattr(sim_config, "ENABLE_UTILITY_USAGE", False))),
-    }
-    command = [
-        sys.executable,
-        "-u",
-        str((_ROOT_DIR / "main.py").resolve()),
-        "--mode",
-        "simulation",
-        "--start-date",
-        config_payload["start_date"],
-        "--days",
-        str(config_payload["days"]),
-        "--patient-count",
-        str(config_payload["patient_count"]),
-        "--random-seed",
-        str(config_payload["random_seed"]),
-        "--change-room-prob",
-        str(config_payload["change_room_prob"]),
-        "--min-days-before-transfer",
-        str(config_payload["min_days_before_transfer"]),
-        "--min-days-after-transfer",
-        str(config_payload["min_days_after_transfer"]),
-        "--comfort-max-changes-per-day",
-        str(config_payload["comfort_max_changes_per_day"]),
-        "--sim-step-s",
-        str(config_payload["sim_step_s"]),
-        "--sensor-sample-every-s",
-        str(config_payload["sensor_sample_every_s"]),
-        "--wall-sleep-s",
-        str(config_payload["wall_sleep_s"]),
-    ]
-    for flag_key, flag_name in (
-        ("enable_comfort", "comfort"),
-        ("enable_medication", "medication"),
-        ("enable_visits", "visits"),
-        ("enable_toilet_usage", "toilet-usage"),
-        ("enable_sensor_emit", "sensor-emit"),
-        ("enable_utility_usage", "utility-usage"),
-    ):
-        command.append(f"--{'enable' if config_payload[flag_key] else 'no-enable'}-{flag_name}")
+    command, config_payload = _simulation_command_and_config(payload)
     job_id = _start_ai_job("simulation", [command], metadata={"task_type": "simulation", "config": config_payload})
+    return jsonify({"job_id": job_id, "status": "running"})
+
+
+@sim_bp.route("/api/workflow/start", methods=["POST"])
+def api_workflow_start():
+    active_job_id = _active_job_id("workflow")
+    if active_job_id:
+        return jsonify({"error": "A workflow is already running.", "job_id": active_job_id}), 409
+    for kind in ("simulation", "build", "split", "federated"):
+        active_stage_job = _active_job_id(kind)
+        if active_stage_job:
+            return jsonify({"error": f"A {kind} job is already running.", "job_id": active_stage_job}), 409
+
+    payload = request.get_json(silent=True) or {}
+    simulation_payload = payload.get("simulation") if isinstance(payload.get("simulation"), dict) else {}
+    training_payload = payload.get("training") if isinstance(payload.get("training"), dict) else {}
+    try:
+        _training_command_and_config(training_payload, _normalize_task_type(training_payload.get("task_type", "k_hours")))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    job_id = _start_workflow_job(simulation_payload, training_payload)
     return jsonify({"job_id": job_id, "status": "running"})
 
 
@@ -1868,16 +2661,13 @@ def api_simulation_start():
 def api_ai_results():
     task_type = _normalize_task_type(request.args.get("task_type", "k_hours"))
     model_type = str(request.args.get("model_type", "mlp") or "mlp")
-    result_set = str(request.args.get("result_set", "test") or "test").strip().lower()
     scope = str(request.args.get("scope", "global") or "global")
+    view = str(request.args.get("view", "aggregated") or "aggregated")
+    dataset = str(request.args.get("dataset", "test") or "test")
     figure_detail = str(request.args.get("figure_detail", "summary") or "summary")
     requested_room_id = str(request.args.get("room_id", "") or "").strip()
-    if result_set not in {"test", "train"}:
-        return jsonify({"error": f"Unsupported result set: {result_set}"}), 400
 
     weights_dir = _weights_dir_for_model(task_type, model_type)
-    if task_type == "event" and result_set == "train":
-        return jsonify({"error": "Train result view is currently only available for k-hours models."}), 400
     if task_type == "event":
         metric_rows: list[dict[str, object]] = []
         for path in sorted(weights_dir.glob("round_*_total_metrics.csv"), key=lambda item: int(item.stem.split("_")[1])):
@@ -1944,8 +2734,9 @@ def api_ai_results():
                 {
                     "task_type": task_type,
                     "model_type": model_type,
-                    "result_set": result_set,
                     "scope": scope,
+                    "view": view,
+                    "dataset": dataset,
                     "figure_detail": figure_detail,
                     "room_id": active_room_id or None,
                     "room_ids": room_ids,
@@ -1957,14 +2748,15 @@ def api_ai_results():
             )
         )
 
-    if result_set == "train":
-        total_frame = _load_metrics_csv(weights_dir / "train_total_metrics.csv")
-        room_frame = _load_metrics_csv(weights_dir / "train_room_metrics.csv")
-        if total_frame.empty:
-            total_frame = _load_metrics_csv(weights_dir / "train_metrics.csv")
-    else:
+    if scope == "global":
         total_frame = _load_metrics_csv(weights_dir / "total_metrics.csv")
         room_frame = _load_metrics_csv(weights_dir / "room_metrics.csv")
+    elif dataset == "training":
+        total_frame = _load_metrics_csv(weights_dir / "train_metrics.csv")
+        room_frame = _load_metrics_csv(weights_dir / "train_room_metrics.csv")
+    else:
+        total_frame = _load_metrics_csv(weights_dir / "local_test_metrics.csv")
+        room_frame = _load_metrics_csv(weights_dir / "local_test_room_metrics.csv")
 
     if total_frame.empty and room_frame.empty:
         return jsonify({"error": f"No metrics found for model '{model_type}' in {weights_dir}"}), 404
@@ -1978,21 +2770,21 @@ def api_ai_results():
 
     room_ids = sorted(room_frame["room_id"].dropna().astype(str).unique().tolist()) if not room_frame.empty else []
     active_room_id = requested_room_id
-    if scope == "local":
+    requires_room = scope == "local" or view == "by_room"
+    if requires_room:
         if not active_room_id and room_ids:
             active_room_id = room_ids[0]
         if active_room_id:
             room_frame = room_frame[room_frame["room_id"] == active_room_id].copy()
 
-    source_frame = room_frame if scope == "local" else total_frame
+    source_frame = room_frame if requires_room else total_frame
     if source_frame.empty:
         return jsonify({"error": f"No metrics available for scope '{scope}'"}), 404
 
     latest_row = source_frame.sort_values("round").iloc[-1].to_dict()
-    sample_label = "Trained Samples" if result_set == "train" else "Evaluated Samples"
-    sample_explain = "Number of training examples included in the round." if result_set == "train" else "Number of test examples included in evaluation."
     cards = [
         {"label": "Round", "value": _to_native(latest_row.get("round")), "explain": "Latest completed federated round."},
+        {"label": "Train Loss", "value": _to_native(latest_row.get("train_loss")), "explain": "Average optimization loss during local client training."},
         {"label": "MAE Temp Main", "value": _to_native(latest_row.get("mae_y_temp_main")), "explain": "Average absolute error for main temperature."},
         {"label": "RMSE Temp Main", "value": _to_native(latest_row.get("rmse_y_temp_main")), "explain": "Root mean squared error for main temperature."},
         {"label": "Regression Correct Rate", "value": _to_native(latest_row.get("regression_correct_rate")), "explain": "Share of samples meeting the regression correctness criterion."},
@@ -2000,24 +2792,38 @@ def api_ai_results():
         {"label": "Change Precision", "value": _to_native(latest_row.get("change_precision")), "explain": "Of predicted changes, how many were true changes."},
         {"label": "Change Recall", "value": _to_native(latest_row.get("change_recall")), "explain": "Of real changes, how many the model detected."},
         {"label": "Change F1", "value": _to_native(latest_row.get("change_f1")), "explain": "Balance between change precision and recall."},
-        {"label": sample_label, "value": _to_native(latest_row.get("evaluated_examples") or latest_row.get("num_examples") or latest_row.get("trained_examples")), "explain": sample_explain},
+        {"label": "Samples", "value": _to_native(latest_row.get("evaluated_examples") or latest_row.get("num_examples") or latest_row.get("trained_examples")), "explain": "Number of rows included in this result set."},
     ]
 
     return jsonify(
         _sanitize_for_json(
             {
                 "model_type": model_type,
-                "result_set": result_set,
                 "scope": scope,
+                "view": view,
+                "dataset": dataset,
                 "figure_detail": figure_detail,
                 "room_id": active_room_id or None,
                 "room_ids": room_ids,
                 "weights_dir": str(weights_dir),
                 "latest_cards": cards,
                 "line_charts": _error_analysis_line_charts(source_frame) if figure_detail == "detailed" else _summary_line_charts(source_frame),
-                "pie_charts": _local_pies(source_frame) if scope == "local" else _global_pies(source_frame),
+                "pie_charts": _local_pies(source_frame) if requires_room else _global_pies(source_frame),
             }
         )
+    )
+
+
+@sim_bp.route("/api/ai/benchmark/context", methods=["GET"])
+def api_ai_benchmark_context():
+    data = load_data()
+    return jsonify(
+        {
+            "rooms": data.get("total_rooms", 0),
+            "patients": data.get("total_patients", 0),
+            "admissions": data.get("total_admissions", 0),
+            "data_dir": data.get("data_dir"),
+        }
     )
 
 
@@ -2080,6 +2886,37 @@ def _build_single_input_row(payload: dict) -> pd.DataFrame:
             row[col] = float(value)
 
     return pd.DataFrame([row])
+
+
+def _append_benchmark_row(payload: dict[str, object]) -> None:
+    _normalize_benchmark_runs_csv()
+    write_header = not _BENCHMARK_RUNS_PATH.exists()
+    with _BENCHMARK_RUNS_PATH.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_BENCHMARK_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({name: payload.get(name, "") for name in _BENCHMARK_FIELDNAMES})
+
+
+@sim_bp.route("/api/ai/benchmark/append", methods=["POST"])
+def api_ai_benchmark_append():
+    payload = request.get_json(silent=True) or {}
+    row = {
+        "timestamp": str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+        "rooms": payload.get("rooms", ""),
+        "patients": payload.get("patients", ""),
+        "days": payload.get("days", ""),
+        "data_generation_time": payload.get("data_generation_time", ""),
+        "data_generation_peak_memory": payload.get("data_generation_peak_memory", ""),
+        "training_time": payload.get("training_time", ""),
+        "training_peak_memory": payload.get("training_peak_memory", ""),
+        "predictions_choice": payload.get("predictions_choice", ""),
+        "ai_config": payload.get("ai_config", ""),
+        "run_status": payload.get("run_status", ""),
+        "stop_stage": payload.get("stop_stage", ""),
+    }
+    _append_benchmark_row(row)
+    return jsonify({"status": "appended", "path": str(_BENCHMARK_RUNS_PATH), "row": row})
 
 
 @sim_bp.route("/api/ai/predict/mlp", methods=["POST"])
@@ -2167,10 +3004,32 @@ def api_ai_job_status(job_id: str):
                 "metrics": metrics,
                 "logs": logs,
                 "next_cursor": next_cursor,
+                "peak_memory_bytes": int(job.get("peak_memory_bytes") or 0),
+                "peak_memory": _format_memory_bytes(int(job.get("peak_memory_bytes") or 0)),
                 "runtime_summary": runtime_summary,
                 "pc_spec": pc_spec,
+                "metadata": job.get("metadata", {}),
             }
         )
+
+
+@sim_bp.route("/api/ai/jobs/active", methods=["GET"])
+def api_ai_active_jobs():
+    with _AI_JOBS_LOCK:
+        jobs = [
+            {
+                "id": job.get("id"),
+                "kind": job.get("kind"),
+                "status": job.get("status"),
+                "progress": job.get("progress"),
+                "started_at": job.get("started_at"),
+                "metadata": job.get("metadata", {}),
+            }
+            for job in _AI_JOBS.values()
+            if job.get("status") == "running"
+        ]
+    jobs.sort(key=lambda item: str(item.get("started_at") or ""), reverse=True)
+    return jsonify({"jobs": jobs})
 
 
 @sim_bp.route("/api/ai/jobs/<job_id>/stop", methods=["POST"])
@@ -2184,8 +3043,19 @@ def api_ai_job_stop(job_id: str):
 
         job["stop_requested"] = True
         process = job.get("current_process")
+        pid = int(job.get("pid") or 0)
 
-    if process is not None:
+    if pid > 0 and platform.system().lower() == "windows":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif process is not None:
         try:
             process.terminate()
         except Exception:  # noqa: BLE001

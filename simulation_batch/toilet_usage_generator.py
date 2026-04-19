@@ -7,8 +7,7 @@ from typing import List, Tuple
 
 from persistence.database import session_scope
 from persistence.models.room_assignment import RoomAssignment
-from persistence.models.utility_usage import UtilityUsage
-from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.utility_usage_writer import insert_utility_usage, flush_utility_usage_writes
 
 
 @dataclass
@@ -160,18 +159,17 @@ class ToiletUsageGenerator:
                             total_liters += liters
 
                     if total_liters > 0.0:
-                        row = UtilityUsage(
+                        insert_utility_usage(
                             room_id=a.room_id,
                             category="water",
                             start_time=w0,
                             end_time=w1,
-                            power_consumption=None,
-                            water_consumption=round(total_liters, 2),
+                            power_kwh=None,
+                            water_liters=round(total_liters, 2),
                         )
-                        write_model_row(row)
-                        session.add(row)
                         inserted += 1
 
                     day_cursor += timedelta(days=1)
 
+        flush_utility_usage_writes()
         return inserted

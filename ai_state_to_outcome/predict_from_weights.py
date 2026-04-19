@@ -1,5 +1,4 @@
-UndefinedError
-jinja2.exceptions.UndefinedError: 'runtime_summary' is undefinedimport argparse
+import argparse
 import os
 from collections import OrderedDict
 
@@ -14,6 +13,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 from fl_client import get_input_dim, make_model, sanitize_rows
+from per_room_data import list_room_ids, load_room_df
 from schema import REGRESSION_TARGET_COLUMNS, row_to_input_vector
 
 DEFAULT_SPLIT_DIR = "splits"
@@ -42,7 +42,7 @@ def load_model(weights_path: str):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Task #2 predictions from saved FL global weights.")
-    parser.add_argument("--split-dir", default=DEFAULT_SPLIT_DIR, help="Directory with state_to_outcome_test.csv")
+    parser.add_argument("--split-dir", default=DEFAULT_SPLIT_DIR, help="Directory with per-room test CSV files")
     parser.add_argument("--weights-path", default=DEFAULT_WEIGHTS_PATH, help="Path to saved global weights .npz")
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="Directory to write predictions CSV")
     return parser.parse_args()
@@ -55,13 +55,13 @@ def main() -> None:
     weights_path = resolve_path(args.weights_path, script_dir)
     out_dir = resolve_path(args.out_dir, script_dir)
 
-    test_path = os.path.join(split_dir, "state_to_outcome_test.csv")
-    if not os.path.exists(test_path):
-        raise FileNotFoundError(f"Missing test split: {test_path}")
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Missing weights file: {weights_path}")
-
-    test_df = sanitize_rows(pd.read_csv(test_path))
+    room_ids = list_room_ids(split_dir, "test")
+    if not room_ids:
+        raise FileNotFoundError(f"No test room CSVs found in: {os.path.join(split_dir, 'test')}")
+    room_frames = [sanitize_rows(load_room_df(split_dir, "test", room_id)) for room_id in room_ids]
+    test_df = pd.concat([frame for frame in room_frames if len(frame) > 0], ignore_index=True)
     x_test = row_to_input_vector(test_df).astype(np.float32)
 
     model = load_model(weights_path)

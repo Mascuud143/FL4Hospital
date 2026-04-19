@@ -5,6 +5,7 @@ from typing import Iterable, Optional
 from persistence.database import session_scope
 from persistence.models.device import Device as DeviceModel
 from persistence.models.sensor import Sensor as SensorModel
+from simulation_batch.csv_filestorage import write_model_row
 
 
 def _device_lookup_query(session, *, mac: Optional[str], room_id: Optional[int], device_type: str, location: Optional[str]):
@@ -69,6 +70,7 @@ def seed_devices_and_sensors(devices: Iterable, *, room_id_default=None) -> None
                     room_id=room_id,
                     location=location,
                 )
+                write_model_row(db_device)
                 session.add(db_device)
                 session.flush()  # ensures device_id
 

@@ -1,6 +1,6 @@
 def calculate_energy_usage_kwh(
     power_watts: float,
-    duration_hours: float
+    duration_hours: float,
 ) -> float:
     """
     Convert power usage to kWh.
@@ -10,7 +10,7 @@ def calculate_energy_usage_kwh(
 
 def calculate_daily_energy_cost(
     energy_kwh: float,
-    cost_per_kwh: float
+    cost_per_kwh: float,
 ) -> float:
     """
     Calculate cost based on energy consumption.

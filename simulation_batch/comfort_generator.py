@@ -9,11 +9,11 @@ from persistence.database import session_scope
 from persistence.models.room_assignment import RoomAssignment
 from persistence.models.comfort_preference import ComfortPreference
 from persistence.models.medication import Medication
-from persistence.models.visit import Visit  # ✅ FIX: real visits table
-from persistence.models import Speaker, Device  # ✅ NEW: import Speaker and Device models
+from persistence.models.visit import Visit  # FIX: real visits table
+from persistence.models import Speaker, Device  #  NEW: import Speaker and Device models
 
 from simulation_batch.room_engine import _as_utc
-from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.csv_filestorage import write_model_rows
 
 
 # ==========================================================
@@ -42,9 +42,11 @@ class ComfortPolicy:
     p_bias_to_medication: float = 0.6
 
     # ✅ NEW: symptom influence strength
-    fever_cool_target_range: Tuple[float, float] = (18.0, 20.0)
-    chills_warm_target_range: Tuple[float, float] = (23.0, 25.5)
+    fever_cool_target_range: Tuple[float, float] = (10.0, 20.0)
+    chills_warm_target_range: Tuple[float, float] = (23.0, 30.0)
     p_apply_symptom_bias: float = 0.85  # probability to apply symptom bias when visit exists
+    symptom_bias_before_visit_minutes: int = 60
+    symptom_bias_after_visit_minutes: int = 60
 
 
 # ==========================================================
@@ -209,12 +211,47 @@ class ComfortGenerator:
     def __init__(self, *, seed: int = 42, policy: Optional[ComfortPolicy] = None):
         self.rng = random.Random(seed)
         self.policy = policy or ComfortPolicy()
+        self.write_batch_size = 50000
 
     def generate_for_horizon(self, start_time: datetime, end_time: datetime) -> int:
         start_time = _as_utc(start_time)
         end_time = _as_utc(end_time)
 
         inserted = 0
+        pending_rows: List[Tuple[int, int, datetime, float, Optional[float], float, float, bool, str]] = []
+
+        def flush_pending(session) -> None:
+            nonlocal inserted, pending_rows
+            if not pending_rows:
+                return
+            serialized_rows = [
+                {
+                    "patient_id": patient_id,
+                    "room_id": room_id,
+                    "timestamp": timestamp,
+                    "temperature_main": temperature_main,
+                    "temperature_toilet": temperature_toilet,
+                    "light_intensity": light_intensity,
+                    "sound_level": sound_level,
+                    "airflow": airflow,
+                    "source": source,
+                }
+                for (
+                    patient_id,
+                    room_id,
+                    timestamp,
+                    temperature_main,
+                    temperature_toilet,
+                    light_intensity,
+                    sound_level,
+                    airflow,
+                    source,
+                ) in pending_rows
+            ]
+            write_model_rows(ComfortPreference, serialized_rows)
+            session.bulk_insert_mappings(ComfortPreference, serialized_rows)
+            inserted += len(pending_rows)
+            pending_rows = []
 
         with session_scope() as session:
             assigns = (
@@ -279,11 +316,14 @@ class ComfortGenerator:
                                 key=lambda v: abs(_as_utc(v.visit_time) - t),
                             )
 
-                            # optional: enforce "only apply after 10 minutes of visit"
                             visit_time = _as_utc(closest_visit.visit_time)
 
-                            earliest_bias_time = visit_time - timedelta(minutes=20)
-                            latest_bias_time   = visit_time - timedelta(minutes=10)
+                            earliest_bias_time = visit_time - timedelta(
+                                minutes=self.policy.symptom_bias_before_visit_minutes
+                            )
+                            latest_bias_time = visit_time + timedelta(
+                                minutes=self.policy.symptom_bias_after_visit_minutes
+                            )
 
                             if earliest_bias_time <= t <= latest_bias_time:
                                 targets = _apply_visit_symptom_bias(
@@ -313,23 +353,24 @@ class ComfortGenerator:
                         if targets is None:
                             targets = base_targets
 
-                        row = ComfortPreference(
-                            patient_id=a.patient_id,
-                            room_id=a.room_id,
-                            timestamp=t,
-                            temperature_main=targets["temperature_main"],
-                            temperature_toilet=targets["temperature_toilet"],
-                            light_intensity=targets["light_intensity"],
-                            sound_level=targets["sound_level"],
-                            airflow=targets["airflow"],
-                            source="simulation",
+                        pending_rows.append(
+                            (
+                                int(a.patient_id),
+                                int(a.room_id),
+                                t,
+                                float(targets["temperature_main"]),
+                                targets["temperature_toilet"],
+                                float(targets["light_intensity"]),
+                                float(targets["sound_level"]),
+                                bool(targets["airflow"]),
+                                "simulation",
+                            )
                         )
-
-                        write_model_row(row)
-                        session.add(row)
-                        #session.add(speaker_row)
-                        inserted += 1
+                        if len(pending_rows) >= self.write_batch_size:
+                            flush_pending(session)
 
                     day_cursor += timedelta(days=1)
+
+            flush_pending(session)
 
         return inserted

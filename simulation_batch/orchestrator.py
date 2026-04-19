@@ -10,14 +10,15 @@ from .sensor_sampler import SensorSampler
 from .comfort_generator import ComfortGenerator, ComfortPolicy
 from .toilet_usage_generator import ToiletUsageGenerator
 from persistence.models.data import Data
-from simulation_batch.csv_filestorage import write_model_row
+from persistence.database import session_scope
+from simulation_batch.csv_filestorage import write_model_rows
 # NEW: clinical generators
 from simulation_batch.generators.medication_generator import MedicationGenerator
 from simulation_batch.generators.visit_generator import VisitGenerator
 from simulation_batch.generators.patients import DIAGNOSES
 
 
-# Callback type used when emitting sensor events
+# Callback type kept for non-simulation compatibility.
 OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
@@ -57,7 +58,6 @@ class SimulationOrchestrator:
         self.start_time = start_time
         self.end_time = end_time
         self._on_event_user = on_event
-        self.on_event = self._wrap_on_event(on_event)
         self.config = config or OrchestratorConfig()
         self.seed = seed
 
@@ -70,32 +70,38 @@ class SimulationOrchestrator:
         )
 
         # Room states (1–100)
-        self.rooms = {i: RoomState(i) for i in range(1, 101)}
+        self.rooms = {}
+
+        # Sensor sampler
+        self.sampler = SensorSampler(seed)
+        self.rooms = {room_id: RoomState(room_id) for room_id in self.sampler.room_ids}
 
         # Simulation engine
         self.engine = RoomEngine(
             self.rooms,
             config=EngineConfig(enable_utility_usage=self.config.enable_utility_usage),
         )
-
-        # Sensor sampler
-        self.sampler = SensorSampler(seed)
+        self._write_batch_size = 50000
+        self._data_rows: list[tuple[int, float, datetime]] = []
 
         self._stop = asyncio.Event()
 
-    def _wrap_on_event(self, handler: OnEvent) -> OnEvent:
-        async def _wrapped(event: Dict[str, Any]) -> None:
-            # Save to data table CSV before any downstream sink
-            write_model_row(
-                Data(
-                    sensor_id=event["sensor_id"],
-                    value=event["value"],
-                    timestamp=event["timestamp"],
-                )
-            )
-            await handler(event)
-
-        return _wrapped
+    def _flush_data_rows(self) -> None:
+        if not self._data_rows:
+            return
+        batch = self._data_rows
+        self._data_rows = []
+        serialized_batch = [
+            {
+                "sensor_id": sensor_id,
+                "value": value,
+                "timestamp": timestamp,
+            }
+            for sensor_id, value, timestamp in batch
+        ]
+        write_model_rows(Data, serialized_batch)
+        with session_scope() as session:
+            session.bulk_insert_mappings(Data, serialized_batch)
 
     # -------------------------------------------------------
     # START
@@ -170,6 +176,8 @@ class SimulationOrchestrator:
         # ---------------------------------------------------
         # 5️⃣ Run simulation loop
         # ---------------------------------------------------
+        self.engine.preload_simulation_window(self.start_time, self.end_time)
+
         if not self.config.enable_sensor_emit and not self.config.enable_utility_usage:
             print("[orchestrator] skipping simulation loop (no sensor emit and no utility usage)")
             print("[orchestrator] SIMULATION COMPLETE")
@@ -179,6 +187,8 @@ class SimulationOrchestrator:
 
         if self.config.enable_utility_usage:
             self.engine.close_all_sessions(self.end_time)
+        self._flush_data_rows()
+        self.sampler.close()
 
         print("[orchestrator] SIMULATION COMPLETE")
 
@@ -210,11 +220,14 @@ class SimulationOrchestrator:
 
             # Emit sensor readings
             if self.config.enable_sensor_emit and (now - last_sample).total_seconds() >= self.config.sample_every_s:
-                await self.sampler.emit(
-                    now,
-                    room_engine=self.engine,
-                    on_event=self.on_event,
+                self._data_rows.extend(
+                    self.sampler.collect_data_rows(
+                        now,
+                        room_engine=self.engine,
+                    )
                 )
+                if len(self._data_rows) >= self._write_batch_size:
+                    self._flush_data_rows()
                 last_sample = now
 
             # Advance simulated time

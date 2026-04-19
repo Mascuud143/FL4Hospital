@@ -1,0 +1,927 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .page-grid { display: grid; gap: 16px; }
+  .section-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 0.8rem; }
+  .field input, .field select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: #fff; font: inherit; }
+  .label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .field .label-row label { margin-bottom: 0; }
+  .manual-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.74rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .field input:disabled, .field select:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 0.86rem; line-height: 1.45; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .btn { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .progress { width: 100%; height: 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; overflow: hidden; margin-top: 10px; }
+  .bar { width: 0%; height: 100%; background: linear-gradient(90deg, #1d4ed8, #0f766e); transition: width 0.25s ease; }
+  .state { margin-top: 6px; color: var(--muted); font-size: 0.84rem; }
+  .metrics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  .metric-card, .chart-card, .pie-card, .stage-card { border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 10px 12px; }
+  .metric-k { font-size: 0.76rem; color: var(--muted); text-transform: uppercase; }
+  .metric-v { font-size: 1.05rem; font-weight: 700; margin-top: 4px; }
+  .metric-x { font-size: 0.8rem; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+  .log { margin-top: 10px; height: 240px; overflow: auto; border-radius: 12px; border: 1px solid #0f172a; background: #0f172a; color: #e2e8f0; padding: 10px; font: 0.78rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  .results-toolbar { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
+  .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .chart-svg { width: 100%; height: 240px; display: block; background: linear-gradient(180deg, #f8fafc, #eef2ff); border-radius: 10px; }
+  .chart-legend, .pie-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; font-size: 0.8rem; color: var(--muted); }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+  .pie-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+  .pie-visual { width: 140px; height: 140px; border-radius: 50%; margin: 10px auto 0; border: 1px solid var(--line); background: conic-gradient(#cbd5e1 0deg, #cbd5e1 360deg); }
+  .muted-box { margin-top: 10px; border: 1px dashed var(--line); border-radius: 12px; padding: 12px; color: var(--muted); background: var(--surface-alt); }
+  .hidden { display: none; }
+  .history-table-wrap { margin-top: 12px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+  .history-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+  .history-table th, .history-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  .history-table th { color: var(--muted); background: #f8fafc; font-weight: 700; }
+  .history-table code { font-size: 0.76rem; white-space: pre-wrap; word-break: break-word; }
+  .modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.56); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 1000; }
+  .modal.hidden { display: none; }
+  .modal-panel { width: min(1200px, 100%); max-height: calc(100vh - 48px); overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: #fff; box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24); display: grid; grid-template-rows: auto 1fr; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .modal-body { padding: 16px; overflow: auto; }
+  .title-row { display: flex; align-items: center; gap: 10px; }
+  .help-trigger {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .help-inline {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 700;
+    cursor: pointer;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .help-pop {
+    position: fixed;
+    top: 96px;
+    right: 32px;
+    width: min(360px, calc(100vw - 32px));
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    padding: 14px 16px;
+    z-index: 1001;
+  }
+  .help-pop.hidden { display: none; }
+  .help-pop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .help-pop-head h4 { margin: 0; font-size: 0.95rem; }
+  .help-close {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    cursor: pointer;
+    padding: 2px 8px;
+  }
+  .help-actions { margin-top: 10px; }
+  .help-link {
+    border: 0;
+    background: transparent;
+    color: #0f766e;
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+  }
+  .help-link.hidden { display: none; }
+  .help-details {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+  }
+  .help-details.hidden { display: none; }
+  @media (max-width: 1100px) {
+    .section-grid, .field-grid, .metrics-grid, .results-toolbar, .chart-grid, .pie-grid { grid-template-columns: 1fr; }
+    .help-pop {
+      top: 84px;
+      right: 16px;
+      width: calc(100vw - 32px);
+    }
+  }
+</style>
+
+<div class="page-grid">
+  <section class="card">
+    <div class="title-row">
+      <h2 style="margin:0;">New Simulations + AI</h2>
+      <button id="pageHelpBtn" class="help-trigger" type="button" aria-label="Open page help">?</button>
+    </div>
+    <p class="hint" style="margin:8px 0 0;">Run simulation data generation and federated learning in one workflow. Build and split are automatic in this mode and use backend defaults for the selected prediction pipeline.</p>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Benchmark Summary<button class="help-inline" type="button" data-help-title="Benchmark Summary" data-help-text="Shows the latest workflow benchmark values, including observed rooms, configured patients and months, grouped runtimes, peak RAM, prediction choice, run status, and AI configuration.">?</button></h3>
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-k">Rooms</div><div id="benchRooms" class="metric-v">-</div></div>
+      <div class="metric-card"><div class="metric-k">Patients</div><div id="benchPatients" class="metric-v">-</div></div>
+      <div class="metric-card"><div class="metric-k">Months</div><div id="benchDays" class="metric-v">-</div></div>
+      <div class="metric-card"><div class="metric-k">Predictions Choice</div><div id="benchPredictionChoice" class="metric-v">-</div></div>
+      <div class="metric-card"><div class="metric-k">Run Status</div><div id="benchRunStatus" class="metric-v">-</div><div class="metric-x" id="benchStopStage">Stage: -</div></div>
+      <div class="metric-card"><div class="metric-k">Data Generation</div><div id="benchDataGeneration" class="metric-v">-</div><div class="metric-x" id="benchDataGenerationMemory">Peak RAM: -</div></div>
+      <div class="metric-card"><div class="metric-k">Training</div><div id="benchTraining" class="metric-v">-</div><div class="metric-x" id="benchTrainingMemory">Peak RAM: -</div></div>
+      <div class="metric-card" style="grid-column: span 2;">
+        <div class="metric-k">AI Config</div>
+        <div id="benchAiConfig" class="metric-v" style="font-size:0.9rem; line-height:1.4;">-</div>
+      </div>
+    </div>
+    <div class="muted-box">Every workflow run is appended to <code>{{ benchmark_csv_path }}</code> with its status and stop stage. The file is not cleared when a new workflow runs.</div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Runtime Summary<button class="help-inline" type="button" data-help-title="Runtime Summary" data-help-text="Shows the latest backend-saved runtime information for simulation, build, split, training, and machine CPU and RAM details.">?</button></h3>
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-k">Simulation Runtime</div><div id="summarySimulationRuntime" class="metric-v">{{ runtime_summary.simulation_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">AI Runtime</div><div id="summaryAiRuntime" class="metric-v">{{ runtime_summary.total_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Build Runtime</div><div id="summaryBuildRuntime" class="metric-v">{{ runtime_summary.build_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Split Runtime</div><div id="summarySplitRuntime" class="metric-v">{{ runtime_summary.split_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Training Runtime</div><div id="summaryTrainingRuntime" class="metric-v">{{ runtime_summary.training_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">CPU</div><div id="summaryCpu" class="metric-v">{{ pc_spec.cpu }}</div></div>
+      <div class="metric-card"><div class="metric-k">RAM</div><div id="summaryRam" class="metric-v">{{ pc_spec.ram }}</div></div>
+    </div>
+  </section>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Simulation Horizon</h3>
+      <div class="field-grid">
+        <div class="field"><label for="startDate">Start date<button class="help-inline" type="button" data-help-title="Start date" data-help-text="The first simulated calendar date used for admissions, assignments, and generated events.">?</button></label><input id="startDate" type="date" value="{{ config_defaults.start_date.isoformat() if config_defaults.start_date else '' }}" /></div>
+        <div class="field"><label for="simulationMonths">Months<button class="help-inline" type="button" data-help-title="Months" data-help-text="The number of simulated months to generate. This is simulated time, not wall-clock runtime.">?</button></label><input id="simulationMonths" type="number" min="1" step="1" value="{{ ((config_defaults.days or 30) / 30.4375) | round(0, 'common') | int }}" /></div>
+      </div>
+    </section>
+    <section class="card">
+      <h3 style="margin-top:0;">Population</h3>
+      <div class="field-grid">
+        <div class="field"><label for="patientCount">Patient count<button class="help-inline" type="button" data-help-title="Patient count" data-help-text="Higher patient counts produce larger datasets, more room activity, and usually longer generation time.">?</button></label><input id="patientCount" type="number" min="1" step="1" value="{{ config_defaults.patient_count }}" /></div>
+        <div class="field"><label for="randomSeed">Random seed<button class="help-inline" type="button" data-help-title="Random seed" data-help-text="Use the same seed to make the random parts of generation more repeatable across runs.">?</button></label><input id="randomSeed" type="number" step="1" value="{{ config_defaults.random_seed }}" /></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Room Transfers</h3>
+      <div class="field-grid">
+        <div class="field"><label for="changeRoomProb">Change room probability<button class="help-inline" type="button" data-help-title="Change room probability" data-help-text="Probability that an admission includes a room transfer when the transfer constraints allow it.">?</button></label><input id="changeRoomProb" type="number" min="0" max="1" step="0.01" value="{{ config_defaults.change_room_prob }}" /></div>
+        <div class="field"><label for="minDaysBeforeTransfer">Min days before transfer<button class="help-inline" type="button" data-help-title="Min days before transfer" data-help-text="Minimum number of days a patient must stay before a room transfer can happen.">?</button></label><input id="minDaysBeforeTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_before_transfer }}" /></div>
+        <div class="field"><label for="minDaysAfterTransfer">Min days after transfer<button class="help-inline" type="button" data-help-title="Min days after transfer" data-help-text="Minimum number of days that must remain after a transfer before discharge.">?</button></label><input id="minDaysAfterTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_after_transfer }}" /></div>
+      </div>
+    </section>
+    <section class="card">
+      <h3 style="margin-top:0;">Comfort Behavior</h3>
+      <div class="field-grid">
+        <div class="field"><label for="comfortMaxChangesPerDay">Max comfort changes per day<button class="help-inline" type="button" data-help-title="Max comfort changes per day" data-help-text="Caps how many comfort preference changes one patient may generate in a single simulated day.">?</button></label><input id="comfortMaxChangesPerDay" type="number" min="0" step="1" value="{{ config_defaults.comfort_max_changes_per_day }}" /></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="section-grid">
+    <section class="card">
+      <h3 style="margin-top:0;">Simulation Timing</h3>
+      <div class="field-grid">
+        <div class="field"><label for="simStepS">Simulation step (seconds)<button class="help-inline" type="button" data-help-title="Simulation step" data-help-text="Smaller step sizes simulate more often and can improve detail, but they usually increase runtime.">?</button></label><input id="simStepS" type="number" min="1" step="1" value="{{ config_defaults.sim_step_s }}" /></div>
+        <div class="field"><label for="sensorSampleEveryS">Sensor sample every (seconds)<button class="help-inline" type="button" data-help-title="Sensor sample interval" data-help-text="How often sensor readings are emitted during the simulation. Smaller intervals create more sensor rows.">?</button></label><input id="sensorSampleEveryS" type="number" min="1" step="1" value="{{ config_defaults.sensor_sample_every_s }}" /></div>
+        <div class="field"><label for="wallSleepS">Wall sleep (seconds)<button class="help-inline" type="button" data-help-title="Wall sleep" data-help-text="Adds a real-time pause between simulated steps. Use 0 for fastest execution.">?</button></label><input id="wallSleepS" type="number" min="0" step="0.01" value="{{ config_defaults.wall_sleep_s }}" /></div>
+      </div>
+    </section>
+    <section class="card">
+      <h3 style="margin-top:0;">Generation Toggles<button class="help-inline" type="button" data-help-title="Generation Toggles" data-help-text="Turn major simulation generators on or off. Disabling generators reduces data volume and usually speeds up the run.">?</button></h3>
+      <div class="field-grid">
+        <div class="field"><label for="enableComfort">Comfort<button class="help-inline" type="button" data-help-title="Comfort generation" data-help-text="Enable or disable generation of comfort preference changes and related control behavior.">?</button></label><select id="enableComfort"><option value="true" {% if config_defaults.enable_comfort %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_comfort %}selected{% endif %}>False</option></select></div>
+        <div class="field"><label for="enableMedication">Medication<button class="help-inline" type="button" data-help-title="Medication generation" data-help-text="Enable or disable simulated medication scheduling and medication event generation.">?</button></label><select id="enableMedication"><option value="true" {% if config_defaults.enable_medication %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_medication %}selected{% endif %}>False</option></select></div>
+        <div class="field"><label for="enableVisits">Visits<button class="help-inline" type="button" data-help-title="Visit generation" data-help-text="Enable or disable simulated visit rows and visit-related clinical events.">?</button></label><select id="enableVisits"><option value="true" {% if config_defaults.enable_visits %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_visits %}selected{% endif %}>False</option></select></div>
+        <div class="field"><label for="enableToiletUsage">Toilet usage<button class="help-inline" type="button" data-help-title="Toilet usage generation" data-help-text="Enable or disable simulated toilet and water usage generation.">?</button></label><select id="enableToiletUsage"><option value="true" {% if config_defaults.enable_toilet_usage %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_toilet_usage %}selected{% endif %}>False</option></select></div>
+        <div class="field"><label for="enableSensorEmit">Sensor emit<button class="help-inline" type="button" data-help-title="Sensor emit" data-help-text="Enable or disable emitted sensor readings during simulation. Turning this off reduces sensor data volume.">?</button></label><select id="enableSensorEmit"><option value="true" {% if config_defaults.enable_sensor_emit %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_sensor_emit %}selected{% endif %}>False</option></select></div>
+        <div class="field"><label for="enableUtilityUsage">Utility usage<button class="help-inline" type="button" data-help-title="Utility usage generation" data-help-text="Enable or disable generated utility usage rows such as HVAC, airflow, heater, and water usage.">?</button></label><select id="enableUtilityUsage"><option value="true" {% if config_defaults.enable_utility_usage %}selected{% endif %}>True</option><option value="false" {% if not config_defaults.enable_utility_usage %}selected{% endif %}>False</option></select></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Prediction Pipeline<button class="help-inline" type="button" data-help-title="Prediction Pipeline" data-help-text="Choose whether the workflow trains the k-hours based pipeline or the state-to-outcome pipeline. Build and split defaults follow this selection.">?</button></h3>
+    <div class="field-grid">
+      <div class="field">
+        <label for="taskType">Predictions choice<button class="help-inline" type="button" data-help-title="Predictions choice" data-help-text="k_hours predicts future comfort state values. state_to_outcome predicts event/state transitions with the event pipeline.">?</button></label>
+        <select id="taskType">
+          <option value="k_hours">k_hours</option>
+          <option value="event">state_to_outcome</option>
+        </select>
+      </div>
+    </div>
+    <div id="autoPrepNote" class="muted-box">Build Next-Hour Rows and Split By Room will run with default settings.</div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Federated Training Configuration<button class="help-inline" type="button" data-help-title="Federated Training Configuration" data-help-text="These settings control how the federated learning stage runs after data generation, build, and split have completed.">?</button></h3>
+    <div class="field-grid">
+      <div class="field"><label for="modelType">Model type<button class="help-inline" type="button" data-help-title="Model type" data-help-text="Choose which model architecture to train for the selected prediction pipeline.">?</button></label><select id="modelType"></select></div>
+      <div class="field"><label for="flRounds">Federated rounds<button class="help-inline" type="button" data-help-title="Federated rounds" data-help-text="The number of global aggregation rounds in the federated training run.">?</button></label><input id="flRounds" type="number" min="1" step="1" value="5" /></div>
+      <div class="field"><label for="flLocalEpochs">Epochs<button class="help-inline" type="button" data-help-title="Epochs" data-help-text="How many local training epochs each client runs per federated round.">?</button></label><input id="flLocalEpochs" type="number" min="1" step="1" value="1" /></div>
+      <div class="field"><label for="flAggregationMethod">Aggregation method<button class="help-inline" type="button" data-help-title="Aggregation method" data-help-text="Choose the federated aggregation strategy. FedAvg uses standard averaging while FedProx adds a proximal penalty.">?</button></label><select id="flAggregationMethod"><option value="fedavg">FedAvg</option><option value="fedprox">FedProx</option></select></div>
+      <div class="field" id="flProximalMuField"><label for="flProximalMu">FedProx mu<button class="help-inline" type="button" data-help-title="FedProx mu" data-help-text="Strength of the FedProx proximal term. Higher values constrain local updates more strongly.">?</button></label><input id="flProximalMu" type="number" min="0" step="0.01" value="0.01" /></div>
+      <div class="field" data-models="mlp"><label for="flMlpHiddenLayers">MLP hidden layers<button class="help-inline" type="button" data-help-title="MLP hidden layers" data-help-text="Comma-separated hidden layer sizes for the MLP model, for example 128,64,32.">?</button></label><input id="flMlpHiddenLayers" type="text" value="128,64,32" /></div>
+      <div class="field" data-models="mlp"><label for="flMlpBatchSize">MLP batch size<button class="help-inline" type="button" data-help-title="MLP batch size" data-help-text="Mini-batch size used during MLP client training.">?</button></label><input id="flMlpBatchSize" type="number" min="1" step="1" value="32" /></div>
+      <div class="field" data-models="mlp"><label for="flMlpLearningRate">MLP learning rate<button class="help-inline" type="button" data-help-title="MLP learning rate" data-help-text="Learning rate for MLP optimization. Smaller values train more cautiously; larger values can be faster but less stable.">?</button></label><input id="flMlpLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" /></div>
+      <div class="field" data-models="mlp"><label for="flMlpOptimizer">MLP optimizer<button class="help-inline" type="button" data-help-title="MLP optimizer" data-help-text="Optimization algorithm used for MLP client training.">?</button></label><select id="flMlpOptimizer"><option value="adam">Adam</option><option value="sgd">SGD</option></select></div>
+      <div class="field" data-models="mlp"><label for="flMlpActivation">MLP activation<button class="help-inline" type="button" data-help-title="MLP activation" data-help-text="Activation function used between MLP layers.">?</button></label><select id="flMlpActivation"><option value="relu">ReLU</option><option value="tanh">Tanh</option><option value="logistic">Logistic</option></select></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flBatchSize">Batch size<button class="help-inline" type="button" data-help-title="Batch size" data-help-text="Mini-batch size used during LSTM-based client training.">?</button></label><input id="flBatchSize" type="number" min="1" step="1" value="32" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flSeqLen">Sequence length<button class="help-inline" type="button" data-help-title="Sequence length" data-help-text="How many timesteps are included in each input sequence for LSTM-based models.">?</button></label><input id="flSeqLen" type="number" min="1" step="1" value="4" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmHiddenDim">LSTM hidden size<button class="help-inline" type="button" data-help-title="LSTM hidden size" data-help-text="Size of the recurrent hidden state used by the LSTM layers.">?</button></label><input id="flLstmHiddenDim" type="number" min="1" step="1" value="64" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmNumLayers">LSTM layers<button class="help-inline" type="button" data-help-title="LSTM layers" data-help-text="Number of stacked recurrent layers in the LSTM model.">?</button></label><input id="flLstmNumLayers" type="number" min="1" step="1" value="1" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmHeadHiddenDim">LSTM head hidden size<button class="help-inline" type="button" data-help-title="LSTM head hidden size" data-help-text="Hidden layer size used in the prediction head on top of the LSTM output.">?</button></label><input id="flLstmHeadHiddenDim" type="number" min="1" step="1" value="64" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmLearningRate">Learning rate<button class="help-inline" type="button" data-help-title="Learning rate" data-help-text="Learning rate for LSTM-based optimization.">?</button></label><input id="flLstmLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" /></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmOptimizer">Optimizer<button class="help-inline" type="button" data-help-title="Optimizer" data-help-text="Optimization algorithm used for LSTM-based client training.">?</button></label><select id="flLstmOptimizer"><option value="adam">Adam</option><option value="sgd">SGD</option><option value="rmsprop">RMSprop</option></select></div>
+      <div class="field" data-models="lstm,mlp_lstm"><label for="flLstmActivation">LSTM head activation<button class="help-inline" type="button" data-help-title="LSTM head activation" data-help-text="Activation function used in the output head for LSTM-based models.">?</button></label><select id="flLstmActivation"><option value="relu">ReLU</option><option value="tanh">Tanh</option><option value="gelu">GELU</option></select></div>
+      <div class="field" data-models="mlp_lstm"><label for="flHybridChangeHiddenLayers">Hybrid change hidden layers<button class="help-inline" type="button" data-help-title="Hybrid change hidden layers" data-help-text="Comma-separated hidden layer sizes for the hybrid change-detection head.">?</button></label><input id="flHybridChangeHiddenLayers" type="text" value="128,64" /></div>
+      <div class="field" data-models="mlp_lstm"><label for="flHybridChangeActivation">Hybrid change activation<button class="help-inline" type="button" data-help-title="Hybrid change activation" data-help-text="Activation function used in the hybrid change-detection head.">?</button></label><select id="flHybridChangeActivation"><option value="relu">ReLU</option><option value="tanh">Tanh</option><option value="gelu">GELU</option></select></div>
+      <div class="field">
+        <div class="label-row">
+          <label for="flMaxRooms">Maximum number of rooms</label>
+          <label class="manual-toggle" for="flMaxRoomsEnabled"><input id="flMaxRoomsEnabled" type="checkbox" /><span class="sr-only">Enable maximum number of rooms</span></label>
+          <button class="help-inline" type="button" data-help-title="Maximum number of rooms" data-help-text="When room limiting is enabled, this caps how many generated rooms are included in training. If room limiting is off, all available rooms are used.">?</button>
+        </div>
+        <input id="flMaxRooms" class="manual-input" type="number" min="1" step="1" value="" disabled aria-label="Maximum number of rooms" />
+      </div>
+      <div class="field">
+        <div class="label-row">
+          <label for="flClientCpu">CPU resources per client</label>
+          <label class="manual-toggle" for="flClientCpuEnabled"><input id="flClientCpuEnabled" type="checkbox" /><span class="sr-only">Enable CPU resources per client</span></label>
+          <button class="help-inline" type="button" data-help-title="CPU resources per client" data-help-text="Advanced setting. Higher values give each federated client more CPU, but reduce how many can run concurrently. Leave manual control off to use the backend default.">?</button>
+        </div>
+        <input id="flClientCpu" class="manual-input" type="number" min="0.1" step="0.1" value="1.0" disabled aria-label="CPU resources per client" />
+      </div>
+      <div class="field">
+        <div class="label-row">
+          <label for="flChunkSize">Chunk size for CSV loading</label>
+          <label class="manual-toggle" for="flChunkSizeEnabled"><input id="flChunkSizeEnabled" type="checkbox" /><span class="sr-only">Enable chunk size for CSV loading</span></label>
+          <button class="help-inline" type="button" data-help-title="Chunk size" data-help-text="Advanced setting. Larger chunks reduce overhead but can increase memory use. Leave manual control off to use the backend default.">?</button>
+        </div>
+        <input id="flChunkSize" class="manual-input" type="number" min="1000" step="1000" value="50000" disabled aria-label="Chunk size for CSV loading" />
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Workflow<button class="help-inline" type="button" data-help-title="Workflow" data-help-text="Runs the full sequence in one backend job: simulation, build, split, then federated training. Stop Current Step stops the active backend process.">?</button></h3>
+    <div class="btn-row">
+      <button id="runWorkflowBtn" class="btn primary" type="button">Run Simulation + AI</button>
+      <button id="stopWorkflowBtn" class="btn" type="button">Stop Current Step</button>
+      <button id="showHistoryBtn" class="btn" type="button">Show Runtime History</button>
+    </div>
+    <div class="progress"><div id="workflowBar" class="bar"></div></div>
+    <div id="workflowState" class="state">Idle</div>
+    <div class="metrics-grid">
+      <div class="stage-card">
+        <div class="metric-k">Data Generation</div>
+        <div id="stageSimulation" class="metric-v">Idle</div>
+      </div>
+      <div class="stage-card">
+        <div class="metric-k">Build</div>
+        <div id="stageBuild" class="metric-v">Idle</div>
+      </div>
+      <div class="stage-card">
+        <div class="metric-k">Split</div>
+        <div id="stageSplit" class="metric-v">Idle</div>
+      </div>
+      <div class="stage-card">
+        <div class="metric-k">Federated Training</div>
+        <div id="stageTraining" class="metric-v">Idle</div>
+      </div>
+    </div>
+    <div id="workflowLog" class="log">[dashboard] waiting...</div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">AI Results And Error Analysis<button class="help-inline" type="button" data-help-title="AI Results And Error Analysis" data-help-text="Loads saved training outputs and shows summary metrics, charts, and room-level or global error analysis for the selected model and scope.">?</button></h3>
+    <div class="results-toolbar">
+      <div class="field"><label for="resultsModelType">Model type<button class="help-inline" type="button" data-help-title="Results model type" data-help-text="Select which trained model's saved outputs should be loaded in the results area.">?</button></label><select id="resultsModelType"></select></div>
+      <div class="field"><label for="resultsScope">Analysis scope<button class="help-inline" type="button" data-help-title="Analysis scope" data-help-text="Choose global aggregated-weight analysis or local client-weight analysis.">?</button></label><select id="resultsScope"><option value="global">Global</option><option value="local">Local</option></select></div>
+      <div class="field" id="resultsViewField"><label for="resultsView">View<button class="help-inline" type="button" data-help-title="View" data-help-text="For global analysis, choose either the aggregated result across all rooms or inspect one room using the global aggregated weights.">?</button></label><select id="resultsView"><option value="aggregated">Aggregated</option><option value="by_room">By Room</option></select></div>
+      <div class="field hidden" id="resultsDatasetField"><label for="resultsDataset">Dataset<button class="help-inline" type="button" data-help-title="Dataset" data-help-text="For local analysis, choose local-weight test results or local-weight training results.">?</button></label><select id="resultsDataset"><option value="test">Test</option><option value="training">Training</option></select></div>
+      <div class="field" id="roomField"><label for="resultsRoomId">Room<button class="help-inline" type="button" data-help-title="Room" data-help-text="When local analysis is selected, choose which room's saved outputs and figures to inspect.">?</button></label><select id="resultsRoomId"></select></div>
+      <div class="field"><label for="resultsFigureDetail">Figure detail<button class="help-inline" type="button" data-help-title="Figure detail" data-help-text="Switch between summary and more detailed result figures when available.">?</button></label><select id="resultsFigureDetail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select></div>
+      <button id="refreshResultsBtn" class="btn primary" type="button">Refresh Results</button>
+    </div>
+    <div id="resultsState" class="state">No results loaded yet.</div>
+    <div id="resultsCards" class="metrics-grid"></div>
+    <div id="resultsCharts" class="chart-grid"></div>
+    <div id="resultsPies" class="pie-grid"></div>
+  </section>
+</div>
+
+<div id="pageHelpPopup" class="help-pop hidden" aria-hidden="true">
+  <div class="help-pop-head">
+    <h4 id="pageHelpTitle">Page Help</h4>
+    <button id="pageHelpCloseBtn" class="help-close" type="button" aria-label="Close help">X</button>
+  </div>
+  <p id="pageHelpText" class="hint" style="margin:0;">Use this page for the full workflow: configure the simulation, choose the prediction pipeline, set the federated training options, then run simulation, build, split, and training in one sequence. Completed runs are appended to the benchmark CSV.</p>
+  <div class="help-actions">
+    <button id="pageHelpToggleBtn" class="help-link hidden" type="button">More</button>
+  </div>
+  <p id="pageHelpDetails" class="hint help-details hidden" style="margin-bottom:0;"></p>
+</div>
+
+<div id="runtimeHistoryModal" class="modal hidden" aria-hidden="true">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 style="margin:0;">Runtime History</h3>
+      <button id="closeHistoryBtn" class="btn" type="button">Close</button>
+    </div>
+    <div class="modal-body">
+      <div class="history-table-wrap" style="margin-top:0;">
+        <table class="history-table">
+          <thead><tr><th>Kind</th><th>Status</th><th>Duration</th><th>Peak Memory</th><th>Started</th><th>Details</th></tr></thead>
+          <tbody id="runtimeHistoryBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const initialRuntimeSummary = {{ runtime_summary|tojson }};
+    const initialPcSpec = {{ pc_spec|tojson }};
+    const modelOptionsByTask = {
+      k_hours: [{ value: "mlp", label: "MLP" }, { value: "lstm", label: "LSTM" }, { value: "mlp_lstm", label: "MLP + LSTM" }],
+      event: [{ value: "mlp", label: "MLP" }]
+    };
+    const workflowBar = document.getElementById("workflowBar");
+    const workflowState = document.getElementById("workflowState");
+    const workflowLog = document.getElementById("workflowLog");
+    const taskType = document.getElementById("taskType");
+    const modelType = document.getElementById("modelType");
+    const resultsModelType = document.getElementById("resultsModelType");
+    const resultsScope = document.getElementById("resultsScope");
+    const resultsView = document.getElementById("resultsView");
+    const resultsDataset = document.getElementById("resultsDataset");
+    const resultsRoomId = document.getElementById("resultsRoomId");
+    const resultsFigureDetail = document.getElementById("resultsFigureDetail");
+    const roomField = document.getElementById("roomField");
+    const resultsViewField = document.getElementById("resultsViewField");
+    const resultsDatasetField = document.getElementById("resultsDatasetField");
+    const runtimeHistoryBody = document.getElementById("runtimeHistoryBody");
+    const runtimeHistoryModal = document.getElementById("runtimeHistoryModal");
+    let currentJobId = null;
+    let workflowCancelled = false;
+    let activeWorkflowStage = "-";
+    function updateResultsControls() {
+      const isLocal = resultsScope.value === "local";
+      const needsRoom = isLocal || resultsView.value === "by_room";
+      resultsViewField.classList.toggle("hidden", isLocal);
+      resultsDatasetField.classList.toggle("hidden", !isLocal);
+      roomField.classList.toggle("hidden", !needsRoom);
+    }
+    const benchmark = { rooms: "-", patients: "-", days: "-", dataTime: "-", dataMem: "-", trainTime: "-", trainMem: "-", prediction: "-", aiConfig: "-", runStatus: "-", stopStage: "-" };
+
+    function setText(id, value) { const el = document.getElementById(id); if (el) el.textContent = value; }
+    function appendLog(lines) {
+      if (!Array.isArray(lines) || !lines.length) return;
+      const base = workflowLog.textContent === "[dashboard] waiting..." ? "" : `${workflowLog.textContent}\n`;
+      workflowLog.textContent = `${base}${lines.join("\n")}`.trim();
+      workflowLog.scrollTop = workflowLog.scrollHeight;
+    }
+    function setStage(id, value) { setText(id, value); }
+    function setProgress(value) { workflowBar.style.width = `${Math.max(0, Math.min(100, Number(value || 0)))}%`; }
+    function formatMetric(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+      return String(value);
+    }
+    function boolValue(id) { return document.getElementById(id).value === "true"; }
+    function updateBenchmarkUi() {
+      setText("benchRooms", benchmark.rooms);
+      setText("benchPatients", benchmark.patients);
+      setText("benchDays", benchmark.days);
+      setText("benchPredictionChoice", benchmark.prediction);
+      setText("benchRunStatus", benchmark.runStatus);
+      setText("benchStopStage", `Stage: ${benchmark.stopStage}`);
+      setText("benchDataGeneration", benchmark.dataTime);
+      setText("benchDataGenerationMemory", `Peak RAM: ${benchmark.dataMem}`);
+      setText("benchTraining", benchmark.trainTime);
+      setText("benchTrainingMemory", `Peak RAM: ${benchmark.trainMem}`);
+      setText("benchAiConfig", benchmark.aiConfig);
+    }
+    function applyWorkflowMetadata(metadata) {
+      const stages = metadata?.workflow_stages || {};
+      const benchmarkData = metadata?.benchmark || {};
+      setStage("stageSimulation", stages.simulation || "Idle");
+      setStage("stageBuild", stages.build || "Idle");
+      setStage("stageSplit", stages.split || "Idle");
+      setStage("stageTraining", stages.training || "Idle");
+      benchmark.rooms = formatMetric(benchmarkData.rooms ?? benchmark.rooms);
+      benchmark.patients = formatMetric(benchmarkData.patients ?? benchmark.patients);
+      if (benchmarkData.days !== undefined && benchmarkData.days !== null && benchmarkData.days !== "") {
+        benchmark.days = formatMetric(Math.round(Number(benchmarkData.days) / 30.4375));
+      }
+      benchmark.dataTime = formatMetric(benchmarkData.data_generation_time ?? benchmark.dataTime);
+      benchmark.dataMem = formatMetric(benchmarkData.data_generation_peak_memory ?? benchmark.dataMem);
+      benchmark.trainTime = formatMetric(benchmarkData.training_time ?? benchmark.trainTime);
+      benchmark.trainMem = formatMetric(benchmarkData.training_peak_memory ?? benchmark.trainMem);
+      benchmark.prediction = formatMetric(benchmarkData.predictions_choice ?? benchmark.prediction);
+      benchmark.aiConfig = formatMetric(benchmarkData.ai_config ?? benchmark.aiConfig);
+      benchmark.runStatus = formatMetric(benchmarkData.run_status ?? benchmark.runStatus);
+      benchmark.stopStage = formatMetric(benchmarkData.stop_stage ?? benchmark.stopStage);
+      updateBenchmarkUi();
+    }
+    function updateRuntimeSummary(summary, pcSpec) {
+      if (summary) {
+        setText("summarySimulationRuntime", summary.simulation_runtime ?? "Pending");
+        setText("summaryAiRuntime", summary.total_runtime ?? "Pending");
+        setText("summaryBuildRuntime", summary.build_runtime ?? "Pending");
+        setText("summarySplitRuntime", summary.split_runtime ?? "Pending");
+        setText("summaryTrainingRuntime", summary.training_runtime ?? "Pending");
+      }
+      if (pcSpec) {
+        setText("summaryCpu", pcSpec.cpu ?? "Pending");
+        setText("summaryRam", pcSpec.ram ?? "Pending");
+      }
+      const history = Array.isArray(summary?.history) ? summary.history : [];
+      runtimeHistoryBody.innerHTML = history.length ? history.map((item) => `
+        <tr>
+          <td>${item.kind ?? "-"}</td>
+          <td>${item.status ?? "-"}</td>
+          <td>${item.duration ?? "-"}</td>
+          <td>${item.peak_memory ?? "-"}</td>
+          <td>${item.started_at ?? "-"}</td>
+          <td><code>${Object.entries(item.config || {}).map(([k, v]) => `${k}=${v}`).join(" | ")}</code></td>
+        </tr>`).join("") : `<tr><td colspan="6">No runtime history yet.</td></tr>`;
+    }
+    function buildSimulationPayload() {
+      return {
+        start_date: document.getElementById("startDate").value,
+        months: Number(document.getElementById("simulationMonths").value || 1),
+        patient_count: Number(document.getElementById("patientCount").value || 1),
+        random_seed: Number(document.getElementById("randomSeed").value || 42),
+        change_room_prob: Number(document.getElementById("changeRoomProb").value || 0.3),
+        min_days_before_transfer: Number(document.getElementById("minDaysBeforeTransfer").value || 1),
+        min_days_after_transfer: Number(document.getElementById("minDaysAfterTransfer").value || 1),
+        comfort_max_changes_per_day: Number(document.getElementById("comfortMaxChangesPerDay").value || 6),
+        sim_step_s: Number(document.getElementById("simStepS").value || 60),
+        sensor_sample_every_s: Number(document.getElementById("sensorSampleEveryS").value || 300),
+        wall_sleep_s: Number(document.getElementById("wallSleepS").value || 0),
+        enable_comfort: boolValue("enableComfort"),
+        enable_medication: boolValue("enableMedication"),
+        enable_visits: boolValue("enableVisits"),
+        enable_toilet_usage: boolValue("enableToiletUsage"),
+        enable_sensor_emit: boolValue("enableSensorEmit"),
+        enable_utility_usage: boolValue("enableUtilityUsage")
+      };
+    }
+    function updateTaskUi() {
+      const options = modelOptionsByTask[taskType.value] || modelOptionsByTask.k_hours;
+      const current = modelType.value;
+      modelType.innerHTML = options.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      resultsModelType.innerHTML = options.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      if (options.some((item) => item.value === current)) {
+        modelType.value = current;
+        resultsModelType.value = current;
+      }
+      document.querySelectorAll("[data-models]").forEach((el) => {
+        const supported = (el.dataset.models || "").split(",").map((value) => value.trim()).filter(Boolean);
+        el.classList.toggle("hidden", supported.length > 0 && !supported.includes(modelType.value));
+      });
+      document.getElementById("flAggregationMethod").disabled = false;
+      document.getElementById("flProximalMuField").classList.toggle("hidden", document.getElementById("flAggregationMethod").value !== "fedprox");
+      document.getElementById("autoPrepNote").textContent = taskType.value === "event"
+        ? "Build Event Rows and Split By Room will run with default settings."
+        : "Build Next-Hour Rows and Split By Room will run with default settings.";
+    }
+    function buildTrainingPayload() {
+      const payload = {
+        task_type: taskType.value,
+        model_type: modelType.value,
+        aggregation_method: document.getElementById("flAggregationMethod").value || "fedavg",
+        rounds: Number(document.getElementById("flRounds").value || 5),
+        local_epochs: Number(document.getElementById("flLocalEpochs").value || 1)
+      };
+      if (document.getElementById("flMaxRoomsEnabled").checked) {
+        const maxRoomsValue = document.getElementById("flMaxRooms").value.trim();
+        if (maxRoomsValue !== "") payload.max_rooms = Number(maxRoomsValue);
+      }
+      if (document.getElementById("flClientCpuEnabled").checked) payload.client_cpu = Number(document.getElementById("flClientCpu").value || 1.0);
+      if (document.getElementById("flChunkSizeEnabled").checked) payload.chunksize = Number(document.getElementById("flChunkSize").value || 50000);
+      if (payload.aggregation_method === "fedprox") payload.proximal_mu = Number(document.getElementById("flProximalMu").value || 0.01);
+      if (taskType.value === "event" || modelType.value === "mlp") {
+        payload.mlp_hidden_layers = document.getElementById("flMlpHiddenLayers").value || "128,64,32";
+        payload.mlp_batch_size = Number(document.getElementById("flMlpBatchSize").value || (taskType.value === "event" ? 1 : 32));
+        payload.mlp_learning_rate = Number(document.getElementById("flMlpLearningRate").value || 0.001);
+        payload.mlp_optimizer = document.getElementById("flMlpOptimizer").value || "adam";
+        payload.mlp_activation = document.getElementById("flMlpActivation").value || "relu";
+      }
+      if (taskType.value === "k_hours" && modelType.value !== "mlp") {
+        payload.lstm_sequence_length = Number(document.getElementById("flSeqLen").value || 4);
+        payload.lstm_batch_size = Number(document.getElementById("flBatchSize").value || 32);
+        payload.lstm_hidden_dim = Number(document.getElementById("flLstmHiddenDim").value || 64);
+        payload.lstm_num_layers = Number(document.getElementById("flLstmNumLayers").value || 1);
+        payload.lstm_head_hidden_dim = Number(document.getElementById("flLstmHeadHiddenDim").value || 64);
+        payload.lstm_learning_rate = Number(document.getElementById("flLstmLearningRate").value || 0.001);
+        payload.lstm_optimizer = document.getElementById("flLstmOptimizer").value || "adam";
+        payload.lstm_activation = document.getElementById("flLstmActivation").value || "relu";
+      }
+      if (taskType.value === "k_hours" && modelType.value === "mlp_lstm") {
+        payload.hybrid_change_hidden_layers = document.getElementById("flHybridChangeHiddenLayers").value || "128,64";
+        payload.hybrid_change_activation = document.getElementById("flHybridChangeActivation").value || "relu";
+      }
+      return payload;
+    }
+    function summarizeAiConfig(payload) {
+      const keys = ["model_type", "aggregation_method", "rounds", "local_epochs", "mlp_hidden_layers", "mlp_batch_size", "mlp_learning_rate", "mlp_optimizer", "mlp_activation", "lstm_sequence_length", "lstm_batch_size", "lstm_hidden_dim", "lstm_num_layers", "lstm_head_hidden_dim", "lstm_learning_rate", "lstm_optimizer", "lstm_activation", "hybrid_change_hidden_layers", "hybrid_change_activation", "max_rooms", "client_cpu", "chunksize", "proximal_mu"];
+      return keys.filter((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== "").map((key) => `${key}=${payload[key]}`).join(" | ");
+    }
+    function bindManualToggle(toggleId, inputId) {
+      const toggle = document.getElementById(toggleId);
+      const input = document.getElementById(inputId);
+      if (!toggle || !input) return;
+      const sync = () => {
+        input.disabled = !toggle.checked;
+      };
+      toggle.addEventListener("change", sync);
+      sync();
+    }
+    async function postJson(url, payload) {
+      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload || {}) });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return response.json();
+    }
+    async function stopCurrentJob() {
+      if (!currentJobId) return;
+      const response = await fetch(`/api/ai/jobs/${currentJobId}/stop`, { method: "POST" });
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      return response.json();
+    }
+    async function fetchActiveJobs() {
+      const response = await fetch("/api/ai/jobs/active");
+      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      const data = await response.json();
+      return Array.isArray(data.jobs) ? data.jobs : [];
+    }
+    function stageProgress(index, value) {
+      const weights = [35, 10, 10, 45];
+      let total = 0;
+      for (let i = 0; i < index; i += 1) total += weights[i];
+      total += weights[index] * (Math.max(0, Math.min(100, Number(value || 0))) / 100);
+      setProgress(total);
+    }
+    function pollJob(jobId, stageIndex, stageLabel) {
+      let cursor = 0;
+      let polling = false;
+      return new Promise((resolve, reject) => {
+        const timer = setInterval(async () => {
+          if (polling) return;
+          polling = true;
+          try {
+            const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
+            if (!response.ok) throw new Error(`status ${response.status}`);
+            const data = await response.json();
+            appendLog(data.logs || []);
+            cursor = data.next_cursor || cursor;
+            stageProgress(stageIndex, data.progress);
+            updateRuntimeSummary(data.runtime_summary, data.pc_spec);
+            setStage(stageLabel, `${data.status} (${data.progress}%)`);
+            if (["completed", "failed", "stopped"].includes(data.status)) {
+              clearInterval(timer);
+              currentJobId = null;
+              if (data.status === "completed") resolve(data);
+              else if (data.status === "stopped") reject(new Error("stopped"));
+              else reject(new Error(`job failed${data.return_code != null ? ` (exit ${data.return_code})` : ""}`));
+            }
+          } catch (error) {
+            clearInterval(timer);
+            currentJobId = null;
+            reject(error);
+          } finally {
+            polling = false;
+          }
+        }, 1000);
+      });
+    }
+    async function runStage(index, label, stageId, url, payload) {
+      if (workflowCancelled) throw new Error("stopped");
+      activeWorkflowStage = label;
+      workflowState.textContent = `${label} running`;
+      setStage(stageId, "Starting");
+      appendLog([`[dashboard] ${label} starting...`]);
+      const data = await postJson(url, payload);
+      currentJobId = data.job_id;
+      const result = await pollJob(data.job_id, index, stageId);
+      setStage(stageId, "Completed");
+      appendLog([`[dashboard] ${label} completed.`]);
+      return result;
+    }
+    function buildLineChart(chart) {
+      const width = 640, height = 240;
+      const left = 44, right = 16, top = 16, bottom = 28;
+      const rounds = chart.rounds || [];
+      const series = (chart.series || []).filter((item) => Array.isArray(item.values));
+      const values = series.flatMap((item) => item.values).filter((value) => typeof value === "number");
+      const minY = values.length ? Math.min(...values) : 0;
+      const maxY = values.length ? Math.max(...values) : 1;
+      const innerW = width - left - right;
+      const innerH = height - top - bottom;
+      const spanX = Math.max(1, rounds.length - 1);
+      const spanY = Math.max(1e-9, maxY - minY);
+      const grid = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
+        const y = top + innerH - (pct * innerH);
+        const value = minY + (pct * spanY);
+        return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#cbd5e1" stroke-dasharray="4 4" />
+          <line x1="${left - 4}" y1="${y}" x2="${left}" y2="${y}" stroke="#94a3b8" />
+          <text x="${left - 8}" y="${y + 4}" text-anchor="end" font-size="11" fill="#64748b">${value.toFixed(2)}</text>`;
+      }).join("");
+      const labels = rounds.map((round, idx) => {
+        const x = left + (idx / spanX) * innerW;
+        return `<line x1="${x}" y1="${height - bottom}" x2="${x}" y2="${height - bottom + 4}" stroke="#94a3b8" />
+          <text x="${x}" y="${height - 6}" text-anchor="middle" font-size="11" fill="#64748b">R${round}</text>`;
+      }).join("");
+      const lines = series.map((item) => `<polyline fill="none" stroke="${item.color}" stroke-width="3" points="${item.values.map((value, idx) => { const x = left + (idx / spanX) * innerW; const y = top + innerH - (((typeof value === "number" ? value : minY) - minY) / spanY) * innerH; return `${x},${y}`; }).join(" ")}"/>`).join("");
+      return `<div class="chart-card"><h4>${chart.label}</h4><svg class="chart-svg" viewBox="0 0 ${width} ${height}">${grid}<line x1="${left}" y1="${top}" x2="${left}" y2="${height - bottom}" stroke="#94a3b8"/><line x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" stroke="#94a3b8"/>${lines}${labels}</svg><div class="chart-legend">${series.map((item) => `<span class="legend-item"><span class="legend-swatch" style="background:${item.color};"></span>${item.name}</span>`).join("")}</div></div>`;
+    }
+    function buildPieChart(chart) {
+      const slices = chart.slices || [];
+      const total = slices.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      let angle = 0;
+      const parts = total > 0 ? slices.map((item) => { const start = angle; angle += (Number(item.value || 0) / total) * 360; return `${item.color} ${start}deg ${angle}deg`; }).join(", ") : "#cbd5e1 0deg 360deg";
+      return `<div class="pie-card"><h4>${chart.title}</h4><div class="pie-visual" style="background: conic-gradient(${parts});"></div><div class="pie-legend">${slices.map((item) => `<span class="legend-item"><span class="legend-swatch" style="background:${item.color};"></span>${item.label}: ${formatMetric(item.value)}</span>`).join("")}</div></div>`;
+    }
+    async function loadResults() {
+      document.getElementById("resultsState").textContent = "loading results...";
+      document.getElementById("resultsCards").innerHTML = "";
+      document.getElementById("resultsCharts").innerHTML = "";
+      document.getElementById("resultsPies").innerHTML = "";
+      try {
+        const params = new URLSearchParams({ task_type: taskType.value, model_type: resultsModelType.value, scope: resultsScope.value, view: resultsView.value, dataset: resultsDataset.value, figure_detail: resultsFigureDetail.value });
+        const needsRoom = resultsScope.value === "local" || resultsView.value === "by_room";
+        if (needsRoom && resultsRoomId.value) params.set("room_id", resultsRoomId.value);
+        const response = await fetch(`/api/ai/results?${params.toString()}`);
+        if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+        const data = await response.json();
+        resultsRoomId.innerHTML = (data.room_ids || []).map((roomId) => `<option value="${roomId}">${roomId}</option>`).join("");
+        if (data.room_id) resultsRoomId.value = data.room_id;
+        document.getElementById("resultsCards").innerHTML = (data.latest_cards || []).map((item) => `<div class="metric-card"><div class="metric-k">${item.label}</div><div class="metric-v">${formatMetric(item.value)}</div><div class="metric-x">${item.explain || ""}</div></div>`).join("");
+        document.getElementById("resultsCharts").innerHTML = (data.line_charts || []).map(buildLineChart).join("");
+        document.getElementById("resultsPies").innerHTML = (data.pie_charts || []).map(buildPieChart).join("");
+        updateResultsControls();
+        const modeText = data.scope === "global" ? `global ${data.view || resultsView.value}` : `local ${data.dataset || resultsDataset.value}`;
+        document.getElementById("resultsState").textContent = `${modeText} results loaded from ${data.weights_dir || "weights directory"}.`;
+      } catch (error) {
+        document.getElementById("resultsState").textContent = `results unavailable: ${error.message}`;
+      }
+    }
+    function pollWorkflow(jobId) {
+      let cursor = 0;
+      let polling = false;
+      return new Promise((resolve, reject) => {
+        const timer = setInterval(async () => {
+          if (polling) return;
+          polling = true;
+          try {
+            const response = await fetch(`/api/ai/jobs/${jobId}?cursor=${cursor}`);
+            if (!response.ok) throw new Error(`status ${response.status}`);
+            const data = await response.json();
+            appendLog(data.logs || []);
+            cursor = data.next_cursor || cursor;
+            setProgress(data.progress);
+            updateRuntimeSummary(data.runtime_summary, data.pc_spec);
+            applyWorkflowMetadata(data.metadata || {});
+            workflowState.textContent = `${data.status} (${data.progress}%)`;
+            if (["completed", "failed", "stopped"].includes(data.status)) {
+              clearInterval(timer);
+              currentJobId = null;
+              if (data.status === "completed") resolve(data);
+              else if (data.status === "stopped") reject(new Error("stopped"));
+              else reject(new Error(`job failed${data.return_code != null ? ` (exit ${data.return_code})` : ""}`));
+            }
+          } catch (error) {
+            clearInterval(timer);
+            currentJobId = null;
+            reject(error);
+          } finally {
+            polling = false;
+          }
+        }, 1000);
+      });
+    }
+    async function runWorkflow() {
+      const trainingPayload = buildTrainingPayload();
+      workflowCancelled = false;
+      activeWorkflowStage = "-";
+      workflowLog.textContent = "[dashboard] waiting...";
+      setProgress(0);
+      setStage("stageSimulation", "Queued");
+      setStage("stageBuild", "Queued");
+      setStage("stageSplit", "Queued");
+      setStage("stageTraining", "Queued");
+      benchmark.rooms = "-";
+      benchmark.patients = document.getElementById("patientCount").value || "-";
+      benchmark.days = document.getElementById("simulationMonths").value || "-";
+      benchmark.dataTime = "-";
+      benchmark.dataMem = "-";
+      benchmark.trainTime = "-";
+      benchmark.trainMem = "-";
+      benchmark.prediction = taskType.value === "event" ? "state_to_outcome" : "k_hours";
+      benchmark.aiConfig = summarizeAiConfig(trainingPayload);
+      benchmark.runStatus = "running";
+      benchmark.stopStage = "-";
+      updateBenchmarkUi();
+      document.getElementById("runWorkflowBtn").disabled = true;
+      try {
+        const data = await postJson("/api/workflow/start", {
+          simulation: buildSimulationPayload(),
+          training: trainingPayload
+        });
+        currentJobId = data.job_id;
+        const result = await pollWorkflow(data.job_id);
+        applyWorkflowMetadata(result.metadata || {});
+        resultsModelType.value = modelType.value;
+        await loadResults();
+        workflowState.textContent = "workflow completed";
+        setProgress(100);
+      } catch (error) {
+        workflowState.textContent = error.message === "stopped" ? "workflow stopped" : `workflow failed: ${error.message}`;
+        appendLog([`[dashboard] ${workflowState.textContent}`]);
+      } finally {
+        currentJobId = null;
+        updateBenchmarkUi();
+        document.getElementById("runWorkflowBtn").disabled = false;
+      }
+    }
+    updateRuntimeSummary(initialRuntimeSummary, initialPcSpec);
+    updateBenchmarkUi();
+    updateTaskUi();
+    bindManualToggle("flMaxRoomsEnabled", "flMaxRooms");
+    bindManualToggle("flClientCpuEnabled", "flClientCpu");
+    bindManualToggle("flChunkSizeEnabled", "flChunkSize");
+    document.getElementById("runWorkflowBtn").addEventListener("click", runWorkflow);
+    document.getElementById("stopWorkflowBtn").addEventListener("click", async () => {
+      workflowCancelled = true;
+      if (!currentJobId) return;
+      try { await stopCurrentJob(); } catch (error) { appendLog([`[dashboard] stop failed: ${error.message}`]); }
+    });
+    taskType.addEventListener("change", updateTaskUi);
+    modelType.addEventListener("change", updateTaskUi);
+    document.getElementById("flAggregationMethod").addEventListener("change", updateTaskUi);
+    resultsScope.addEventListener("change", () => { updateResultsControls(); loadResults(); });
+    resultsView.addEventListener("change", () => { updateResultsControls(); loadResults(); });
+    resultsDataset.addEventListener("change", loadResults);
+    resultsModelType.addEventListener("change", loadResults);
+    resultsRoomId.addEventListener("change", loadResults);
+    resultsFigureDetail.addEventListener("change", loadResults);
+    document.getElementById("refreshResultsBtn").addEventListener("click", loadResults);
+    document.getElementById("showHistoryBtn").addEventListener("click", () => runtimeHistoryModal.classList.remove("hidden"));
+    document.getElementById("closeHistoryBtn").addEventListener("click", () => runtimeHistoryModal.classList.add("hidden"));
+    runtimeHistoryModal.addEventListener("click", (event) => { if (event.target === runtimeHistoryModal) runtimeHistoryModal.classList.add("hidden"); });
+    const HELP_DETAILS = {
+      "Benchmark Summary": "This shows the main numbers from the last workflow run so you can compare runs more easily.",
+      "Runtime Summary": "This shows how long each stage took so you can see where time was spent.",
+      "Simulation Horizon": "Longer runs create more data, but they also take longer to generate and train on.",
+      "Start date": "Use the same start date if you want runs to be easier to compare.",
+      "Months": "More months usually means more data.",
+      "Population": "These settings have a big effect on how much data is created.",
+      "Patient count": "More patients usually means more admissions, more events, and a longer run.",
+      "Random seed": "Use the same seed to get similar generated data each time. This helps when you want to compare settings fairly.",
+      "Room Transfers": "These settings control how often patients move between rooms.",
+      "Change room probability": "Higher values usually create more room changes.",
+      "Min days before transfer": "Higher values make early room changes less likely.",
+      "Min days after transfer": "Higher values make late room changes less likely.",
+      "Comfort Behavior": "These settings control how often comfort values can change.",
+      "Max comfort changes per day": "Higher values allow more changes in one day.",
+      "Simulation Timing": "These settings control how detailed the simulation is and how much data it creates.",
+      "Simulation step": "Smaller steps make the simulation update more often, but they can slow it down.",
+      "Sensor sample interval": "Smaller intervals create more sensor rows.",
+      "Wall sleep": "This adds a real delay between steps. Keep it near zero for faster runs.",
+      "Generation Toggles": "Turn generators on or off to control what kinds of data are created.",
+      "Comfort generation": "Turn this off only if you do not want comfort-related data.",
+      "Medication generation": "Turning this off removes medication events from the generated data.",
+      "Visit generation": "Turning this off removes visit events from the generated data.",
+      "Toilet usage generation": "Turning this off removes toilet and water usage data.",
+      "Sensor emit": "Turning this off creates much less sensor data.",
+      "Utility usage generation": "Turning this off removes HVAC and utility usage data.",
+      "Prediction Pipeline": "The pipeline changes both the training data and what the model tries to predict.",
+      "Predictions choice": "Choose k-hours for future prediction, or state_to_outcome for event or state changes.",
+      "Federated Training Configuration": "These settings control how training runs after the data is built and split.",
+      "Model type": "Some models are simpler and faster, while others can learn more complex patterns.",
+      "Federated rounds": "More rounds usually improve training, but they also take longer.",
+      "Epochs": "More local epochs means each room trains more before sending updates back.",
+      "Aggregation method": "FedAvg is the standard method. FedProx can help keep rooms more aligned during training.",
+      "FedProx mu": "Higher values make FedProx hold rooms closer to the shared model.",
+      "MLP hidden layers": "More or larger layers give the model more capacity, but they can also make training slower.",
+      "MLP batch size": "Larger batches are smoother and can be faster. Smaller batches use less memory.",
+      "MLP learning rate": "If training looks unstable, this is often one of the first settings to lower.",
+      "MLP optimizer": "Adam is usually the easiest starting point. SGD often needs more tuning.",
+      "MLP activation": "This changes how the model learns patterns between layers.",
+      "Batch size": "If memory is tight, lowering batch size is often an easy fix.",
+      "Sequence length": "Longer sequences give the model more history, but they also cost more to train.",
+      "LSTM hidden size": "Larger hidden size gives the model more capacity, but it also makes training heavier.",
+      "LSTM layers": "More layers can learn more complex patterns, but they also make training slower.",
+      "LSTM head hidden size": "This controls the size of the final prediction part of the model.",
+      "Learning rate": "This controls how fast the model updates while training. Too high can be unstable, too low can be slow.",
+      "Optimizer": "Different optimizers train in different ways. Adam is usually the safest place to start.",
+      "LSTM head activation": "This changes how the final prediction part of the model behaves.",
+      "Hybrid change hidden layers": "These layers control how much room the hybrid change model has to learn patterns.",
+      "Hybrid change activation": "This changes how the hybrid change part of the model reacts to patterns.",
+      "Maximum number of rooms": "Lower values are useful for quick tests. Higher values include more rooms and take longer.",
+      "CPU resources per client": "Higher values can speed up each client, but fewer clients may run at the same time.",
+      "Chunk size": "Larger chunks can be faster, but they use more memory.",
+      "Workflow": "This runs the whole process in order, from simulation to training.",
+      "AI Results And Error Analysis": "Use this section to compare saved results and look for weak spots in the model.",
+      "Results model type": "Pick the saved model you want to inspect.",
+      "Analysis scope": "Use global for all rooms together or local for one room.",
+      "Room": "Use this to inspect one room in more detail.",
+      "Figure detail": "Use summary for a quick view and detailed for a deeper view."
+    };
+    let helpExpanded = false;
+    function openHelp(title, text, details = "") {
+      const popup = document.getElementById("pageHelpPopup");
+      const detailsEl = document.getElementById("pageHelpDetails");
+      const toggleBtn = document.getElementById("pageHelpToggleBtn");
+      document.getElementById("pageHelpTitle").textContent = title;
+      document.getElementById("pageHelpText").textContent = text;
+      detailsEl.textContent = details;
+      helpExpanded = false;
+      detailsEl.classList.toggle("hidden", !details);
+      if (details) detailsEl.classList.add("hidden");
+      toggleBtn.textContent = "More";
+      toggleBtn.classList.toggle("hidden", !details);
+      popup.classList.remove("hidden");
+      popup.setAttribute("aria-hidden", "false");
+    }
+    document.getElementById("pageHelpBtn").addEventListener("click", () => {
+      openHelp(
+        "Page Help",
+        "Use this page for the full workflow: configure the simulation, choose the prediction pipeline, set the federated training options, then run simulation, build, split, and training in one sequence. Completed runs are appended to the benchmark CSV.",
+        "A typical run is: generate data, build rows, split the data, train the model, then inspect the saved results."
+      );
+    });
+    document.getElementById("pageHelpCloseBtn").addEventListener("click", () => {
+      const popup = document.getElementById("pageHelpPopup");
+      popup.classList.add("hidden");
+      popup.setAttribute("aria-hidden", "true");
+    });
+    document.getElementById("pageHelpToggleBtn").addEventListener("click", () => {
+      const detailsEl = document.getElementById("pageHelpDetails");
+      const toggleBtn = document.getElementById("pageHelpToggleBtn");
+      helpExpanded = !helpExpanded;
+      detailsEl.classList.toggle("hidden", !helpExpanded);
+      toggleBtn.textContent = helpExpanded ? "Less" : "More";
+    });
+    document.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-help-title]");
+      if (!trigger) return;
+      const title = trigger.dataset.helpTitle || "Help";
+      openHelp(title, trigger.dataset.helpText || "", HELP_DETAILS[title] || "");
+    });
+    updateResultsControls();
+
+    (async () => {
+      try {
+        const jobs = await fetchActiveJobs();
+        const workflowJob = jobs.find((job) => job.kind === "workflow");
+        if (!workflowJob) return;
+        currentJobId = workflowJob.id;
+        document.getElementById("runWorkflowBtn").disabled = true;
+        workflowState.textContent = `running (${workflowJob.progress ?? 0}%)`;
+        appendLog([`[dashboard] reconnected to workflow job ${workflowJob.id}`]);
+        applyWorkflowMetadata(workflowJob.metadata || {});
+        try {
+          const result = await pollWorkflow(workflowJob.id);
+          applyWorkflowMetadata(result.metadata || {});
+          resultsModelType.value = modelType.value;
+          await loadResults();
+        } catch (error) {
+          workflowState.textContent = error.message === "stopped" ? "workflow stopped" : `workflow failed: ${error.message}`;
+          appendLog([`[dashboard] ${workflowState.textContent}`]);
+        } finally {
+          document.getElementById("runWorkflowBtn").disabled = false;
+        }
+      } catch (error) {
+        appendLog([`[dashboard] active job lookup failed: ${error.message}`]);
+      }
+    })();
+  })();
+</script>
+{% endblock %}

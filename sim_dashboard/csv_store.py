@@ -10,6 +10,7 @@ from typing import Any
 
 FILES = (
     "rooms.csv",
+    "devices.csv",
     "patients.csv",
     "admissions.csv",
     "room_assignments.csv",
@@ -18,6 +19,8 @@ FILES = (
     "comfort_preferences.csv",
     "utility_usages.csv",
     "ventilations.csv",
+    "toilet_heaters.csv",
+    "toilet_lights.csv",
 )
 
 
@@ -109,6 +112,7 @@ def load_data() -> dict[str, Any]:
         return _CACHE_DATA
 
     rooms_raw = _read_csv(data_dir, "rooms.csv")
+    devices_raw = _read_csv(data_dir, "devices.csv")
     patients_raw = _read_csv(data_dir, "patients.csv")
     admissions_raw = _read_csv(data_dir, "admissions.csv")
     assignments_raw = _read_csv(data_dir, "room_assignments.csv")
@@ -117,6 +121,8 @@ def load_data() -> dict[str, Any]:
     comfort_raw = _read_csv(data_dir, "comfort_preferences.csv")
     utility_raw = _read_csv(data_dir, "utility_usages.csv")
     ventilations_raw = _read_csv(data_dir, "ventilations.csv")
+    toilet_heaters_raw = _read_csv(data_dir, "toilet_heaters.csv")
+    toilet_lights_raw = _read_csv(data_dir, "toilet_lights.csv")
 
     rooms: list[dict[str, Any]] = []
     room_by_id: dict[int, dict[str, Any]] = {}
@@ -265,6 +271,14 @@ def load_data() -> dict[str, Any]:
     for group in comfort_by_room.values():
         group.sort(key=lambda c: (c["timestamp"] is None, c["timestamp"]), reverse=True)
 
+    device_to_room: dict[int, int] = {}
+    for row in devices_raw:
+        device_id = _to_int(row.get("device_id"))
+        room_id = _to_int(row.get("room_id"))
+        if device_id is None or room_id is None:
+            continue
+        device_to_room[device_id] = room_id
+
     utility_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
     devices_by_room: dict[int, set[int]] = defaultdict(set)
     for row in utility_raw:
@@ -291,11 +305,6 @@ def load_data() -> dict[str, Any]:
 
     ventilations: list[dict[str, Any]] = []
     vents_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    # We only map ventilation rows to room if the device_id appeared in utility_usages with a room_id.
-    device_to_room: dict[int, int] = {}
-    for room_id, device_ids in devices_by_room.items():
-        for device_id in device_ids:
-            device_to_room[device_id] = room_id
     for row in ventilations_raw:
         ventilation_id = _to_int(row.get("ventilation_id"))
         device_id = _to_int(row.get("device_id"))
@@ -313,6 +322,44 @@ def load_data() -> dict[str, Any]:
             vents_by_room[device_to_room[device_id]].append(item)
     for group in vents_by_room.values():
         group.sort(key=lambda v: (v["timestamp"] is None, v["timestamp"]), reverse=True)
+
+    toilet_heaters: list[dict[str, Any]] = []
+    toilet_heaters_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in toilet_heaters_raw:
+        toilet_heater_id = _to_int(row.get("toilet_heater_id"))
+        device_id = _to_int(row.get("device_id"))
+        if toilet_heater_id is None:
+            continue
+        item = {
+            "toilet_heater_id": toilet_heater_id,
+            "device_id": device_id,
+            "state": _to_bool(row.get("state")),
+            "timestamp": _parse_ts(row.get("timestamp")),
+        }
+        toilet_heaters.append(item)
+        if device_id is not None and device_id in device_to_room:
+            toilet_heaters_by_room[device_to_room[device_id]].append(item)
+    for group in toilet_heaters_by_room.values():
+        group.sort(key=lambda value: (value["timestamp"] is None, value["timestamp"]), reverse=True)
+
+    toilet_lights: list[dict[str, Any]] = []
+    toilet_lights_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in toilet_lights_raw:
+        toilet_light_id = _to_int(row.get("toilet_light_id"))
+        device_id = _to_int(row.get("device_id"))
+        if toilet_light_id is None:
+            continue
+        item = {
+            "toilet_light_id": toilet_light_id,
+            "device_id": device_id,
+            "state": _to_bool(row.get("state")),
+            "timestamp": _parse_ts(row.get("timestamp")),
+        }
+        toilet_lights.append(item)
+        if device_id is not None and device_id in device_to_room:
+            toilet_lights_by_room[device_to_room[device_id]].append(item)
+    for group in toilet_lights_by_room.values():
+        group.sort(key=lambda value: (value["timestamp"] is None, value["timestamp"]), reverse=True)
 
     female_heights = [
         p["height"]
@@ -357,6 +404,10 @@ def load_data() -> dict[str, Any]:
         "devices_by_room": {k: sorted(v) for k, v in devices_by_room.items()},
         "ventilations": ventilations,
         "ventilations_by_room": vents_by_room,
+        "toilet_heaters": toilet_heaters,
+        "toilet_heaters_by_room": toilet_heaters_by_room,
+        "toilet_lights": toilet_lights,
+        "toilet_lights_by_room": toilet_lights_by_room,
         "female_heights": female_heights,
         "male_heights": male_heights,
         "female_ages": female_ages,

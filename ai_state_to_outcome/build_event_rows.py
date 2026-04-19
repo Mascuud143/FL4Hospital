@@ -25,6 +25,7 @@ from schema import (
 
 DEFAULT_DATA_DIR = "filestorage"
 DEFAULT_OUT_DIR = "rows"
+WRITE_BATCH_SIZE = 500
 
 
 def parse_ts(value: str | None) -> datetime | None:
@@ -322,6 +323,7 @@ def build_rows(
     with open(out_path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
+        pending_rows: list[dict[str, Any]] = []
 
         for admission_id in sorted(indices["eligible_admission_ids"]):
             admission = indices["admissions_by_id"].get(admission_id)
@@ -438,8 +440,14 @@ def build_rows(
                 for col, value in zip(TRIGGER_MEDICATION_COLUMNS, trigger_vector):
                     row[col] = value
 
-                writer.writerow(row)
+                pending_rows.append(row)
+                if len(pending_rows) >= WRITE_BATCH_SIZE:
+                    writer.writerows(pending_rows)
+                    pending_rows = []
                 row_count += 1
+
+        if pending_rows:
+            writer.writerows(pending_rows)
 
     return row_count, filtered_events
 

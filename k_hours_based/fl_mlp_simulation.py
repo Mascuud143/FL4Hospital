@@ -4,7 +4,12 @@ import os
 
 import flwr as fl
 import numpy as np
-import pandas as pd
+from per_room_data import list_room_ids
+from fl_shared import available_client_workers, room_ids_from_stats, room_sort_key
+
+_PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PARENT_DIR not in os.sys.path:
+    os.sys.path.insert(0, _PARENT_DIR)
 
 try:
     from k_hours_based.fl_mlp_client import (
@@ -12,6 +17,7 @@ try:
         RoomClient,
         TARGET_COLUMNS,
         get_input_dim,
+        load_room_df,
         row_to_input_vector,
         sanitize_targets,
     )
@@ -22,11 +28,11 @@ except ModuleNotFoundError:
         RoomClient,
         TARGET_COLUMNS,
         get_input_dim,
+        load_room_df,
         row_to_input_vector,
         sanitize_targets,
     )
     from fl_mlp_server import make_initial_parameters, make_strategy
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower simulation mode for next-hour environment training.")
@@ -44,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weights-out-dir", default="ai/fl_weights_next_hour", help="Directory to write global weights per round")
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
-    parser.add_argument("--chunksize", type=int, default=200000, help="CSV chunksize")
+    parser.add_argument("--chunksize", type=int, default=50000, help="CSV chunksize")
     parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated MLP hidden layer sizes")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for local training")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for local training")
@@ -52,57 +58,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
     parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
+    parser.add_argument("--prebuild-workers", type=int, default=0, help="Client CSV prebuild workers; 0 derives from available workers * 2")
     return parser.parse_args()
 
-
-def unique_room_ids(path: str, chunksize: int) -> list[str]:
-    ids: set[str] = set()
-    for chunk in pd.read_csv(path, usecols=["client_id"], chunksize=chunksize):
-        ids.update(chunk["client_id"].astype(str).tolist())
-    return sorted(ids, key=lambda x: int(x) if x.isdigit() else x)
-
-
-def room_ids_from_stats(stats_path: str) -> list[str]:
-    if not os.path.exists(stats_path):
-        return []
-    df = pd.read_csv(stats_path, usecols=["client_id"])
-    ids = df["client_id"].astype(str).dropna().unique().tolist()
-    return sorted(ids, key=lambda x: int(x) if x.isdigit() else x)
-
-
-def load_filtered(path: str, room_ids: set[str], chunksize: int) -> pd.DataFrame:
-    keep_cols = ["client_id", *TARGET_COLUMNS]
-    parts: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, usecols=lambda c: True, chunksize=chunksize):
-        filtered = chunk[chunk["client_id"].astype(str).isin(room_ids)]
-        if not filtered.empty:
-            parts.append(filtered)
-    if not parts:
-        return pd.DataFrame(columns=keep_cols)
-    df = pd.concat(parts, ignore_index=True)
-    df["client_id"] = df["client_id"].astype(str)
-    return df.loc[:, ~df.columns.duplicated()]
-
-
-def build_room_datasets(train_df: pd.DataFrame, test_df: pd.DataFrame, room_ids: list[str]) -> dict[str, tuple]:
-    room_data: dict[str, tuple] = {}
-    for rid in room_ids:
-        room_train = train_df[train_df["client_id"] == rid]
-        if len(room_train) == 0:
-            continue
-        room_test = test_df[test_df["client_id"] == rid]
-        # Each room becomes one federated client with its own local train/test arrays.
-        room_data[rid] = (
-            row_to_input_vector(room_train),
-            room_train[TARGET_COLUMNS].to_numpy(dtype=np.float64),
-            room_train[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
-            room_train["y_any_change"].to_numpy(dtype=np.int64),
-            row_to_input_vector(room_test),
-            room_test[TARGET_COLUMNS].to_numpy(dtype=np.float64),
-            room_test[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
-            room_test["y_any_change"].to_numpy(dtype=np.int64),
-        )
-    return room_data
+def load_room_dataset(split_dir: str, rid: str, chunksize: int) -> tuple:
+    room_train = sanitize_targets(load_room_df(split_dir, "train", room_id=rid, chunksize=chunksize))
+    if len(room_train) == 0:
+        raise RuntimeError(f"No training rows for room_id={rid}")
+    room_test = sanitize_targets(load_room_df(split_dir, "test", room_id=rid, chunksize=chunksize))
+    return (
+        row_to_input_vector(room_train),
+        room_train[TARGET_COLUMNS].to_numpy(dtype=np.float64),
+        room_train[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
+        room_train["y_any_change"].to_numpy(dtype=np.int64),
+        row_to_input_vector(room_test),
+        room_test[TARGET_COLUMNS].to_numpy(dtype=np.float64),
+        room_test[CHANGE_BASELINE_COLUMNS].to_numpy(dtype=np.float64),
+        room_test["y_any_change"].to_numpy(dtype=np.int64),
+    )
 
 
 def cleanup_previous_outputs(weights_out_dir: str) -> None:
@@ -111,8 +84,9 @@ def cleanup_previous_outputs(weights_out_dir: str) -> None:
         "total_metrics.csv",
         "room_metrics.csv",
         "train_metrics.csv",
-        "train_total_metrics.csv",
         "train_room_metrics.csv",
+        "local_test_metrics.csv",
+        "local_test_room_metrics.csv",
         "latest_global_weights.npz",
     ]:
         path = os.path.join(weights_out_dir, name)
@@ -122,433 +96,33 @@ def cleanup_previous_outputs(weights_out_dir: str) -> None:
         if name.startswith("round_") and name.endswith("_global_weights.npz"):
             os.remove(os.path.join(weights_out_dir, name))
 
-
-def _weighted_average_params(results: list[tuple[list[np.ndarray], int]]) -> list[np.ndarray]:
-    total_examples = sum(num_examples for _, num_examples in results)
-    if total_examples <= 0:
-        raise RuntimeError("No training examples were returned by clients.")
-    averaged: list[np.ndarray] = []
-    for layer_idx in range(len(results[0][0])):
-        weighted_sum = sum(params[layer_idx] * num_examples for params, num_examples in results)
-        averaged.append(weighted_sum / float(total_examples))
-    return averaged
-
-
-def _run_manual_federated_loop(
-    room_ids: list[str],
-    room_data: dict[str, tuple],
-    *,
-    args: argparse.Namespace,
-    input_dim: int,
-    strategy,
-) -> None:
-    global_parameters = fl.common.parameters_to_ndarrays(strategy.initial_parameters)
-    hidden_layer_sizes = tuple(int(part.strip()) for part in args.hidden_layers.split(",") if part.strip())
-
-    for server_round in range(1, args.rounds + 1):
-        print(f"[manual] round={server_round} fit_start")
-        fit_results = []
-        for rid in room_ids:
-            x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
-            client = RoomClient(
-                room_id=rid,
-                x_train=x_train,
-                y_train=y_train,
-                current_train=current_train,
-                change_train=change_train,
-                x_test=x_test,
-                y_test=y_test,
-                current_test=current_test,
-                change_true=change_true,
-                input_dim=input_dim,
-                local_epochs=args.local_epochs,
-                hidden_layer_sizes=hidden_layer_sizes,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-                optimizer=args.optimizer,
-                activation=args.activation,
-            )
-            params, num_examples, metrics = client.fit(
-                [np.asarray(p, dtype=np.float64).copy() for p in global_parameters],
-                {"proximal_mu": args.proximal_mu if args.aggregation_method == "fedprox" else 0.0},
-            )
-            fit_results.append((params, num_examples, metrics))
-
-        global_parameters = _weighted_average_params([(params, num_examples) for params, num_examples, _ in fit_results])
-        train_examples = sum(num_examples for _, num_examples, _ in fit_results)
-        train_summary = {
-            "evaluated_examples": 0.0,
-            "regression_correct": 0.0,
-            "regression_wrong": 0.0,
-            "temperature_correct": 0.0,
-            "temperature_wrong": 0.0,
-            "airflow_correct": 0.0,
-            "airflow_incorrect": 0.0,
-            "airflow_tp": 0.0,
-            "airflow_tn": 0.0,
-            "airflow_fp": 0.0,
-            "airflow_fn": 0.0,
-            "airflow_accuracy_sum": 0.0,
-            "airflow_precision_sum": 0.0,
-            "airflow_recall_sum": 0.0,
-            "airflow_f1_sum": 0.0,
-            "change_accuracy_sum": 0.0,
-            "change_precision_sum": 0.0,
-            "change_recall_sum": 0.0,
-            "change_f1_sum": 0.0,
-            "change_correct": 0.0,
-            "change_incorrect": 0.0,
-            "change_tp": 0.0,
-            "change_tn": 0.0,
-            "change_fp": 0.0,
-            "change_fn": 0.0,
-            "mae_sum_y_temp_main": 0.0,
-            "mae_sum_y_temp_toilet": 0.0,
-            "mae_sum_y_light": 0.0,
-            "mae_sum_y_sound": 0.0,
-            "mse_sum_y_temp_main": 0.0,
-            "mse_sum_y_temp_toilet": 0.0,
-            "mse_sum_y_light": 0.0,
-            "mse_sum_y_sound": 0.0,
-            "threshold_correct_y_temp_main": 0.0,
-            "threshold_wrong_y_temp_main": 0.0,
-            "threshold_correct_y_temp_toilet": 0.0,
-            "threshold_wrong_y_temp_toilet": 0.0,
-            "threshold_correct_y_light": 0.0,
-            "threshold_wrong_y_light": 0.0,
-            "threshold_correct_y_sound": 0.0,
-            "threshold_wrong_y_sound": 0.0,
-        }
-        train_room_rows: list[dict[str, float | int | str]] = []
-        train_loss_weighted_sum = 0.0
-        for _, num_examples, metrics in fit_results:
-            count = float(num_examples)
-            loss = float(metrics.get("train_loss_sum", 0.0)) / max(count, 1.0)
-            train_summary["evaluated_examples"] += count
-            train_loss_weighted_sum += loss * count
-            for key in train_summary:
-                if key == "evaluated_examples":
-                    continue
-                train_summary[key] += float(metrics.get(key, 0.0))
-            train_room_rows.append(
-                {
-                    "round": int(server_round),
-                    "room_id": str(metrics.get("room_id", "")),
-                    "num_examples": int(num_examples),
-                    "local_loss": loss,
-                    "mae_y_temp_main": float(metrics.get("mae_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_main": float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_main": (float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_main": float(metrics.get("threshold_correct_y_temp_main", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_main", 0.0)) + float(metrics.get("threshold_wrong_y_temp_main", 0.0)), 1.0),
-                    "mae_y_temp_toilet": float(metrics.get("mae_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_toilet": float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_toilet": (float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_toilet": float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) + float(metrics.get("threshold_wrong_y_temp_toilet", 0.0)), 1.0),
-                    "mae_y_light": float(metrics.get("mae_sum_y_light", 0.0)) / max(count, 1.0),
-                    "mse_y_light": float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0),
-                    "rmse_y_light": (float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_light": float(metrics.get("threshold_correct_y_light", 0.0)) / max(float(metrics.get("threshold_correct_y_light", 0.0)) + float(metrics.get("threshold_wrong_y_light", 0.0)), 1.0),
-                    "mae_y_sound": float(metrics.get("mae_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "mse_y_sound": float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "rmse_y_sound": (float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_sound": float(metrics.get("threshold_correct_y_sound", 0.0)) / max(float(metrics.get("threshold_correct_y_sound", 0.0)) + float(metrics.get("threshold_wrong_y_sound", 0.0)), 1.0),
-                    "airflow_accuracy": float(metrics.get("airflow_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "airflow_precision": float(metrics.get("airflow_precision_sum", 0.0)) / max(count, 1.0),
-                    "airflow_recall": float(metrics.get("airflow_recall_sum", 0.0)) / max(count, 1.0),
-                    "airflow_f1": float(metrics.get("airflow_f1_sum", 0.0)) / max(count, 1.0),
-                    "airflow_tp": int(metrics.get("airflow_tp", 0)),
-                    "airflow_fp": int(metrics.get("airflow_fp", 0)),
-                    "airflow_tn": int(metrics.get("airflow_tn", 0)),
-                    "airflow_fn": int(metrics.get("airflow_fn", 0)),
-                    "change_accuracy": float(metrics.get("change_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "change_precision": float(metrics.get("change_precision_sum", 0.0)) / max(count, 1.0),
-                    "change_recall": float(metrics.get("change_recall_sum", 0.0)) / max(count, 1.0),
-                    "change_f1": float(metrics.get("change_f1_sum", 0.0)) / max(count, 1.0),
-                    "change_tp": int(metrics.get("change_tp", 0)),
-                    "change_fp": int(metrics.get("change_fp", 0)),
-                    "change_tn": int(metrics.get("change_tn", 0)),
-                    "change_fn": int(metrics.get("change_fn", 0)),
-                }
-            )
-        strategy.latest_fit_summary = {
-            "round": int(server_round),
-            "trained_examples": int(train_examples),
-            "global_loss": train_loss_weighted_sum / max(train_summary["evaluated_examples"], 1.0),
-            "mae_y_temp_main": train_summary["mae_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0),
-            "mse_y_temp_main": train_summary["mse_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0),
-            "mae_y_temp_toilet": train_summary["mae_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0),
-            "mse_y_temp_toilet": train_summary["mse_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0),
-            "mae_y_light": train_summary["mae_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0),
-            "mse_y_light": train_summary["mse_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0),
-            "mae_y_sound": train_summary["mae_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0),
-            "mse_y_sound": train_summary["mse_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0),
-            "rmse_y_temp_main": (train_summary["mse_sum_y_temp_main"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
-            "rmse_y_temp_toilet": (train_summary["mse_sum_y_temp_toilet"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
-            "rmse_y_light": (train_summary["mse_sum_y_light"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
-            "rmse_y_sound": (train_summary["mse_sum_y_sound"] / max(train_summary["evaluated_examples"], 1.0)) ** 0.5,
-            "threshold_accuracy_y_temp_main": train_summary["threshold_correct_y_temp_main"] / max(train_summary["threshold_correct_y_temp_main"] + train_summary["threshold_wrong_y_temp_main"], 1.0),
-            "threshold_accuracy_y_temp_toilet": train_summary["threshold_correct_y_temp_toilet"] / max(train_summary["threshold_correct_y_temp_toilet"] + train_summary["threshold_wrong_y_temp_toilet"], 1.0),
-            "threshold_accuracy_y_light": train_summary["threshold_correct_y_light"] / max(train_summary["threshold_correct_y_light"] + train_summary["threshold_wrong_y_light"], 1.0),
-            "threshold_accuracy_y_sound": train_summary["threshold_correct_y_sound"] / max(train_summary["threshold_correct_y_sound"] + train_summary["threshold_wrong_y_sound"], 1.0),
-            "regression_correct": int(train_summary["regression_correct"]),
-            "regression_wrong": int(train_summary["regression_wrong"]),
-            "regression_correct_rate": train_summary["regression_correct"] / max(train_summary["regression_correct"] + train_summary["regression_wrong"], 1.0),
-            "temperature_correct": int(train_summary["temperature_correct"]),
-            "temperature_wrong": int(train_summary["temperature_wrong"]),
-            "temperature_correct_rate": train_summary["temperature_correct"] / max(train_summary["temperature_correct"] + train_summary["temperature_wrong"], 1.0),
-            "airflow_accuracy": train_summary["airflow_accuracy_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "airflow_precision": train_summary["airflow_precision_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "airflow_recall": train_summary["airflow_recall_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "airflow_f1": train_summary["airflow_f1_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "airflow_correct": int(train_summary["airflow_correct"]),
-            "airflow_incorrect": int(train_summary["airflow_incorrect"]),
-            "airflow_tp": int(train_summary["airflow_tp"]),
-            "airflow_tn": int(train_summary["airflow_tn"]),
-            "airflow_fp": int(train_summary["airflow_fp"]),
-            "airflow_fn": int(train_summary["airflow_fn"]),
-            "change_accuracy": train_summary["change_accuracy_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "change_precision": train_summary["change_precision_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "change_recall": train_summary["change_recall_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "change_f1": train_summary["change_f1_sum"] / max(train_summary["evaluated_examples"], 1.0),
-            "change_correct": int(train_summary["change_correct"]),
-            "change_incorrect": int(train_summary["change_incorrect"]),
-            "change_tp": int(train_summary["change_tp"]),
-            "change_tn": int(train_summary["change_tn"]),
-            "change_fp": int(train_summary["change_fp"]),
-            "change_fn": int(train_summary["change_fn"]),
-            "evaluated_examples": int(train_summary["evaluated_examples"]),
-            "train_loss": train_loss_weighted_sum / max(train_summary["evaluated_examples"], 1.0),
-        }
-        from k_hours_based.fl_mlp_server import upsert_rows, save_parameters
-        upsert_rows(os.path.join(strategy.weights_out_dir, "train_metrics.csv"), [strategy.latest_fit_summary], ["round"])
-        upsert_rows(os.path.join(strategy.weights_out_dir, "train_total_metrics.csv"), [strategy.latest_fit_summary], ["round"])
-        upsert_rows(os.path.join(strategy.weights_out_dir, "train_room_metrics.csv"), train_room_rows, ["round", "room_id"])
-        round_weights_path = os.path.join(strategy.weights_out_dir, f"round_{server_round}_global_weights.npz")
-        latest_weights_path = os.path.join(strategy.weights_out_dir, "latest_global_weights.npz")
-        save_parameters(fl.common.ndarrays_to_parameters(global_parameters), round_weights_path)
-        save_parameters(fl.common.ndarrays_to_parameters(global_parameters), latest_weights_path)
-        print(f"saved_global_weights={round_weights_path}")
-        print(
-            f"[round {server_round}] training_summary "
-            f"train_loss={strategy.latest_fit_summary['train_loss']:.4f} "
-            f"trained_examples={strategy.latest_fit_summary['trained_examples']}"
-        )
-
-        print(f"[manual] round={server_round} evaluate_start")
-        eval_results = []
-        for rid in room_ids:
-            x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
-            client = RoomClient(
-                room_id=rid,
-                x_train=x_train,
-                y_train=y_train,
-                current_train=current_train,
-                change_train=change_train,
-                x_test=x_test,
-                y_test=y_test,
-                current_test=current_test,
-                change_true=change_true,
-                input_dim=input_dim,
-                local_epochs=args.local_epochs,
-                hidden_layer_sizes=hidden_layer_sizes,
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
-                optimizer=args.optimizer,
-                activation=args.activation,
-            )
-            loss, num_examples, metrics = client.evaluate(
-                [np.asarray(p, dtype=np.float64).copy() for p in global_parameters],
-                {},
-            )
-            eval_results.append((loss, num_examples, metrics))
-
-        summary = {
-            "evaluated_examples": 0.0,
-            "regression_correct": 0.0,
-            "regression_wrong": 0.0,
-            "temperature_correct": 0.0,
-            "temperature_wrong": 0.0,
-            "airflow_correct": 0.0,
-            "airflow_incorrect": 0.0,
-            "airflow_tp": 0.0,
-            "airflow_tn": 0.0,
-            "airflow_fp": 0.0,
-            "airflow_fn": 0.0,
-            "airflow_accuracy_sum": 0.0,
-            "airflow_precision_sum": 0.0,
-            "airflow_recall_sum": 0.0,
-            "airflow_f1_sum": 0.0,
-            "change_accuracy_sum": 0.0,
-            "change_precision_sum": 0.0,
-            "change_recall_sum": 0.0,
-            "change_f1_sum": 0.0,
-            "change_correct": 0.0,
-            "change_incorrect": 0.0,
-            "change_tp": 0.0,
-            "change_tn": 0.0,
-            "change_fp": 0.0,
-            "change_fn": 0.0,
-            "mae_sum_y_temp_main": 0.0,
-            "mae_sum_y_temp_toilet": 0.0,
-            "mae_sum_y_light": 0.0,
-            "mae_sum_y_sound": 0.0,
-            "mse_sum_y_temp_main": 0.0,
-            "mse_sum_y_temp_toilet": 0.0,
-            "mse_sum_y_light": 0.0,
-            "mse_sum_y_sound": 0.0,
-            "threshold_correct_y_temp_main": 0.0,
-            "threshold_wrong_y_temp_main": 0.0,
-            "threshold_correct_y_temp_toilet": 0.0,
-            "threshold_wrong_y_temp_toilet": 0.0,
-            "threshold_correct_y_light": 0.0,
-            "threshold_wrong_y_light": 0.0,
-            "threshold_correct_y_sound": 0.0,
-            "threshold_wrong_y_sound": 0.0,
-        }
-        room_rows: list[dict[str, float | int | str]] = []
-        loss_weighted_sum = 0.0
-        for loss, num_examples, metrics in eval_results:
-            count = float(num_examples)
-            summary["evaluated_examples"] += count
-            loss_weighted_sum += float(loss) * count
-            for key in summary:
-                if key == "evaluated_examples":
-                    continue
-                summary[key] += float(metrics.get(key, 0.0))
-            room_rows.append(
-                {
-                    "round": int(server_round),
-                    "room_id": str(metrics.get("room_id", "")),
-                    "num_examples": int(num_examples),
-                    "local_loss": float(loss),
-                    "mae_y_temp_main": float(metrics.get("mae_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_main": float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_main": (float(metrics.get("mse_sum_y_temp_main", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_main": float(metrics.get("threshold_correct_y_temp_main", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_main", 0.0)) + float(metrics.get("threshold_wrong_y_temp_main", 0.0)), 1.0),
-                    "mae_y_temp_toilet": float(metrics.get("mae_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "mse_y_temp_toilet": float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0),
-                    "rmse_y_temp_toilet": (float(metrics.get("mse_sum_y_temp_toilet", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_temp_toilet": float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) / max(float(metrics.get("threshold_correct_y_temp_toilet", 0.0)) + float(metrics.get("threshold_wrong_y_temp_toilet", 0.0)), 1.0),
-                    "mae_y_light": float(metrics.get("mae_sum_y_light", 0.0)) / max(count, 1.0),
-                    "mse_y_light": float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0),
-                    "rmse_y_light": (float(metrics.get("mse_sum_y_light", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_light": float(metrics.get("threshold_correct_y_light", 0.0)) / max(float(metrics.get("threshold_correct_y_light", 0.0)) + float(metrics.get("threshold_wrong_y_light", 0.0)), 1.0),
-                    "mae_y_sound": float(metrics.get("mae_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "mse_y_sound": float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0),
-                    "rmse_y_sound": (float(metrics.get("mse_sum_y_sound", 0.0)) / max(count, 1.0)) ** 0.5,
-                    "threshold_accuracy_y_sound": float(metrics.get("threshold_correct_y_sound", 0.0)) / max(float(metrics.get("threshold_correct_y_sound", 0.0)) + float(metrics.get("threshold_wrong_y_sound", 0.0)), 1.0),
-                    "airflow_accuracy": float(metrics.get("airflow_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "airflow_precision": float(metrics.get("airflow_precision_sum", 0.0)) / max(count, 1.0),
-                    "airflow_recall": float(metrics.get("airflow_recall_sum", 0.0)) / max(count, 1.0),
-                    "airflow_f1": float(metrics.get("airflow_f1_sum", 0.0)) / max(count, 1.0),
-                    "airflow_tp": int(metrics.get("airflow_tp", 0)),
-                    "airflow_fp": int(metrics.get("airflow_fp", 0)),
-                    "airflow_tn": int(metrics.get("airflow_tn", 0)),
-                    "airflow_fn": int(metrics.get("airflow_fn", 0)),
-                    "change_accuracy": float(metrics.get("change_accuracy_sum", 0.0)) / max(count, 1.0),
-                    "change_precision": float(metrics.get("change_precision_sum", 0.0)) / max(count, 1.0),
-                    "change_recall": float(metrics.get("change_recall_sum", 0.0)) / max(count, 1.0),
-                    "change_f1": float(metrics.get("change_f1_sum", 0.0)) / max(count, 1.0),
-                    "change_tp": int(metrics.get("change_tp", 0)),
-                    "change_fp": int(metrics.get("change_fp", 0)),
-                    "change_tn": int(metrics.get("change_tn", 0)),
-                    "change_fn": int(metrics.get("change_fn", 0)),
-                }
-            )
-
-        count = max(summary["evaluated_examples"], 1.0)
-        strategy.latest_eval_summary = {
-            "round": int(server_round),
-            "global_loss": loss_weighted_sum / count,
-            "mae_y_temp_main": summary["mae_sum_y_temp_main"] / count,
-            "mse_y_temp_main": summary["mse_sum_y_temp_main"] / count,
-            "mae_y_temp_toilet": summary["mae_sum_y_temp_toilet"] / count,
-            "mse_y_temp_toilet": summary["mse_sum_y_temp_toilet"] / count,
-            "mae_y_light": summary["mae_sum_y_light"] / count,
-            "mse_y_light": summary["mse_sum_y_light"] / count,
-            "mae_y_sound": summary["mae_sum_y_sound"] / count,
-            "mse_y_sound": summary["mse_sum_y_sound"] / count,
-            "rmse_y_temp_main": (summary["mse_sum_y_temp_main"] / count) ** 0.5,
-            "rmse_y_temp_toilet": (summary["mse_sum_y_temp_toilet"] / count) ** 0.5,
-            "rmse_y_light": (summary["mse_sum_y_light"] / count) ** 0.5,
-            "rmse_y_sound": (summary["mse_sum_y_sound"] / count) ** 0.5,
-            "threshold_accuracy_y_temp_main": summary["threshold_correct_y_temp_main"] / max(summary["threshold_correct_y_temp_main"] + summary["threshold_wrong_y_temp_main"], 1.0),
-            "threshold_accuracy_y_temp_toilet": summary["threshold_correct_y_temp_toilet"] / max(summary["threshold_correct_y_temp_toilet"] + summary["threshold_wrong_y_temp_toilet"], 1.0),
-            "threshold_accuracy_y_light": summary["threshold_correct_y_light"] / max(summary["threshold_correct_y_light"] + summary["threshold_wrong_y_light"], 1.0),
-            "threshold_accuracy_y_sound": summary["threshold_correct_y_sound"] / max(summary["threshold_correct_y_sound"] + summary["threshold_wrong_y_sound"], 1.0),
-            "regression_correct": int(summary["regression_correct"]),
-            "regression_wrong": int(summary["regression_wrong"]),
-            "regression_correct_rate": summary["regression_correct"] / max(summary["regression_correct"] + summary["regression_wrong"], 1.0),
-            "temperature_correct": int(summary["temperature_correct"]),
-            "temperature_wrong": int(summary["temperature_wrong"]),
-            "temperature_correct_rate": summary["temperature_correct"] / max(summary["temperature_correct"] + summary["temperature_wrong"], 1.0),
-            "airflow_accuracy": summary["airflow_accuracy_sum"] / count,
-            "airflow_precision": summary["airflow_precision_sum"] / count,
-            "airflow_recall": summary["airflow_recall_sum"] / count,
-            "airflow_f1": summary["airflow_f1_sum"] / count,
-            "airflow_correct": int(summary["airflow_correct"]),
-            "airflow_incorrect": int(summary["airflow_incorrect"]),
-            "airflow_tp": int(summary["airflow_tp"]),
-            "airflow_tn": int(summary["airflow_tn"]),
-            "airflow_fp": int(summary["airflow_fp"]),
-            "airflow_fn": int(summary["airflow_fn"]),
-            "change_accuracy": summary["change_accuracy_sum"] / count,
-            "change_precision": summary["change_precision_sum"] / count,
-            "change_recall": summary["change_recall_sum"] / count,
-            "change_f1": summary["change_f1_sum"] / count,
-            "change_correct": int(summary["change_correct"]),
-            "change_incorrect": int(summary["change_incorrect"]),
-            "change_tp": int(summary["change_tp"]),
-            "change_tn": int(summary["change_tn"]),
-            "change_fp": int(summary["change_fp"]),
-            "change_fn": int(summary["change_fn"]),
-            "evaluated_examples": int(summary["evaluated_examples"]),
-        }
-        upsert_rows(os.path.join(strategy.weights_out_dir, "total_metrics.csv"), [strategy.latest_eval_summary], ["round"])
-        upsert_rows(os.path.join(strategy.weights_out_dir, "room_metrics.csv"), room_rows, ["round", "room_id"])
-        print(f"saved_total_metrics={os.path.join(strategy.weights_out_dir, 'total_metrics.csv')}")
-        print(
-            f"[round {server_round}] evaluation_summary "
-            f"regression_correct_rate={strategy.latest_eval_summary['regression_correct_rate']:.4f} "
-            f"temperature_correct_rate={strategy.latest_eval_summary['temperature_correct_rate']:.4f} "
-            f"airflow_f1={strategy.latest_eval_summary['airflow_f1']:.4f} "
-            f"change_f1={strategy.latest_eval_summary['change_f1']:.4f} "
-            f"mae_y_temp_main={strategy.latest_eval_summary['mae_y_temp_main']:.4f} "
-            f"evaluated_examples={strategy.latest_eval_summary['evaluated_examples']}"
-        )
-
-
 def main() -> None:
     args = parse_args()
     split_dir = os.path.abspath(args.split_dir)
     stats_path = os.path.abspath(args.stats_path) if args.stats_path else os.path.join(split_dir, "split_stats_by_room.csv")
-    train_path = os.path.join(split_dir, "next_hour_train.csv")
-    test_path = os.path.join(split_dir, "next_hour_test.csv")
-    if not os.path.exists(train_path):
-        raise FileNotFoundError(f"Missing file: {train_path}")
-    if not os.path.exists(test_path):
-        raise FileNotFoundError(f"Missing file: {test_path}")
+    train_dir = os.path.join(split_dir, "train")
+    test_dir = os.path.join(split_dir, "test")
+    if not os.path.isdir(train_dir):
+        raise FileNotFoundError(f"Missing directory: {train_dir}")
+    if not os.path.isdir(test_dir):
+        raise FileNotFoundError(f"Missing directory: {test_dir}")
+
+    train_room_id_set = set(list_room_ids(split_dir, "train"))
+    test_room_id_set = set(list_room_ids(split_dir, "test"))
+    client_worker_count = available_client_workers(args.client_cpu)
+    required_ready_client_csvs = max(1, client_worker_count * 2)
 
     room_ids = room_ids_from_stats(stats_path)
     room_source = "split_stats_by_room.csv"
     if not room_ids:
-        room_ids = unique_room_ids(train_path, chunksize=args.chunksize)
-        room_source = "next_hour_train.csv"
+        room_ids = sorted(train_room_id_set, key=room_sort_key)
+        room_source = "train/*.csv"
+    room_ids = [rid for rid in room_ids if rid in train_room_id_set and rid in test_room_id_set]
+    if not room_ids:
+        raise RuntimeError("No clients with both training and test rows were found.")
     if args.max_rooms is not None:
         room_ids = room_ids[: max(1, args.max_rooms)]
-    room_set = set(room_ids)
-
-    print("[load] reading train split...")
-    train_df = sanitize_targets(load_filtered(train_path, room_set, chunksize=args.chunksize))
-    print("[load] reading test split...")
-    test_df = sanitize_targets(load_filtered(test_path, room_set, chunksize=args.chunksize))
-    print(f"[load] train_rows={len(train_df)} test_rows={len(test_df)}")
-
-    room_data = build_room_datasets(train_df, test_df, room_ids)
-    room_ids = sorted(room_data.keys(), key=lambda x: int(x) if x.isdigit() else x)
-    if not room_ids:
-        raise RuntimeError("No room training data loaded for simulation.")
-
+    effective_min_available_clients = min(len(room_ids), max(args.min_available_clients, required_ready_client_csvs))
     input_dim = get_input_dim()
     weights_out_dir = os.path.abspath(args.weights_out_dir)
     cleanup_previous_outputs(weights_out_dir)
@@ -560,7 +134,7 @@ def main() -> None:
         fraction_evaluate=args.fraction_evaluate,
         min_fit_clients=min(args.min_fit_clients, len(room_ids)),
         min_evaluate_clients=min(args.min_evaluate_clients, len(room_ids)),
-        min_available_clients=min(args.min_available_clients, len(room_ids)),
+        min_available_clients=effective_min_available_clients,
         initial_parameters=make_initial_parameters(
             args.n_features,
             hidden_layers=args.hidden_layers,
@@ -574,7 +148,7 @@ def main() -> None:
     def client_fn(cid: str):
         # Flower identifies clients as "0", "1", ...; we map those ids back to room ids.
         rid = room_ids[int(cid)]
-        x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = room_data[rid]
+        x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = load_room_dataset(split_dir, rid, args.chunksize)
         return RoomClient(
             room_id=rid,
             x_train=x_train,
@@ -608,29 +182,21 @@ def main() -> None:
     print(f"activation={args.activation}")
     print(f"aggregation_method={args.aggregation_method}")
     print(f"proximal_mu={args.proximal_mu}")
+    print(f"available_client_workers={client_worker_count}")
+    print(f"required_ready_client_csvs={required_ready_client_csvs}")
+    print(f"min_available_clients={effective_min_available_clients}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
-    history = None
-    use_manual_fallback = os.name == "nt"
-    if not use_manual_fallback:
-        history = fl.simulation.start_simulation(
-            client_fn=client_fn,
-            num_clients=len(room_ids),
-            config=fl.server.ServerConfig(num_rounds=args.rounds),
-            strategy=strategy,
-            client_resources={"num_cpus": args.client_cpu},
-        )
-    else:
-        _run_manual_federated_loop(
-            room_ids,
-            room_data,
-            args=args,
-            input_dim=input_dim,
-            strategy=strategy,
-        )
+    history = fl.simulation.start_simulation(
+        client_fn=client_fn,
+        num_clients=len(room_ids),
+        config=fl.server.ServerConfig(num_rounds=args.rounds),
+        strategy=strategy,
+        client_resources={"num_cpus": args.client_cpu},
+    )
 
     print("[done] simulation finished")
-    if history is not None and history.losses_distributed:
+    if history.losses_distributed:
         print(f"[done] distributed_losses={history.losses_distributed}")
 
     if strategy.latest_eval_summary is not None and args.summary_out:

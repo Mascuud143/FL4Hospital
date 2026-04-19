@@ -313,6 +313,41 @@
         {% endif %}
       </div>
 
+      <div class="card">
+        <h3 style="margin-top:0;">Update Comfort Setting</h3>
+        <form method="post" action="{{ url_for('hybrid_bp.save_admin_comfort', room_id=room.room_id) }}">
+          <input type="hidden" name="patient_id" value="{{ patient.patient_id if patient else '' }}" />
+          <div class="form-grid">
+            <div>
+              <label>Main Temperature</label>
+              <input name="temperature_main" value="{{ latest_comfort.temperature_main if latest_comfort else '' }}" />
+            </div>
+            <div>
+              <label>Toilet Temperature</label>
+              <input name="temperature_toilet" value="{{ latest_comfort.temperature_toilet if latest_comfort and latest_comfort.temperature_toilet is not none else '' }}" />
+            </div>
+            <div>
+              <label>Light Intensity</label>
+              <input name="light_intensity" value="{{ latest_comfort.light_intensity if latest_comfort and latest_comfort.light_intensity is not none else '' }}" />
+            </div>
+            <div>
+              <label>Sound Level</label>
+              <input name="sound_level" value="{{ latest_comfort.sound_level if latest_comfort and latest_comfort.sound_level is not none else '' }}" />
+            </div>
+            <div>
+              <label>Airflow</label>
+              <select name="airflow_choice">
+                <option value="">Keep current</option>
+                <option value="on" {% if latest_comfort and latest_comfort.airflow %}selected{% endif %}>On</option>
+                <option value="off" {% if latest_comfort and not latest_comfort.airflow %}selected{% endif %}>Off</option>
+              </select>
+            </div>
+          </div>
+          <p class="muted">Admin updates use the same comfort-control path as patient updates and immediately re-evaluate room control.</p>
+          <p style="margin-top:10px;"><button type="submit">Save Comfort Preference</button></p>
+        </form>
+      </div>
+
       {% if patient %}
       <div class="card">
         <h3 style="margin-top:0;">Add Visit</h3>
