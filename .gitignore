@@ -33,6 +33,7 @@ dist/
 ####################################
 *.sqlite
 *.sqlite3
+fl4hospital.db
 fl4hospital_big.db
 data/
 datasets/
