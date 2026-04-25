@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-import asyncio
+# Run the full batch flow.
+# - Builds run settings with OrchestratorConfig
+# - Runs the batch flow with SimulationOrchestrator
+# - Starts data generation
+# - Starts room simulation and sensor sampling
+# - Saves sensor rows and closes utility sessions
+
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Dict, Optional
+from datetime import datetime
+from typing import Callable, Optional
 
-from .room_engine import EngineConfig, RoomEngine, RoomState, _as_utc
-from .sensor_sampler import SensorSampler
-from .comfort_generator import ComfortGenerator, ComfortPolicy
-from .toilet_usage_generator import ToiletUsageGenerator
-from persistence.models.data import Data
 from persistence.database import session_scope
-from simulation_batch.csv_filestorage import write_model_rows
-# NEW: clinical generators
-from simulation_batch.generators.medication_generator import MedicationGenerator
-from simulation_batch.generators.visit_generator import VisitGenerator
-from simulation_batch.generators.patients import DIAGNOSES
-
-
-# Callback type kept for non-simulation compatibility.
-OnEvent = Callable[[Dict[str, Any]], Awaitable[None]]
+from persistence.models.data import Data
+from simulation_batch.clock import run_simulation_loop
+from simulation_batch.csv_storage import write_model_rows
+from simulation_batch.generation_pipeline import GenerationPipelineConfig, run_generation_pipeline
+from simulation_batch.generators.comfort_generation import ComfortGenerator, ComfortPolicy
+from simulation_batch.simulation_steps.room_simulation import EngineConfig, RoomEngine
+from simulation_batch.simulation_steps.room_dynamics import RoomState
+from simulation_batch.simulation_steps.sensor_sampling import SensorSampler
 
 
 @dataclass
@@ -37,21 +37,12 @@ class OrchestratorConfig:
 
 
 class SimulationOrchestrator:
-    """
-    Runs:
-      - comfort pre-generation
-      - medication generation
-      - visit generation
-      - toilet usage generation
-      - simulation loop (physics + sensors)
-    """
-
     def __init__(
         self,
         *,
         start_time: datetime,
         end_time: datetime,
-        on_event: OnEvent,
+        on_event: Callable | None = None,
         config: Optional[OrchestratorConfig] = None,
         seed: int = 42,
     ):
@@ -60,187 +51,80 @@ class SimulationOrchestrator:
         self._on_event_user = on_event
         self.config = config or OrchestratorConfig()
         self.seed = seed
-
-        # Comfort generator
-        self.comfort = ComfortGenerator(
-            seed=seed,
-            policy=ComfortPolicy(
-                max_changes_per_day=self.config.comfort_max_changes_per_day
-            ),
-        )
-
-        # Room states (1–100)
-        self.rooms = {}
-
-        # Sensor sampler
+        self.comfort = ComfortGenerator(seed=seed, policy=ComfortPolicy(max_changes_per_day=self.config.comfort_max_changes_per_day))
         self.sampler = SensorSampler(seed)
         self.rooms = {room_id: RoomState(room_id) for room_id in self.sampler.room_ids}
-
-        # Simulation engine
-        self.engine = RoomEngine(
-            self.rooms,
-            config=EngineConfig(enable_utility_usage=self.config.enable_utility_usage),
-        )
+        self.engine = RoomEngine(self.rooms, config=EngineConfig(enable_utility_usage=self.config.enable_utility_usage))
         self._write_batch_size = 50000
         self._data_rows: list[tuple[int, float, datetime]] = []
-
-        self._stop = asyncio.Event()
+        self._stop_requested = False
 
     def _flush_data_rows(self) -> None:
         if not self._data_rows:
             return
         batch = self._data_rows
         self._data_rows = []
-        serialized_batch = [
-            {
-                "sensor_id": sensor_id,
-                "value": value,
-                "timestamp": timestamp,
-            }
-            for sensor_id, value, timestamp in batch
-        ]
+        serialized_batch = [{"sensor_id": sensor_id, "value": value, "timestamp": timestamp} for sensor_id, value, timestamp in batch]
         write_model_rows(Data, serialized_batch)
         with session_scope() as session:
             session.bulk_insert_mappings(Data, serialized_batch)
 
-    # -------------------------------------------------------
-    # START
-    # -------------------------------------------------------
+    def _append_sensor_rows(self, rows: list[tuple[int, float, datetime]]) -> None:
+        self._data_rows.extend(rows)
+        if len(self._data_rows) >= self._write_batch_size:
+            self._flush_data_rows()
 
-    async def start(self) -> None:
-        """
-        Start simulation:
-          1. Generate all time-based events
-          2. Run simulation loop
-        """
-        self._stop.clear()
+    def _run_pre_generation(self) -> None:
+        run_generation_pipeline(
+            start_time=self.start_time,
+            end_time=self.end_time,
+            config=GenerationPipelineConfig(
+                enable_comfort=self.config.enable_comfort,
+                enable_medication=self.config.enable_medication,
+                enable_visits=self.config.enable_visits,
+                enable_toilet_usage=self.config.enable_toilet_usage,
+                seed=self.seed,
+            ),
+            comfort_generator=self.comfort,
+        )
 
-        print("[orchestrator] PRE-GENERATION START")
-
-
-
-        # ---------------------------------------------------
-        # 2️⃣ Medication events
-        # ---------------------------------------------------
-        if self.config.enable_medication:
-            med_gen = MedicationGenerator(seed=self.seed, diagnoses=DIAGNOSES)
-            inserted = med_gen.generate_for_horizon(
-                self.start_time,
-                self.end_time,
-            )
-            print(f"[orchestrator] medication rows inserted: {inserted}")
-        else:
-            print("[orchestrator] medication generation disabled")
-
-        # ---------------------------------------------------
-        # 3️⃣ Visit events
-        # ---------------------------------------------------
-        if self.config.enable_visits:
-            visit_gen = VisitGenerator(seed=self.seed)
-            inserted = visit_gen.generate_for_horizon(
-                self.start_time,
-                self.end_time,
-            )
-            print(f"[orchestrator] visit rows inserted: {inserted}")
-        else:
-            print("[orchestrator] visit generation disabled")
-
-
-        # ---------------------------------------------------
-        # 1️⃣ Comfort preferences
-        # ---------------------------------------------------
-        if self.config.enable_comfort:
-            inserted = self.comfort.generate_for_horizon(
-                self.start_time,
-                self.end_time,
-            )
-            print(f"[orchestrator] comfort rows inserted: {inserted}")
-        else:
-            print("[orchestrator] comfort generation disabled")
-
-        # ---------------------------------------------------
-        # 4️⃣ Toilet usage
-        # ---------------------------------------------------
-        if self.config.enable_toilet_usage:
-            toilet_gen = ToiletUsageGenerator(seed=self.seed)
-            inserted = toilet_gen.generate_for_horizon(
-                self.start_time,
-                self.end_time,
-            )
-            print(f"[orchestrator] toilet utility rows inserted: {inserted}")
-        else:
-            print("[orchestrator] toilet usage generation disabled")
-
-        print("[orchestrator] PRE-GENERATION COMPLETE\n")
-
-        # ---------------------------------------------------
-        # 5️⃣ Run simulation loop
-        # ---------------------------------------------------
+    def _prepare_simulation(self) -> None:
         self.engine.preload_simulation_window(self.start_time, self.end_time)
 
-        if not self.config.enable_sensor_emit and not self.config.enable_utility_usage:
-            print("[orchestrator] skipping simulation loop (no sensor emit and no utility usage)")
-            print("[orchestrator] SIMULATION COMPLETE")
-            return
+    def _should_skip_simulation_loop(self) -> bool:
+        return not self.config.enable_sensor_emit and not self.config.enable_utility_usage
 
-        await self._run()
+    def _run_simulation(self) -> None:
+        run_simulation_loop(
+            start_time=self.start_time,
+            end_time=self.end_time,
+            step_s=self.config.step_s,
+            sample_every_s=self.config.sample_every_s,
+            wall_sleep_s=self.config.wall_sleep_s,
+            stop_requested=lambda: self._stop_requested,
+            enable_sensor_emit=self.config.enable_sensor_emit,
+            engine=self.engine,
+            sampler=self.sampler,
+            on_sensor_rows=self._append_sensor_rows,
+        )
 
+    def _finalize_simulation(self) -> None:
         if self.config.enable_utility_usage:
             self.engine.close_all_sessions(self.end_time)
         self._flush_data_rows()
         self.sampler.close()
-
         print("[orchestrator] SIMULATION COMPLETE")
 
-    # -------------------------------------------------------
-    # SIM LOOP
-    # -------------------------------------------------------
-
-    async def _run(self):
-        now = self.start_time
-        last_sample = now
-
-        print(
-            "[orchestrator] START SIM LOOP",
-            self.start_time,
-            "->",
-            self.end_time,
-        )
-
-        while now < self.end_time:
-
-            if self._stop.is_set():
-                break
-
-            # Apply comfort targets
-            self.engine.apply_targets_from_db(now)
-
-            # Step room physics
-            self.engine.step(now, step_s=self.config.step_s)
-
-            # Emit sensor readings
-            if self.config.enable_sensor_emit and (now - last_sample).total_seconds() >= self.config.sample_every_s:
-                self._data_rows.extend(
-                    self.sampler.collect_data_rows(
-                        now,
-                        room_engine=self.engine,
-                    )
-                )
-                if len(self._data_rows) >= self._write_batch_size:
-                    self._flush_data_rows()
-                last_sample = now
-
-            # Advance simulated time
-            now += timedelta(seconds=self.config.step_s)
-
-            # Optional wall delay
-            if self.config.wall_sleep_s > 0:
-                await asyncio.sleep(self.config.wall_sleep_s)
-
-    # -------------------------------------------------------
-    # STOP
-    # -------------------------------------------------------
+    def start(self) -> None:
+        self._stop_requested = False
+        self._run_pre_generation()
+        self._prepare_simulation()
+        if self._should_skip_simulation_loop():
+            print("[orchestrator] skipping simulation loop (no sensor emit and no utility usage)")
+            print("[orchestrator] SIMULATION COMPLETE")
+            return
+        self._run_simulation()
+        self._finalize_simulation()
 
     def stop(self) -> None:
-        self._stop.set()
-    
+        self._stop_requested = True

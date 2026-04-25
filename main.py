@@ -14,7 +14,7 @@ from persistence import init_db
 from persistence.seed_devices import seed_devices_and_sensors
 from simulation_batch.config import DAYS, PATIENT_COUNT, START_DATE
 from simulation_batch.orchestrator import OrchestratorConfig, SimulationOrchestrator
-from simulation_batch.seed_world import seed_simulated_world
+from simulation_batch.setup_hospital import seed_simulated_world
 
 
 def _to_utc_dt(value) -> datetime:
@@ -58,7 +58,7 @@ def build_real_devices() -> list[Device]:
     return devices
 
 
-async def run_sim(args: argparse.Namespace) -> None:
+def run_sim(args: argparse.Namespace) -> None:
     db_path = os.getenv("FL4HOSPITAL_DB_PATH", "fl4hospital.db")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -102,7 +102,7 @@ async def run_sim(args: argparse.Namespace) -> None:
         seed=args.random_seed,
     )
 
-    await sim.start()
+    sim.start()
     print("SIMULATION finished")
 
 
@@ -171,7 +171,7 @@ async def main() -> None:
 
     if args.mode == "simulation":
         _reset_filestorage()
-        await run_sim(args)
+        run_sim(args)
     elif args.mode == "hybrid":
         await run_real_hybrid(args.db, args.echo, args.reset_db)
     elif args.mode == "real_real":

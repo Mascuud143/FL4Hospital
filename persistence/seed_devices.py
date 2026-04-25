@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 from persistence.database import session_scope
 from persistence.models.device import Device as DeviceModel
 from persistence.models.sensor import Sensor as SensorModel
-from simulation_batch.csv_filestorage import write_model_row
+from simulation_batch.csv_storage import write_model_row
 
 
 def _device_lookup_query(session, *, mac: Optional[str], room_id: Optional[int], device_type: str, location: Optional[str]):
