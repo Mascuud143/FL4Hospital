@@ -15,7 +15,7 @@ try:
     from torch.utils.data import DataLoader, TensorDataset
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
-        "PyTorch is required for ai_state_to_outcome federated learning. Install torch before running this mode."
+        "PyTorch is required for event_based federated learning. Install torch before running this mode."
     ) from exc
 
 from schema import FEATURE_COLUMNS, REGRESSION_TARGET_COLUMNS, TARGET_COLUMNS, row_to_input_vector
@@ -32,7 +32,7 @@ DEFAULT_OUTPUT_THRESHOLDS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower room client for Task #2 state-to-outcome training.")
-    parser.add_argument("--split-dir", default="ai_state_to_outcome/splits", help="Directory with state_to_outcome train/test CSV files")
+    parser.add_argument("--split-dir", default="event_based/splits", help="Directory with event_based train/test CSV files")
     parser.add_argument("--room-id", required=True, help="Room/client id to run")
     parser.add_argument("--server-address", default="127.0.0.1:8080", help="Flower server address")
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per FL round")

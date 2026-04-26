@@ -1,2 +1,2 @@
-﻿timestamp;rooms;patients;days;data_generation_time;data_generation_peak_memory;training_time;training_peak_memory;predictions_choice;ai_config;run_status;stop_stage
-2026-04-14T21:10:16.000598+00:00,521,20000,730,40m 23s,2.82 GB,25m 18s,3.98 GB,state_to_outcome,"model_type=mlp | aggregation_method=fedavg | rounds=5 | local_epochs=1 | hidden_layers=128,64,32 | batch_size=32 | learning_rate=0.001 | optimizer=adam | activation=relu | client_cpu=1.2307692307692308 | chunksize=50000",completed,
+timestamp,rooms,patients,days,data_generation_time,data_generation_peak_memory,training_time,training_peak_memory,predictions_choice,ai_config,run_status,stop_stage
+,,,,,,,,,,,

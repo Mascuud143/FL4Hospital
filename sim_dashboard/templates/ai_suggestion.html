@@ -299,11 +299,11 @@
 <div class="page-grid">
   <section class="card">
     <div class="title-row">
-      <h2 style="margin:0;">AI Forecast Dashboard</h2>
+      <h2 style="margin:0;">AI Training</h2>
       <button id="pageHelpBtn" class="help-trigger" type="button" aria-label="Open page help">?</button>
     </div>
     <p class="hint" style="margin:8px 0 0;">
-      Choose either the k-hours based pipeline or the event-based pipeline, then run the matching build, split, and federated training flow.
+      Choose either the k-hours based pipeline or the event-based pipeline, then run split and federated training. Split builds the required rows first, then splits them for training.
     </p>
     <div class="field-grid" style="margin-top:16px;">
       <div class="field">
@@ -316,102 +316,12 @@
     </div>
   </section>
 
-  <section class="card">
-    <h3 style="margin-top:0;">Last Run Time Summary</h3>
-    <div class="metrics-grid">
-      <div class="metric-card">
-        <div class="metric-k">Total Runtime</div>
-        <div id="summaryTotalRuntime" class="metric-v">{{ runtime_summary.total_runtime }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-k">Build Runtime</div>
-        <div id="summaryBuildRuntime" class="metric-v">{{ runtime_summary.build_runtime }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-k">Split Runtime</div>
-        <div id="summarySplitRuntime" class="metric-v">{{ runtime_summary.split_runtime }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-k">Training Runtime</div>
-        <div id="summaryTrainingRuntime" class="metric-v">{{ runtime_summary.training_runtime }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-k">CPU</div>
-        <div id="summaryCpu" class="metric-v">{{ pc_spec.cpu }}</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-k">RAM</div>
-        <div id="summaryRam" class="metric-v">{{ pc_spec.ram }}</div>
-      </div>
-      
-    </div>
-    <div class="btn-row">
-      <button id="toggleRuntimeHistoryBtn" class="btn" type="button">Show Runtime History</button>
-    </div>
-  </section>
-
-  <div class="section-grid">
     <section class="card">
-      <h3 id="buildSectionTitle" style="margin-top:0;">1) Build Next-Hour Rows<button class="help-inline" type="button" data-help-title="Build" data-help-text="Creates the training rows used by the selected AI pipeline. Worker count and chunk size are advanced performance settings when manual control is enabled.">?</button></h3>
+      <h3 id="splitSectionTitle" style="margin-top:0;">1) Split<button class="help-inline" type="button" data-help-title="Split" data-help-text="Builds the selected pipeline rows, then splits them into train and evaluation data.">?</button></h3>
       <div class="field-grid">
-        <div class="field" data-tasks="k_hours">
-          <label for="buildStepMinutes">Step minutes</label>
-          <input id="buildStepMinutes" type="number" min="1" step="1" value="30" />
-        </div>
-        <div class="field" data-tasks="k_hours">
-          <label for="buildHorizonMinutes">Horizon minutes</label>
-          <input id="buildHorizonMinutes" type="number" min="1" step="1" value="60" />
-        </div>
-        <div class="field" data-tasks="k_hours">
-          <div class="label-row">
-            <label for="buildWorkers">Number of workers<button class="help-inline" type="button" data-help-title="Number of workers" data-help-text="Advanced setting. Controls how many worker processes run in parallel for build. More workers can be faster but use more CPU and memory.">?</button></label>
-            <label class="manual-toggle"><input id="buildWorkersEnabled" type="checkbox" /> Set manually</label>
-          </div>
-          <input id="buildWorkers" type="number" min="1" step="1" value="4" disabled />
-        </div>
-        <div class="field" data-tasks="k_hours">
-          <div class="label-row">
-            <label for="buildChunkSize">Chunk size<button class="help-inline" type="button" data-help-title="Chunk size" data-help-text="Advanced setting. Controls how much work each build worker handles at once. Larger chunks reduce overhead but can use more memory.">?</button></label>
-            <label class="manual-toggle"><input id="buildChunkSizeEnabled" type="checkbox" /> Set manually</label>
-          </div>
-          <input id="buildChunkSize" type="number" min="1" step="1" value="100" disabled />
-        </div>
-        <div class="field hidden" data-tasks="event">
-          <label for="eventMedicationEffectMinutes">Medication effect delay (minutes)</label>
-          <input id="eventMedicationEffectMinutes" type="number" min="0" step="1" value="5" />
-        </div>
-        <div class="field hidden" data-tasks="event">
-          <label for="eventMedicationActiveHours">Medication active window (hours)</label>
-          <input id="eventMedicationActiveHours" type="number" min="1" step="1" value="24" />
-        </div>
-      </div>
-      <div class="btn-row">
-        <button id="runBuildBtn" class="btn primary" type="button">Run Build</button>
-        <button id="stopBuildBtn" class="btn" type="button">Stop Build</button>
-      </div>
-      <div class="progress"><div id="buildBar" class="bar"></div></div>
-      <div id="buildState" class="state">Idle</div>
-      <div id="buildMetrics" class="metrics-grid"></div>
-      <div id="buildLog" class="log">[dashboard] waiting...</div>
-    </section>
-
-    <section class="card">
-      <h3 id="splitSectionTitle" style="margin-top:0;">2) Split By Room<button class="help-inline" type="button" data-help-title="Split" data-help-text="Splits the built rows into train and evaluation data for the selected pipeline. Worker count and chunk size are advanced performance settings.">?</button></h3>
-      <div class="field-grid">
-        <div class="field" data-tasks="k_hours">
+        <div class="field">
           <label for="splitTrainRatio">Train ratio</label>
           <input id="splitTrainRatio" type="number" min="0.1" max="0.95" step="0.05" value="0.80" />
-        </div>
-        <div class="field hidden" data-tasks="event">
-          <label for="eventTestFraction">Test fraction</label>
-          <input id="eventTestFraction" type="number" min="0.05" max="0.95" step="0.05" value="0.20" />
-        </div>
-        <div class="field">
-          <div class="label-row">
-            <label for="splitChunkSize">Chunk size for CSV loading<button class="help-inline" type="button" data-help-title="Split chunk size" data-help-text="Advanced setting. Larger chunks can be faster, but they require more memory. Leave manual control off to use the backend default.">?</button></label>
-            <label class="manual-toggle"><input id="splitChunkSizeEnabled" type="checkbox" /> Set manually</label>
-          </div>
-          <input id="splitChunkSize" type="number" min="1000" step="1000" value="50000" disabled />
         </div>
       </div>
       <div class="btn-row">
@@ -423,26 +333,20 @@
       <div id="splitMetrics" class="metrics-grid"></div>
       <div id="splitLog" class="log">[dashboard] waiting...</div>
     </section>
-  </div>
 
   <section class="card">
-    <h3 style="margin-top:0;">3) Federated Training<button class="help-inline" type="button" data-help-title="Federated Training" data-help-text="Runs the federated learning simulation for the selected model and pipeline. Advanced settings such as room limit, client CPU, and chunk size can be left on backend defaults.">?</button></h3>
+    <h3 style="margin-top:0;">2) Federated Training<button class="help-inline" type="button" data-help-title="Federated Training" data-help-text="Runs the federated learning simulation for the selected model and pipeline. Advanced settings such as room limit, client CPU, and chunk size can be left on backend defaults.">?</button></h3>
     <div class="field-grid">
       <div class="field">
         <label for="modelType">Model type</label>
         <select id="modelType">
           <option value="mlp">MLP</option>
           <option value="lstm">LSTM</option>
-          <option value="mlp_lstm">MLP + LSTM</option>
         </select>
       </div>
       <div class="field">
         <label for="flRounds">Federated rounds</label>
         <input id="flRounds" type="number" min="1" step="1" value="5" />
-      </div>
-      <div class="field">
-        <label for="flLocalEpochs">Epochs</label>
-        <input id="flLocalEpochs" type="number" min="1" step="1" value="1" />
       </div>
       <div class="field">
         <label for="flAggregationMethod">Aggregation method</label>
@@ -451,112 +355,13 @@
           <option value="fedprox">FedProx</option>
         </select>
       </div>
-      <div class="field" id="flProximalMuField">
-        <label for="flProximalMu">FedProx mu</label>
-        <input id="flProximalMu" type="number" min="0" step="0.01" value="0.01" />
-      </div>
-      <div class="field" data-models="mlp">
-        <label for="flMlpHiddenLayers">MLP hidden layers</label>
-        <input id="flMlpHiddenLayers" type="text" value="128,64,32" />
-      </div>
-      <div class="field" data-models="mlp">
-        <label for="flMlpBatchSize">MLP batch size</label>
-        <input id="flMlpBatchSize" type="number" min="1" step="1" value="32" />
-      </div>
-      <div class="field" data-models="mlp">
-        <label for="flMlpLearningRate">MLP learning rate</label>
-        <input id="flMlpLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" />
-      </div>
-      <div class="field" data-models="mlp">
-        <label for="flMlpOptimizer">MLP optimizer</label>
-        <select id="flMlpOptimizer">
-          <option value="adam">Adam</option>
-          <option value="sgd">SGD</option>
-        </select>
-      </div>
-      <div class="field" data-models="mlp">
-        <label for="flMlpActivation">MLP activation</label>
-        <select id="flMlpActivation">
-          <option value="relu">ReLU</option>
-          <option value="tanh">Tanh</option>
-          <option value="logistic">Logistic</option>
-        </select>
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flBatchSize">Batch size</label>
-        <input id="flBatchSize" type="number" min="1" step="1" value="32" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flSeqLen">Sequence length</label>
-        <input id="flSeqLen" type="number" min="1" step="1" value="4" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmHiddenDim">LSTM hidden size</label>
-        <input id="flLstmHiddenDim" type="number" min="1" step="1" value="64" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmNumLayers">LSTM layers</label>
-        <input id="flLstmNumLayers" type="number" min="1" step="1" value="1" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmHeadHiddenDim">LSTM head hidden size</label>
-        <input id="flLstmHeadHiddenDim" type="number" min="1" step="1" value="64" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmLearningRate">Learning rate</label>
-        <input id="flLstmLearningRate" type="number" min="0.000001" step="0.0001" value="0.001" />
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmOptimizer">Optimizer</label>
-        <select id="flLstmOptimizer">
-          <option value="adam">Adam</option>
-          <option value="sgd">SGD</option>
-          <option value="rmsprop">RMSprop</option>
-        </select>
-      </div>
-      <div class="field" data-models="lstm,mlp_lstm">
-        <label for="flLstmActivation">LSTM head activation</label>
-        <select id="flLstmActivation">
-          <option value="relu">ReLU</option>
-          <option value="tanh">Tanh</option>
-          <option value="gelu">GELU</option>
-        </select>
-      </div>
-      <div class="field" data-models="mlp_lstm">
-        <label for="flHybridChangeHiddenLayers">Hybrid change MLP hidden layers</label>
-        <input id="flHybridChangeHiddenLayers" type="text" value="128,64" />
-      </div>
-      <div class="field" data-models="mlp_lstm">
-        <label for="flHybridChangeActivation">Hybrid change activation</label>
-        <select id="flHybridChangeActivation">
-          <option value="relu">ReLU</option>
-          <option value="tanh">Tanh</option>
-          <option value="gelu">GELU</option>
-        </select>
-      </div>
       <div class="field">
-        <div class="label-row">
-          <label for="flMaxRooms">Maximum number of rooms</label>
-          <label class="manual-toggle" for="flMaxRoomsEnabled"><input id="flMaxRoomsEnabled" type="checkbox" /><span class="sr-only">Enable maximum number of rooms</span></label>
-          <button class="help-inline" type="button" data-help-title="Maximum number of rooms" data-help-text="When room limiting is enabled, this caps how many rooms are included in training. If disabled, all available rooms are used.">?</button>
-        </div>
-        <input id="flMaxRooms" class="manual-input" type="number" min="1" step="1" value="" disabled aria-label="Maximum number of rooms" />
+        <label for="flActivation">Activation</label>
+        <select id="flActivation"></select>
       </div>
-      <div class="field">
-        <div class="label-row">
-          <label for="flWorkers">Workers</label>
-          <label class="manual-toggle" for="flWorkersEnabled"><input id="flWorkersEnabled" type="checkbox" /><span class="sr-only">Enable workers</span></label>
-          <button class="help-inline" type="button" data-help-title="Workers" data-help-text="Advanced setting. Controls how many federated clients can run at the same time. The dashboard leaves one CPU core free by default.">?</button>
-        </div>
-        <input id="flWorkers" class="manual-input" type="number" min="1" step="1" value="15" disabled aria-label="Workers" />
-      </div>
-      <div class="field">
-        <div class="label-row">
-          <label for="flChunkSize">Chunk size for CSV loading</label>
-          <label class="manual-toggle" for="flChunkSizeEnabled"><input id="flChunkSizeEnabled" type="checkbox" /><span class="sr-only">Enable chunk size for CSV loading</span></label>
-          <button class="help-inline" type="button" data-help-title="Training chunk size" data-help-text="Advanced setting. Controls CSV loading chunk size during training. Larger chunks can speed up loading but use more memory.">?</button>
-        </div>
-        <input id="flChunkSize" class="manual-input" type="number" min="1000" step="1000" value="50000" disabled aria-label="Chunk size for CSV loading" />
+      <div class="field" id="flMlpLayersField">
+        <label for="flMlpLayers">MLP layers</label>
+        <input id="flMlpLayers" type="text" value="128,64,32" />
       </div>
     </div>
 
@@ -571,28 +376,20 @@
   </section>
 
   <section class="card">
-    <h3 style="margin-top:0;">4) AI Results And Error Analysis</h3>
+    <h3 style="margin-top:0;">3) AI Results And Error Analysis</h3>
     <div class="results-toolbar">
       <div class="field">
         <label for="resultsModelType">Model type</label>
         <select id="resultsModelType">
           <option value="mlp">MLP</option>
           <option value="lstm">LSTM</option>
-          <option value="mlp_lstm">MLP + LSTM</option>
         </select>
       </div>
       <div class="field">
-        <label for="resultsScope">Analysis scope</label>
+        <label for="resultsScope">Weights</label>
         <select id="resultsScope">
           <option value="global">Global</option>
           <option value="local">Local</option>
-        </select>
-      </div>
-      <div class="field" id="resultsViewField">
-        <label for="resultsView">View</label>
-        <select id="resultsView">
-          <option value="aggregated">Aggregated</option>
-          <option value="by_room">By Room</option>
         </select>
       </div>
       <div class="field hidden" id="resultsDatasetField">
@@ -602,7 +399,7 @@
           <option value="training">Training</option>
         </select>
       </div>
-      <div class="field" id="roomField">
+      <div class="field hidden" id="roomField">
         <label for="resultsRoomId">Room</label>
         <select id="resultsRoomId"></select>
       </div>
@@ -613,7 +410,6 @@
           <option value="detailed">Detailed</option>
         </select>
       </div>
-      <button id="downloadResultsPdfBtn" class="btn" type="button">Save Figures As PDF</button>
       <button id="refreshResultsBtn" class="btn primary" type="button">Refresh Results</button>
     </div>
 
@@ -631,37 +427,11 @@
     <h4 id="pageHelpTitle">Page Help</h4>
     <button id="pageHelpCloseBtn" class="help-close" type="button" aria-label="Close help">X</button>
   </div>
-  <p id="pageHelpText" class="hint" style="margin:0;">Use this page to run the AI pipeline directly. Choose `k_hours` or `state_to_outcome`, then run build, split, federated training, and review the resulting metrics and charts.</p>
+  <p id="pageHelpText" class="hint" style="margin:0;">Use this page to run the AI pipeline directly. Choose `k_hours` or `event_based`, then run split, federated training, and review the resulting metrics and charts.</p>
   <div class="help-actions">
     <button id="pageHelpToggleBtn" class="help-link hidden" type="button">More</button>
   </div>
   <p id="pageHelpDetails" class="hint help-details hidden" style="margin-bottom:0;"></p>
-</div>
-
-<div id="runtimeHistoryModal" class="modal hidden" aria-hidden="true">
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 style="margin:0;">Runtime History</h3>
-      <button id="closeRuntimeHistoryBtn" class="btn" type="button">Close</button>
-    </div>
-    <div class="modal-body">
-      <div class="history-table-wrap" style="margin-top:0;">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Status</th>
-              <th>Duration</th>
-              <th>Started</th>
-              <th>PC Specs</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="runtimeHistoryBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -669,28 +439,9 @@
     const initialRuntimeSummary = {{ runtime_summary|tojson }};
     const initialPcSpec = {{ pc_spec|tojson }};
     const taskType = document.getElementById("taskType");
-    const toggleRuntimeHistoryBtn = document.getElementById("toggleRuntimeHistoryBtn");
-    const closeRuntimeHistoryBtn = document.getElementById("closeRuntimeHistoryBtn");
-    const runtimeHistoryModal = document.getElementById("runtimeHistoryModal");
-    const runtimeHistoryBody = document.getElementById("runtimeHistoryBody");
-    const buildSectionTitle = document.getElementById("buildSectionTitle");
     const splitSectionTitle = document.getElementById("splitSectionTitle");
-    const buildStepMinutes = document.getElementById("buildStepMinutes");
-    const buildHorizonMinutes = document.getElementById("buildHorizonMinutes");
-    const buildWorkers = document.getElementById("buildWorkers");
-    const buildChunkSize = document.getElementById("buildChunkSize");
-    const eventMedicationEffectMinutes = document.getElementById("eventMedicationEffectMinutes");
-    const eventMedicationActiveHours = document.getElementById("eventMedicationActiveHours");
-    const runBuildBtn = document.getElementById("runBuildBtn");
-    const stopBuildBtn = document.getElementById("stopBuildBtn");
-    const buildBar = document.getElementById("buildBar");
-    const buildState = document.getElementById("buildState");
-    const buildMetrics = document.getElementById("buildMetrics");
-    const buildLog = document.getElementById("buildLog");
 
     const splitTrainRatio = document.getElementById("splitTrainRatio");
-    const eventTestFraction = document.getElementById("eventTestFraction");
-    const splitChunkSize = document.getElementById("splitChunkSize");
     const runSplitBtn = document.getElementById("runSplitBtn");
     const stopSplitBtn = document.getElementById("stopSplitBtn");
     const splitBar = document.getElementById("splitBar");
@@ -700,28 +451,10 @@
 
     const modelType = document.getElementById("modelType");
     const flRounds = document.getElementById("flRounds");
-    const flLocalEpochs = document.getElementById("flLocalEpochs");
     const flAggregationMethod = document.getElementById("flAggregationMethod");
-    const flProximalMu = document.getElementById("flProximalMu");
-    const flProximalMuField = document.getElementById("flProximalMuField");
-    const flMlpHiddenLayers = document.getElementById("flMlpHiddenLayers");
-    const flMlpBatchSize = document.getElementById("flMlpBatchSize");
-    const flMlpLearningRate = document.getElementById("flMlpLearningRate");
-    const flMlpOptimizer = document.getElementById("flMlpOptimizer");
-    const flMlpActivation = document.getElementById("flMlpActivation");
-    const flBatchSize = document.getElementById("flBatchSize");
-    const flSeqLen = document.getElementById("flSeqLen");
-    const flLstmHiddenDim = document.getElementById("flLstmHiddenDim");
-    const flLstmNumLayers = document.getElementById("flLstmNumLayers");
-    const flLstmHeadHiddenDim = document.getElementById("flLstmHeadHiddenDim");
-    const flLstmLearningRate = document.getElementById("flLstmLearningRate");
-    const flLstmOptimizer = document.getElementById("flLstmOptimizer");
-    const flLstmActivation = document.getElementById("flLstmActivation");
-    const flHybridChangeHiddenLayers = document.getElementById("flHybridChangeHiddenLayers");
-    const flHybridChangeActivation = document.getElementById("flHybridChangeActivation");
-    const flMaxRooms = document.getElementById("flMaxRooms");
-    const flWorkers = document.getElementById("flWorkers");
-    const flChunkSize = document.getElementById("flChunkSize");
+    const flActivation = document.getElementById("flActivation");
+    const flMlpLayers = document.getElementById("flMlpLayers");
+    const flMlpLayersField = document.getElementById("flMlpLayersField");
     const runTrainBtn = document.getElementById("runTrainBtn");
     const stopTrainBtn = document.getElementById("stopTrainBtn");
     const trainBar = document.getElementById("trainBar");
@@ -731,39 +464,44 @@
 
     const resultsModelType = document.getElementById("resultsModelType");
     const resultsScope = document.getElementById("resultsScope");
-    const resultsView = document.getElementById("resultsView");
     const resultsDataset = document.getElementById("resultsDataset");
     const resultsRoomId = document.getElementById("resultsRoomId");
     const resultsFigureDetail = document.getElementById("resultsFigureDetail");
     const roomField = document.getElementById("roomField");
-    const resultsViewField = document.getElementById("resultsViewField");
     const resultsDatasetField = document.getElementById("resultsDatasetField");
-    const downloadResultsPdfBtn = document.getElementById("downloadResultsPdfBtn");
     const refreshResultsBtn = document.getElementById("refreshResultsBtn");
     const resultsState = document.getElementById("resultsState");
     const resultsCards = document.getElementById("resultsCards");
     const resultsCharts = document.getElementById("resultsCharts");
     const resultsPies = document.getElementById("resultsPies");
 
-    let buildJobId = null;
     let splitJobId = null;
     let trainJobId = null;
     let latestResultsData = null;
     function updateResultsControls() {
       const isLocal = resultsScope.value === "local";
-      const needsRoom = isLocal || resultsView.value === "by_room";
-      resultsViewField.classList.toggle("hidden", isLocal);
       resultsDatasetField.classList.toggle("hidden", !isLocal);
-      roomField.classList.toggle("hidden", !needsRoom);
+      roomField.classList.toggle("hidden", !isLocal);
     }
     const modelOptionsByTask = {
       k_hours: [
         { value: "mlp", label: "MLP" },
-        { value: "lstm", label: "LSTM" },
-        { value: "mlp_lstm", label: "MLP + LSTM" }
+        { value: "lstm", label: "LSTM" }
       ],
       event: [
         { value: "mlp", label: "MLP" }
+      ]
+    };
+    const activationOptionsByModel = {
+      mlp: [
+        { value: "relu", label: "ReLU" },
+        { value: "tanh", label: "Tanh" },
+        { value: "logistic", label: "Logistic" }
+      ],
+      lstm: [
+        { value: "relu", label: "ReLU" },
+        { value: "tanh", label: "Tanh" },
+        { value: "gelu", label: "GELU" }
       ]
     };
 
@@ -833,61 +571,6 @@
       return Array.isArray(data.jobs) ? data.jobs : [];
     }
 
-    function renderRuntimeHistory(summary, pcSpec) {
-      if (!runtimeHistoryBody) return;
-      const history = Array.isArray(summary?.history) ? summary.history : [];
-      function compactPairs(cfg, allowKeys) {
-        const blocked = new Set([
-          "command",
-          "split_dir",
-          "summary_out",
-          "weights_out_dir",
-          "out_dir",
-          "output_dir",
-          "input_dir",
-          "stats_path",
-          "data_dir",
-        ]);
-        return Object.entries(cfg || {})
-          .filter(([key, value]) => !blocked.has(key) && value !== null && value !== undefined && value !== "")
-          .filter(([key]) => !allowKeys || allowKeys.includes(key))
-          .map(([key, value]) => `${key}=${value}`)
-          .join(" | ");
-      }
-      function detailText(item) {
-        const cfg = item.config || {};
-        if (item.kind === "build") {
-          if (cfg.mode === "event") return `event | effect=${cfg.medication_effect_minutes ?? "-"}m | active=${cfg.medication_active_hours ?? "-"}h`;
-          return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-        }
-        if (item.kind === "split") {
-          if (cfg.mode === "event") return `event | train=${cfg.train_ratio ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-          return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-        }
-        if (item.kind === "federated" || item.kind === "training") {
-          const agg = cfg.aggregation_method ?? "FedAvg";
-          const base = `${agg} | ${cfg.mode ?? "-"} ${cfg.model_type ?? "-"} | ${cfg.rounds ?? "-"} rounds | ${cfg.local_epochs ?? "-"} epoch(s)`;
-          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | workers ${cfg.workers ?? "-"}`;
-          if (cfg.model_type === "mlp") return `${base} | batch ${cfg.batch_size ?? "-"} | lr ${cfg.learning_rate ?? "-"} | ${cfg.optimizer ?? "-"} | ${cfg.activation ?? "-"} | ${cfg.max_rooms ?? "-"} rooms`;
-          if (cfg.model_type === "lstm") return `${base} | seq ${cfg.sequence_length ?? "-"} | batch ${cfg.batch_size ?? "-"} | hidden ${cfg.hidden_dim ?? "-"} | layers ${cfg.num_layers ?? "-"} | lr ${cfg.learning_rate ?? "-"}`;
-          return `${base} | seq ${cfg.sequence_length ?? "-"} | lstm batch ${cfg.lstm_batch_size ?? "-"} | mlp batch ${cfg.mlp_batch_size ?? "-"} | hidden ${cfg.lstm_hidden_dim ?? "-"} | lr ${cfg.lstm_learning_rate ?? "-"}`;
-        }
-        return compactPairs(cfg);
-      }
-      runtimeHistoryBody.innerHTML = history.length
-        ? history.map((item) => `
-            <tr>
-              <td>${item.kind ?? "-"}</td>
-              <td>${item.status ?? "-"}</td>
-              <td>${item.duration ?? "-"}</td>
-              <td>${item.started_at ?? "-"}</td>
-              <td><code>${pcSpec?.cpu ?? "Pending"} | ${pcSpec?.ram ?? "Pending"} | ${pcSpec?.gpu ?? "Pending"} | ${pcSpec?.os ?? "Pending"}</code></td>
-              <td><code>${detailText(item)}</code></td>
-            </tr>
-          `).join("")
-        : `<tr><td colspan="6">No runtime history yet.</td></tr>`;
-    }
-
     function updateRuntimeSummary(summary, pcSpec) {
       if (summary) {
         const totalEl = document.getElementById("summaryTotalRuntime");
@@ -905,7 +588,6 @@
         if (cpuEl) cpuEl.textContent = pcSpec.cpu ?? "Pending";
         if (ramEl) ramEl.textContent = pcSpec.ram ?? "Pending";
       }
-      renderRuntimeHistory(summary, pcSpec);
     }
 
     updateRuntimeSummary(initialRuntimeSummary, initialPcSpec);
@@ -1041,289 +723,6 @@
       });
     }
 
-    function slugify(value) {
-      return String(value || "figure")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        || "figure";
-    }
-
-    function escapeXml(value) {
-      return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\"/g, "&quot;")
-        .replace(/'/g, "&apos;");
-    }
-
-    function polarToCartesian(cx, cy, r, angleDeg) {
-      const angleRad = (angleDeg - 90) * Math.PI / 180.0;
-      return {
-        x: cx + (r * Math.cos(angleRad)),
-        y: cy + (r * Math.sin(angleRad))
-      };
-    }
-
-    function describeArc(cx, cy, r, startAngle, endAngle) {
-      const start = polarToCartesian(cx, cy, r, endAngle);
-      const end = polarToCartesian(cx, cy, r, startAngle);
-      const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
-      return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArcFlag} 0 ${end.x} ${end.y} Z`;
-    }
-
-    function buildLineChartExportSvg(chart) {
-      const width = 1120;
-      const height = 860;
-      const plotX = 90;
-      const plotY = 90;
-      const plotW = 940;
-      const plotH = 470;
-      const rounds = chart.rounds || [];
-      const series = (chart.series || []).filter((item) => Array.isArray(item.values));
-      const values = series.flatMap((item) => item.values).filter((value) => typeof value === "number");
-      const minY = values.length ? Math.min(...values) : 0;
-      const maxY = values.length ? Math.max(...values) : 1;
-      const spanX = Math.max(1, rounds.length - 1);
-      const spanY = Math.max(1e-9, maxY - minY);
-
-      const grid = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
-        const y = plotY + plotH - (pct * plotH);
-        const value = minY + (pct * spanY);
-        return `
-          <line x1="${plotX}" y1="${y}" x2="${plotX + plotW}" y2="${y}" stroke="#d7dee8" stroke-width="1" stroke-dasharray="6 6" />
-          <text x="${plotX - 14}" y="${y + 5}" font-size="20" text-anchor="end" fill="#64748b">${escapeXml(value.toFixed(2))}</text>
-        `;
-      }).join("");
-
-      const labels = rounds.map((round, idx) => {
-        const x = plotX + (idx / spanX) * plotW;
-        return `<text x="${x}" y="${plotY + plotH + 34}" text-anchor="middle" font-size="20" fill="#64748b">R${escapeXml(round)}</text>`;
-      }).join("");
-
-      const lines = series.map((item) => {
-        const points = item.values.map((value, idx) => {
-          const x = plotX + (idx / spanX) * plotW;
-          const safeValue = typeof value === "number" ? value : minY;
-          const y = plotY + plotH - ((safeValue - minY) / spanY) * plotH;
-          return `${x},${y}`;
-        }).join(" ");
-        return `<polyline fill="none" stroke="${escapeXml(item.color)}" stroke-width="5" points="${points}" />`;
-      }).join("");
-
-      const legend = series.map((item, index) => {
-        const x = 110 + (index % 2) * 420;
-        const y = 640 + Math.floor(index / 2) * 38;
-        return `
-          <circle cx="${x}" cy="${y - 6}" r="8" fill="${escapeXml(item.color)}" />
-          <text x="${x + 18}" y="${y}" font-size="22" fill="#334155">${escapeXml(item.name)}</text>
-        `;
-      }).join("");
-
-      return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-          <rect width="100%" height="100%" fill="#ffffff" />
-          <text x="60" y="48" font-size="30" font-weight="700" fill="#0f172a">${escapeXml(chart.label)} by round</text>
-          <line x1="${plotX}" y1="${plotY}" x2="${plotX}" y2="${plotY + plotH}" stroke="#94a3b8" stroke-width="2" />
-          <line x1="${plotX}" y1="${plotY + plotH}" x2="${plotX + plotW}" y2="${plotY + plotH}" stroke="#94a3b8" stroke-width="2" />
-          ${grid}
-          ${lines}
-          ${labels}
-          ${legend}
-        </svg>
-      `;
-    }
-
-    function buildPieChartExportSvg(chart) {
-      const width = 900;
-      const height = 760;
-      const cx = 250;
-      const cy = 340;
-      const radius = 140;
-      const slices = chart.slices || [];
-      const total = slices.reduce((sum, item) => sum + Number(item.value || 0), 0);
-      let angle = 0;
-      const sectors = total > 0 ? slices.map((item) => {
-        const value = Number(item.value || 0);
-        const start = angle;
-        angle += (value / total) * 360;
-        return `<path d="${describeArc(cx, cy, radius, start, angle)}" fill="${escapeXml(item.color)}" stroke="#ffffff" stroke-width="2" />`;
-      }).join("") : `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="#cbd5e1" />`;
-
-      const legend = slices.map((item, index) => {
-        const x = 470;
-        const y = 180 + (index * 42);
-        return `
-          <rect x="${x}" y="${y - 16}" width="20" height="20" rx="4" fill="${escapeXml(item.color)}" />
-          <text x="${x + 32}" y="${y}" font-size="22" fill="#334155">${escapeXml(item.label)}: ${escapeXml(formatMetric(item.value))}</text>
-        `;
-      }).join("");
-
-      return `
-        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-          <rect width="100%" height="100%" fill="#ffffff" />
-          <text x="60" y="54" font-size="30" font-weight="700" fill="#0f172a">${escapeXml(chart.title)}</text>
-          ${sectors}
-          <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="#cbd5e1" stroke-width="1" />
-          ${legend}
-        </svg>
-      `;
-    }
-
-    function base64ToUint8Array(base64) {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-      return bytes;
-    }
-
-    function concatUint8Arrays(parts) {
-      const total = parts.reduce((sum, part) => sum + part.length, 0);
-      const out = new Uint8Array(total);
-      let offset = 0;
-      parts.forEach((part) => {
-        out.set(part, offset);
-        offset += part.length;
-      });
-      return out;
-    }
-
-    function buildPdfFromJpeg(jpegBytes, widthPx, heightPx) {
-      const encoder = new TextEncoder();
-      const parts = [];
-      const offsets = [];
-      let length = 0;
-      function pushBytes(bytes) {
-        parts.push(bytes);
-        length += bytes.length;
-      }
-      function pushText(text) {
-        pushBytes(encoder.encode(text));
-      }
-      function startObject(id) {
-        offsets[id] = length;
-        pushText(`${id} 0 obj\n`);
-      }
-      function endObject() {
-        pushText(`endobj\n`);
-      }
-
-      const pageWidth = widthPx;
-      const pageHeight = heightPx;
-
-      pushText("%PDF-1.3\n");
-      startObject(1);
-      pushText("<< /Type /Catalog /Pages 2 0 R >>\n");
-      endObject();
-
-      startObject(2);
-      pushText("<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n");
-      endObject();
-
-      startObject(3);
-      pushText(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\n`);
-      endObject();
-
-      startObject(4);
-      pushText(`<< /Type /XObject /Subtype /Image /Width ${widthPx} /Height ${heightPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
-      pushBytes(jpegBytes);
-      pushText("\nendstream\n");
-      endObject();
-
-      const content = `q\n${pageWidth} 0 0 ${pageHeight} 0 0 cm\n/Im0 Do\nQ\n`;
-      const contentBytes = encoder.encode(content);
-      startObject(5);
-      pushText(`<< /Length ${contentBytes.length} >>\nstream\n`);
-      pushBytes(contentBytes);
-      pushText("endstream\n");
-      endObject();
-
-      const xrefOffset = length;
-      pushText(`xref\n0 6\n0000000000 65535 f \n`);
-      for (let i = 1; i <= 5; i += 1) {
-        pushText(`${String(offsets[i] || 0).padStart(10, "0")} 00000 n \n`);
-      }
-      pushText(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`);
-      return new Blob([concatUint8Arrays(parts)], { type: "application/pdf" });
-    }
-
-    async function svgToPdfBlob(svgMarkup, width, height) {
-      const svgBlob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
-      const url = URL.createObjectURL(svgBlob);
-      try {
-        const image = await new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => resolve(img);
-          img.onerror = reject;
-          img.src = url;
-        });
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, width, height);
-        ctx.drawImage(image, 0, 0, width, height);
-        const jpegBase64 = canvas.toDataURL("image/jpeg", 0.95).split(",")[1];
-        return buildPdfFromJpeg(base64ToUint8Array(jpegBase64), width, height);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    }
-
-    function downloadBlob(blob, filename) {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    async function downloadResultsFiguresAsPdf() {
-      if (!latestResultsData) {
-        resultsState.textContent = "load results before exporting figures.";
-        return;
-      }
-      downloadResultsPdfBtn.disabled = true;
-      const previousText = resultsState.textContent;
-      resultsState.textContent = "preparing figure pdf downloads...";
-      try {
-        const figures = [
-          ...((latestResultsData.line_charts || []).map((chart) => ({
-            filename: `${slugify(chart.label)}.pdf`,
-            svg: buildLineChartExportSvg(chart),
-            width: 1120,
-            height: 860
-          }))),
-          ...((latestResultsData.pie_charts || []).map((chart) => ({
-            filename: `${slugify(chart.title)}.pdf`,
-            svg: buildPieChartExportSvg(chart),
-            width: 900,
-            height: 760
-          })))
-        ];
-        for (const figure of figures) {
-          const pdfBlob = await svgToPdfBlob(figure.svg, figure.width, figure.height);
-          downloadBlob(pdfBlob, figure.filename);
-          await new Promise((resolve) => setTimeout(resolve, 150));
-        }
-        resultsState.textContent = `downloaded ${figures.length} figure pdf${figures.length === 1 ? "" : "s"}.`;
-      } catch (error) {
-        resultsState.textContent = `pdf export failed: ${error.message}`;
-      } finally {
-        downloadResultsPdfBtn.disabled = false;
-        if (previousText && !String(resultsState.textContent).startsWith("pdf export failed")) {
-          setTimeout(() => {
-            if (resultsState.textContent.includes("downloaded")) resultsState.textContent = previousText;
-          }, 2000);
-        }
-      }
-    }
-
     function syncModelOptions() {
       const options = modelOptionsByTask[taskType.value] || modelOptionsByTask.k_hours;
       const current = modelType.value;
@@ -1339,9 +738,7 @@
     }
 
     function updateTaskText() {
-      const isEvent = taskType.value === "event";
-      buildSectionTitle.textContent = isEvent ? "1) Build Event Rows" : "1) Build Next-Hour Rows";
-      splitSectionTitle.textContent = "2) Split By Room";
+      splitSectionTitle.textContent = "1) Split";
       document.querySelectorAll("[data-tasks]").forEach((el) => {
         const supported = (el.dataset.tasks || "")
           .split(",")
@@ -1362,23 +759,15 @@
     }
 
     function updateModelText() {
-      const type = modelType.value;
       const isEvent = taskType.value === "event";
-      const isFedProx = flAggregationMethod.value === "fedprox";
-      document.querySelectorAll("[data-models]").forEach((el) => {
-        const supported = (el.dataset.models || "")
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-        const supportedTasks = (el.dataset.tasks || "")
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-        const hiddenForModel = supported.length > 0 && !supported.includes(type);
-        const hiddenForTask = supportedTasks.length > 0 && !supportedTasks.includes(taskType.value);
-        el.classList.toggle("hidden", hiddenForModel || hiddenForTask);
-      });
-      flProximalMuField.classList.toggle("hidden", !isFedProx);
+      const activationModel = isEvent ? "mlp" : modelType.value;
+      const options = activationOptionsByModel[activationModel] || activationOptionsByModel.mlp;
+      const current = flActivation.value;
+      flActivation.innerHTML = options.map((item) => `<option value="${item.value}">${item.label}</option>`).join("");
+      if (options.some((item) => item.value === current)) {
+        flActivation.value = current;
+      }
+      flMlpLayersField.classList.toggle("hidden", !(isEvent || modelType.value === "mlp"));
     }
 
     async function loadResults() {
@@ -1391,12 +780,10 @@
           task_type: taskType.value,
           model_type: resultsModelType.value,
           scope: resultsScope.value,
-          view: resultsView.value,
           dataset: resultsDataset.value,
           figure_detail: resultsFigureDetail.value
         });
-        const needsRoom = resultsScope.value === "local" || resultsView.value === "by_room";
-        if (needsRoom && resultsRoomId.value) {
+        if (resultsScope.value === "local" && resultsRoomId.value) {
           params.set("room_id", resultsRoomId.value);
         }
         const response = await fetch(`/api/ai/results?${params.toString()}`);
@@ -1412,55 +799,21 @@
         renderMetricCards(resultsCards, data.latest_cards || []);
         renderLineCharts(data.line_charts || []);
         renderPieCharts(data.pie_charts || []);
-        const modeText = data.scope === "global" ? `global ${data.view || resultsView.value}` : `local ${data.dataset || resultsDataset.value}`;
+        const modeText = data.scope === "global" ? "global aggregated" : `local ${data.dataset || resultsDataset.value}`;
         resultsState.textContent = `${modeText} analysis loaded.`;
       } catch (error) {
-        resultsState.textContent = `results unavailable: ${error.message}`;
+        latestResultsData = null;
+        resultsCards.innerHTML = "";
+        resultsCharts.innerHTML = "";
+        resultsPies.innerHTML = "";
+        resultsState.textContent = "";
       }
     }
-
-    runBuildBtn.addEventListener("click", async () => {
-      runBuildBtn.disabled = true;
-      buildState.textContent = "starting...";
-      buildLog.textContent = "[dashboard] starting build job...";
-      buildMetrics.innerHTML = "";
-      setProgress(buildBar, 0);
-      try {
-        const payload = {
-          task_type: taskType.value,
-          step_minutes: Number(buildStepMinutes.value || 30),
-          horizon_minutes: Number(buildHorizonMinutes.value || 60),
-          medication_effect_minutes: Number(eventMedicationEffectMinutes.value || 5),
-          medication_active_hours: Number(eventMedicationActiveHours.value || 24)
-        };
-        if (document.getElementById("buildWorkersEnabled").checked) payload.workers = Number(buildWorkers.value || 1);
-        if (document.getElementById("buildChunkSizeEnabled").checked) payload.chunk_size = Number(buildChunkSize.value || 100);
-        const data = await startJob("/api/ai/build/start", payload);
-        buildJobId = data.job_id;
-        pollJob(data.job_id, buildState, buildLog, buildBar, buildMetrics, () => {
-          buildJobId = null;
-          runBuildBtn.disabled = false;
-        });
-      } catch (error) {
-        runBuildBtn.disabled = false;
-        buildState.textContent = `start failed: ${error.message}`;
-      }
-    });
-
-    stopBuildBtn.addEventListener("click", async () => {
-      if (!buildJobId) return;
-      try {
-        await stopJob(buildJobId);
-        buildState.textContent = `stopping (job: ${buildJobId})`;
-      } catch (error) {
-        buildState.textContent = `stop failed: ${error.message}`;
-      }
-    });
 
     runSplitBtn.addEventListener("click", async () => {
       runSplitBtn.disabled = true;
       splitState.textContent = "starting...";
-      splitLog.textContent = "[dashboard] starting split job...";
+      splitLog.textContent = "[dashboard] starting build + split job...";
       splitMetrics.innerHTML = "";
       setProgress(splitBar, 0);
       try {
@@ -1469,7 +822,6 @@
           train_ratio: Number(splitTrainRatio.value || 0.8),
           min_train_rows: 1,
         };
-        if (document.getElementById("splitChunkSizeEnabled").checked) payload.chunk_size = Number(splitChunkSize.value || 50000);
         const data = await startJob("/api/ai/split/start", payload);
         splitJobId = data.job_id;
         pollJob(data.job_id, splitState, splitLog, splitBar, splitMetrics, () => {
@@ -1508,44 +860,17 @@
           task_type: taskType.value,
           model_type: modelType.value,
           aggregation_method: flAggregationMethod.value || "fedavg",
-          rounds: Number(flRounds.value || 5),
-          local_epochs: Number(flLocalEpochs.value || 1)
+          rounds: Number(flRounds.value || 5)
         };
-        if (document.getElementById("flMaxRoomsEnabled").checked) {
-          const maxRoomsValue = flMaxRooms.value.trim();
-          if (maxRoomsValue !== "") payload.max_rooms = Number(maxRoomsValue);
-        }
-        if (document.getElementById("flWorkersEnabled").checked) payload.workers = Number(flWorkers.value || 1);
-        if (document.getElementById("flChunkSizeEnabled").checked) payload.chunksize = Number(flChunkSize.value || 50000);
-        if (payload.aggregation_method === "fedprox") {
-          payload.proximal_mu = Number(flProximalMu.value || 0.01);
-        }
         if (taskType.value === "event") {
           payload.model_type = "mlp";
-          payload.mlp_hidden_layers = flMlpHiddenLayers.value || "128,64,32";
-          payload.mlp_batch_size = Number(flMlpBatchSize.value || 1);
-          payload.mlp_learning_rate = Number(flMlpLearningRate.value || 0.001);
-          payload.mlp_optimizer = flMlpOptimizer.value || "adam";
-          payload.mlp_activation = flMlpActivation.value || "relu";
+          payload.mlp_hidden_layers = flMlpLayers.value || "128,64,32";
+          payload.mlp_activation = flActivation.value || "relu";
         } else if (modelType.value === "mlp") {
-          payload.mlp_hidden_layers = flMlpHiddenLayers.value || "128,64,32";
-          payload.mlp_batch_size = Number(flMlpBatchSize.value || 32);
-          payload.mlp_learning_rate = Number(flMlpLearningRate.value || 0.001);
-          payload.mlp_optimizer = flMlpOptimizer.value || "adam";
-          payload.mlp_activation = flMlpActivation.value || "relu";
+          payload.mlp_hidden_layers = flMlpLayers.value || "128,64,32";
+          payload.mlp_activation = flActivation.value || "relu";
         } else {
-          payload.lstm_batch_size = Number(flBatchSize.value || 32);
-          payload.lstm_sequence_length = Number(flSeqLen.value || 4);
-          payload.lstm_hidden_dim = Number(flLstmHiddenDim.value || 64);
-          payload.lstm_num_layers = Number(flLstmNumLayers.value || 1);
-          payload.lstm_head_hidden_dim = Number(flLstmHeadHiddenDim.value || 64);
-          payload.lstm_learning_rate = Number(flLstmLearningRate.value || 0.001);
-          payload.lstm_optimizer = flLstmOptimizer.value || "adam";
-          payload.lstm_activation = flLstmActivation.value || "relu";
-          if (modelType.value === "mlp_lstm") {
-            payload.hybrid_change_hidden_layers = flHybridChangeHiddenLayers.value || "128,64";
-            payload.hybrid_change_activation = flHybridChangeActivation.value || "relu";
-          }
+          payload.lstm_activation = flActivation.value || "relu";
         }
         const data = await startJob("/api/ai/federated/start", payload);
         trainJobId = data.job_id;
@@ -1583,10 +908,7 @@
       "Chunk size": "Larger chunks can be faster, but they use more memory.",
       "Split": "Split creates the training and evaluation parts of the data.",
       "Split chunk size": "Larger chunks can speed up loading, but they use more memory.",
-      "Federated Training": "This is the stage where the model is trained after build and split finish.",
-      "Maximum number of rooms": "Lower values are useful for quick tests. Higher values include more rooms and take longer.",
-      "Workers": "Controls how many federated clients are allowed to run at once. The dashboard converts this into the per-client CPU setting used by Flower.",
-      "Training chunk size": "Larger chunks can be faster, but they use more memory."
+      "Federated Training": "This is the stage where the model is trained after build and split finish."
     };
     let helpExpanded = false;
     function openHelp(title, text, details = "") {
@@ -1607,7 +929,7 @@
     document.getElementById("pageHelpBtn")?.addEventListener("click", () => {
       openHelp(
         "Page Help",
-        "Use this page to run the AI pipeline directly. Choose k_hours or state_to_outcome, then run build, split, federated training, and review the resulting metrics and charts.",
+        "Use this page to run the AI pipeline directly. Choose k_hours or event_based, then run build, split, federated training, and review the resulting metrics and charts.",
         "The usual flow is: pick a pipeline, build the rows, split the data, train the model, then inspect the results."
       );
     });
@@ -1629,13 +951,9 @@
       const title = trigger.dataset.helpTitle || "Help";
       openHelp(title, trigger.dataset.helpText || "", HELP_DETAILS[title] || "");
     });
-    [flAggregationMethod, flProximalMu, flMlpHiddenLayers, flMlpBatchSize, flMlpLearningRate, flMlpOptimizer, flMlpActivation, flBatchSize, flSeqLen, flLstmHiddenDim, flLstmNumLayers, flLstmHeadHiddenDim, flLstmLearningRate, flLstmOptimizer, flLstmActivation, flHybridChangeHiddenLayers, flHybridChangeActivation]
+    [flAggregationMethod, flActivation, flMlpLayers]
       .forEach((input) => input.addEventListener("input", updateModelText));
     resultsScope.addEventListener("change", () => {
-      updateResultsControls();
-      loadResults();
-    });
-    resultsView.addEventListener("change", () => {
       updateResultsControls();
       loadResults();
     });
@@ -1643,45 +961,17 @@
     resultsModelType.addEventListener("change", loadResults);
     resultsRoomId.addEventListener("change", loadResults);
     resultsFigureDetail.addEventListener("change", loadResults);
-    downloadResultsPdfBtn.addEventListener("click", downloadResultsFiguresAsPdf);
     refreshResultsBtn.addEventListener("click", loadResults);
-    toggleRuntimeHistoryBtn?.addEventListener("click", () => {
-      runtimeHistoryModal.classList.remove("hidden");
-    });
-    closeRuntimeHistoryBtn?.addEventListener("click", () => {
-      runtimeHistoryModal.classList.add("hidden");
-    });
-    runtimeHistoryModal?.addEventListener("click", (event) => {
-      if (event.target === runtimeHistoryModal) runtimeHistoryModal.classList.add("hidden");
-    });
 
     updateTaskText();
     updateModelText();
     updateResultsControls();
-    bindManualToggle("buildWorkersEnabled", "buildWorkers");
-    bindManualToggle("buildChunkSizeEnabled", "buildChunkSize");
-    bindManualToggle("splitChunkSizeEnabled", "splitChunkSize");
-    bindManualToggle("flMaxRoomsEnabled", "flMaxRooms");
-    bindManualToggle("flWorkersEnabled", "flWorkers");
-    bindManualToggle("flChunkSizeEnabled", "flChunkSize");
     roomField.classList.add("hidden");
     loadResults();
 
     (async () => {
       try {
         const jobs = await fetchActiveJobs();
-        const activeBuild = jobs.find((job) => job.kind === "build");
-        if (activeBuild) {
-          buildJobId = activeBuild.id;
-          runBuildBtn.disabled = true;
-          buildState.textContent = `running (${activeBuild.progress ?? 0}%)`;
-          appendLog(buildLog, [`[dashboard] reconnected to build job ${activeBuild.id}`]);
-          pollJob(activeBuild.id, buildState, buildLog, buildBar, buildMetrics, () => {
-            buildJobId = null;
-            runBuildBtn.disabled = false;
-          });
-        }
-
         const activeSplit = jobs.find((job) => job.kind === "split");
         if (activeSplit) {
           splitJobId = activeSplit.id;
@@ -1708,7 +998,7 @@
           });
         }
       } catch (error) {
-        appendLog(buildLog, [`[dashboard] active job lookup failed: ${error.message}`]);
+        appendLog(splitLog, [`[dashboard] active job lookup failed: ${error.message}`]);
       }
     })();
   })();

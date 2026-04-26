@@ -221,28 +221,10 @@
   </section>
 
   <section class="card">
-    <h3 style="margin-top:0;">Last Run Time Summary<button class="help-inline" type="button" data-help-title="Last Run Time Summary" data-help-text="Shows the most recent simulation runtime and the machine CPU and RAM information saved by the backend.">?</button></h3>
-    <div class="summary-grid">
-    
-      <div class="summary-box">
-        <strong>Simulation Runtime</strong>
-        <div id="simSummaryRuntime" class="metric-v">{{ runtime_summary.simulation_runtime }}</div>
-      </div>
-  
-      
-      <div class="summary-box">
-        <strong>CPU</strong>
-        <div id="simSummaryCpu" class="metric-v">{{ pc_spec.cpu }}</div>
-      </div>
-      <div class="summary-box">
-        <strong>RAM</strong>
-        <div id="simSummaryRam" class="metric-v">{{ pc_spec.ram }}</div>
-      </div>
-    </div>
+    <h3 style="margin-top:0;">Simulation Run</h3>
     <div class="actions">
       <button id="startSimulationBtn" class="btn primary" type="button">Start Simulation</button>
       <button id="stopSimulationBtn" class="btn" type="button">Stop Simulation</button>
-      <button id="toggleSimRuntimeHistoryBtn" class="btn" type="button">Show Runtime History</button>
     </div>
     <div class="progress"><div id="simulationBar" class="bar"></div></div>
     <div id="simulationState" class="state">Idle</div>
@@ -251,7 +233,7 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Simulation Horizon<button class="help-inline" type="button" data-help-title="Simulation Horizon" data-help-text="Controls when the simulation starts and how many simulated days are generated. Longer horizons create more rows and usually take longer to run.">?</button></h3>
+      <h3 style="margin-top:0;">Simulation Period<button class="help-inline" type="button" data-help-title="Simulation Period" data-help-text="Controls when the simulation starts and how many simulated days are generated. Longer periods create more rows and usually take longer to run.">?</button></h3>
       <div class="field-grid">
         <div class="field">
           <label for="startDate">Start date</label>
@@ -281,49 +263,11 @@
 
   <div class="section-grid">
     <section class="card">
-      <h3 style="margin-top:0;">Room Transfers<button class="help-inline" type="button" data-help-title="Room Transfers" data-help-text="Controls how often patients may move between rooms and the minimum gap before and after a transfer.">?</button></h3>
-      <div class="field-grid">
-        <div class="field">
-          <label for="changeRoomProb">Change room probability</label>
-          <input id="changeRoomProb" type="number" min="0" max="1" step="0.01" value="{{ config_defaults.change_room_prob }}" />
-        </div>
-        <div class="field">
-          <label for="minDaysBeforeTransfer">Min days before transfer</label>
-          <input id="minDaysBeforeTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_before_transfer }}" />
-        </div>
-        <div class="field">
-          <label for="minDaysAfterTransfer">Min days after transfer</label>
-          <input id="minDaysAfterTransfer" type="number" min="0" step="1" value="{{ config_defaults.min_days_after_transfer }}" />
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
       <h3 style="margin-top:0;">Comfort Behavior</h3>
       <div class="field-grid">
         <div class="field">
           <label for="comfortMaxChangesPerDay">Max comfort changes per day</label>
           <input id="comfortMaxChangesPerDay" type="number" min="0" step="1" value="{{ config_defaults.comfort_max_changes_per_day }}" />
-        </div>
-      </div>
-    </section>
-  </div>
-
-  <div class="section-grid">
-    <section class="card">
-      <h3 style="margin-top:0;">Simulation Timing<button class="help-inline" type="button" data-help-title="Simulation Timing" data-help-text="Controls the simulation step size, sensor sampling interval, and optional wall-clock delay between steps.">?</button></h3>
-      <div class="field-grid">
-        <div class="field">
-          <label for="simStepS">Simulation step (seconds)<button class="help-inline" type="button" data-help-title="Simulation step" data-help-text="Smaller step sizes simulate more often and can improve detail, but they usually increase runtime.">?</button></label>
-          <input id="simStepS" type="number" min="1" step="1" value="{{ config_defaults.sim_step_s }}" />
-        </div>
-        <div class="field">
-          <label for="sensorSampleEveryS">Sensor sample every (seconds)<button class="help-inline" type="button" data-help-title="Sensor sample interval" data-help-text="How often sensor readings are emitted during the simulation loop. Smaller intervals create more sensor rows.">?</button></label>
-          <input id="sensorSampleEveryS" type="number" min="1" step="1" value="{{ config_defaults.sensor_sample_every_s }}" />
-        </div>
-        <div class="field">
-          <label for="wallSleepS">Wall sleep (seconds)<button class="help-inline" type="button" data-help-title="Wall sleep" data-help-text="Adds a real-time delay between simulated steps. Use 0 for fastest execution.">?</button></label>
-          <input id="wallSleepS" type="number" min="0" step="0.01" value="{{ config_defaults.wall_sleep_s }}" />
         </div>
       </div>
     </section>
@@ -386,44 +330,13 @@
   <p id="pageHelpText" class="hint" style="margin:0;">Use this page to configure and run simulation data generation only. Set the horizon, patient volume, transfer behavior, timing, and generation toggles, then start or stop the simulation from the runtime panel.</p>
 </div>
 
-<div id="simRuntimeHistoryModal" class="modal hidden" aria-hidden="true">
-  <div class="modal-panel">
-    <div class="modal-head">
-      <h3 style="margin:0;">Runtime History</h3>
-      <button id="closeSimRuntimeHistoryBtn" class="btn" type="button">Close</button>
-    </div>
-    <div class="modal-body">
-      <div class="history-table-wrap" style="margin-top:0;">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Status</th>
-              <th>Duration</th>
-              <th>Started</th>
-              <th>PC Specs</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="simRuntimeHistoryBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
 <script>
   (() => {
-    const initialRuntimeSummary = {{ runtime_summary|tojson }};
-    const initialPcSpec = {{ pc_spec|tojson }};
     const startBtn = document.getElementById("startSimulationBtn");
     const stopBtn = document.getElementById("stopSimulationBtn");
-    const toggleHistoryBtn = document.getElementById("toggleSimRuntimeHistoryBtn");
-    const closeHistoryBtn = document.getElementById("closeSimRuntimeHistoryBtn");
     const stateEl = document.getElementById("simulationState");
     const barEl = document.getElementById("simulationBar");
     const logEl = document.getElementById("simulationLog");
-    const historyModal = document.getElementById("simRuntimeHistoryModal");
-    const historyBody = document.getElementById("simRuntimeHistoryBody");
 
     let currentJobId = null;
 
@@ -438,83 +351,6 @@
       barEl.style.width = `${Math.max(0, Math.min(100, Number(value || 0)))}%`;
     }
 
-    function updateRuntimeSummary(summary, pcSpec) {
-      if (summary) {
-        const totalEl = document.getElementById("simSummaryTotalRuntime");
-        const runtimeEl = document.getElementById("simSummaryRuntime");
-        const seedEl = document.getElementById("simSummarySeedRuntime");
-        const writeEl = document.getElementById("simSummaryWriteRuntime");
-        if (totalEl) totalEl.textContent = summary.simulation_total_runtime ?? "Pending";
-        if (runtimeEl) runtimeEl.textContent = summary.simulation_runtime ?? "Pending";
-        if (seedEl) seedEl.textContent = summary.simulation_seed_runtime ?? "Pending";
-        if (writeEl) writeEl.textContent = summary.simulation_write_runtime ?? "Pending";
-      }
-      if (pcSpec) {
-        const cpuEl = document.getElementById("simSummaryCpu");
-        const ramEl = document.getElementById("simSummaryRam");
-        if (cpuEl) cpuEl.textContent = pcSpec.cpu ?? "Pending";
-        if (ramEl) ramEl.textContent = pcSpec.ram ?? "Pending";
-      }
-      const history = Array.isArray(summary?.history) ? summary.history : [];
-      function compactPairs(cfg, allowKeys) {
-        const blocked = new Set([
-          "command",
-          "split_dir",
-          "summary_out",
-          "weights_out_dir",
-          "out_dir",
-          "output_dir",
-          "input_dir",
-          "stats_path",
-          "data_dir",
-        ]);
-        return Object.entries(cfg || {})
-          .filter(([key, value]) => !blocked.has(key) && value !== null && value !== undefined && value !== "")
-          .filter(([key]) => !allowKeys || allowKeys.includes(key))
-          .map(([key, value]) => `${key}=${value}`)
-          .join(" | ");
-      }
-      function detailText(item) {
-        const cfg = item.config || {};
-        if (item.kind === "simulation") {
-          return `patients=${cfg.patient_count ?? "-"} | days=${cfg.days ?? "-"} | start=${cfg.start_date ?? "-"} | room_change=${cfg.change_room_prob ?? "-"} | comfort/day=${cfg.comfort_max_changes_per_day ?? "-"} | sensor_emit=${cfg.enable_sensor_emit ?? "-"} | utility=${cfg.enable_utility_usage ?? "-"}`;
-        }
-        if (item.kind === "build") {
-          if (cfg.mode === "event") return `event | effect=${cfg.medication_effect_minutes ?? "-"}m | active=${cfg.medication_active_hours ?? "-"}h`;
-          return `k-hours | step=${cfg.step_minutes ?? "-"}m | horizon=${cfg.horizon_minutes ?? "-"}m | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-        }
-        if (item.kind === "split") {
-          if (cfg.mode === "event") return `event | train=${cfg.train_ratio ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-          return `k-hours | train=${cfg.train_ratio ?? "-"} | workers=${cfg.workers ?? "-"} | chunk=${cfg.chunk_size ?? "-"}`;
-        }
-        if (item.kind === "federated" || item.kind === "training") {
-          const agg = cfg.aggregation_method ?? "FedAvg";
-          const base = `${agg} | ${cfg.mode ?? "-"} ${cfg.model_type ?? "-"} | ${cfg.rounds ?? "-"} rounds | ${cfg.local_epochs ?? "-"} epoch(s)`;
-          if (cfg.mode === "event") return `${base} | batch ${cfg.batch_size ?? "-"} | ${cfg.max_rooms ?? "-"} rooms | client cpu ${cfg.client_cpu ?? "-"}`;
-          if (cfg.model_type === "mlp") return `${base} | batch ${cfg.batch_size ?? "-"} | lr ${cfg.learning_rate ?? "-"} | ${cfg.optimizer ?? "-"} | ${cfg.activation ?? "-"} | ${cfg.max_rooms ?? "-"} rooms`;
-          if (cfg.model_type === "lstm") return `${base} | seq ${cfg.sequence_length ?? "-"} | batch ${cfg.batch_size ?? "-"} | hidden ${cfg.hidden_dim ?? "-"} | layers ${cfg.num_layers ?? "-"} | lr ${cfg.learning_rate ?? "-"}`;
-          return `${base} | seq ${cfg.sequence_length ?? "-"} | lstm batch ${cfg.lstm_batch_size ?? "-"} | mlp batch ${cfg.mlp_batch_size ?? "-"} | hidden ${cfg.lstm_hidden_dim ?? "-"} | lr ${cfg.lstm_learning_rate ?? "-"}`;
-        }
-        return compactPairs(cfg);
-      }
-      if (historyBody) {
-        historyBody.innerHTML = history.length
-          ? history.map((item) => `
-              <tr>
-                <td>${item.kind ?? "-"}</td>
-                <td>${item.status ?? "-"}</td>
-                <td>${item.duration ?? "-"}</td>
-                <td>${item.started_at ?? "-"}</td>
-                <td><code>${pcSpec?.cpu ?? "Pending"} | ${pcSpec?.ram ?? "Pending"} | ${pcSpec?.gpu ?? "Pending"} | ${pcSpec?.os ?? "Pending"}</code></td>
-                <td><code>${detailText(item)}</code></td>
-              </tr>
-            `).join("")
-          : `<tr><td colspan="6">No runtime history yet.</td></tr>`;
-      }
-    }
-
-    updateRuntimeSummary(initialRuntimeSummary, initialPcSpec);
-
     function boolValue(id) {
       return document.getElementById(id).value === "true";
     }
@@ -525,13 +361,7 @@
         days: Number(document.getElementById("days").value || 1),
         patient_count: Number(document.getElementById("patientCount").value || 1),
         random_seed: Number(document.getElementById("randomSeed").value || 42),
-        change_room_prob: Number(document.getElementById("changeRoomProb").value || 0.3),
-        min_days_before_transfer: Number(document.getElementById("minDaysBeforeTransfer").value || 1),
-        min_days_after_transfer: Number(document.getElementById("minDaysAfterTransfer").value || 1),
         comfort_max_changes_per_day: Number(document.getElementById("comfortMaxChangesPerDay").value || 6),
-        sim_step_s: Number(document.getElementById("simStepS").value || 60),
-        sensor_sample_every_s: Number(document.getElementById("sensorSampleEveryS").value || 300),
-        wall_sleep_s: Number(document.getElementById("wallSleepS").value || 0),
         enable_comfort: boolValue("enableComfort"),
         enable_medication: boolValue("enableMedication"),
         enable_visits: boolValue("enableVisits"),
@@ -578,7 +408,6 @@
           cursor = data.next_cursor || cursor;
           setProgress(data.progress);
           stateEl.textContent = `${data.status} (${data.progress}%)`;
-          updateRuntimeSummary(data.runtime_summary, data.pc_spec);
           if (["completed", "failed", "stopped"].includes(data.status)) {
             clearInterval(timer);
             currentJobId = null;
@@ -640,16 +469,6 @@
       if (!trigger) return;
       openHelp(trigger.dataset.helpTitle || "Help", trigger.dataset.helpText || "");
     });
-    toggleHistoryBtn?.addEventListener("click", () => {
-      historyModal.classList.remove("hidden");
-    });
-    closeHistoryBtn?.addEventListener("click", () => {
-      historyModal.classList.add("hidden");
-    });
-    historyModal?.addEventListener("click", (event) => {
-      if (event.target === historyModal) historyModal.classList.add("hidden");
-    });
-
     (async () => {
       try {
         const jobs = await fetchActiveJobs();

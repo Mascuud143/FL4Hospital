@@ -21,7 +21,7 @@ MANUAL_PROGRESS_EVERY = 10
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Flower simulation mode for Task #2 state-to-outcome training.")
-    parser.add_argument("--split-dir", default="ai_state_to_outcome/splits", help="Directory with state_to_outcome train and test CSV files")
+    parser.add_argument("--split-dir", default="event_based/splits", help="Directory with event_based train and test CSV files")
     parser.add_argument("--rounds", type=int, default=5, help="Federated rounds")
     parser.add_argument("--local-epochs", type=int, default=1, help="Local epochs per round")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size for local training")
@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-evaluate-clients", type=int, default=2, help="Minimum clients for evaluate")
     parser.add_argument("--min-available-clients", type=int, default=2, help="Minimum connected clients")
     parser.add_argument("--max-rooms", type=int, default=None, help="Optional cap on number of rooms")
-    parser.add_argument("--weights-out-dir", default="ai_state_to_outcome/fl_weights", help="Directory to write global weights per round")
+    parser.add_argument("--weights-out-dir", default="event_based/fl_weights", help="Directory to write global weights per round")
     parser.add_argument("--summary-out", default=None, help="Optional JSON path to write final evaluation summary")
     parser.add_argument("--client-cpu", type=float, default=1.0, help="CPU resources per simulated client")
     parser.add_argument("--chunksize", type=int, default=50000, help="CSV chunksize")

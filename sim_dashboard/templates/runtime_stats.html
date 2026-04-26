@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .page-grid { display: grid; gap: 16px; }
+  .metrics-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .metric-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+    padding: 12px;
+  }
+  .metric-k { font-size: 0.76rem; color: var(--muted); text-transform: uppercase; }
+  .metric-v { font-size: 1.08rem; font-weight: 700; margin-top: 4px; }
+  .metric-x { font-size: 0.8rem; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+  .history-table-wrap {
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fff;
+  }
+  .history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.84rem;
+  }
+  .history-table th, .history-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: top;
+  }
+  .history-table th {
+    color: var(--muted);
+    background: #f8fafc;
+    font-weight: 700;
+  }
+  .history-table code {
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  @media (max-width: 900px) {
+    .metrics-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="page-grid">
+  <section class="card">
+    <h2 style="margin:0;">Runtime Stats</h2>
+    <p class="muted" style="margin:8px 0 0;">Latest saved runtimes and machine specs from the dashboard jobs.</p>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Last Run Time Summary</h3>
+    <div class="metrics-grid">
+      <div class="metric-card"><div class="metric-k">AI Total Runtime</div><div class="metric-v">{{ runtime_summary.total_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Build Runtime</div><div class="metric-v">{{ runtime_summary.build_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Split Runtime</div><div class="metric-v">{{ runtime_summary.split_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Training Runtime</div><div class="metric-v">{{ runtime_summary.training_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Simulation Runtime</div><div class="metric-v">{{ runtime_summary.simulation_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">Simulation Total Runtime</div><div class="metric-v">{{ runtime_summary.simulation_total_runtime }}</div></div>
+      <div class="metric-card"><div class="metric-k">CPU</div><div class="metric-v">{{ pc_spec.cpu }}</div><div class="metric-x">{{ pc_spec.os }}</div></div>
+      <div class="metric-card"><div class="metric-k">RAM</div><div class="metric-v">{{ pc_spec.ram }}</div></div>
+      <div class="metric-card"><div class="metric-k">GPU</div><div class="metric-v">{{ pc_spec.gpu }}</div></div>
+    </div>
+    <p class="muted" style="margin-bottom:0;">Runtime file: <code>{{ runtime_summary_path }}</code></p>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0;">Runtime History</h3>
+    <div class="history-table-wrap">
+      <table class="history-table">
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Status</th>
+            <th>Duration</th>
+            <th>Started</th>
+            <th>Task</th>
+            <th>Peak Memory</th>
+            <th>Config</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in runtime_summary.history %}
+            <tr>
+              <td>{{ item.kind or "-" }}</td>
+              <td>{{ item.status or "-" }}</td>
+              <td>{{ item.duration or "-" }}</td>
+              <td>{{ item.started_at or "-" }}</td>
+              <td>{{ item.task_type or "-" }}</td>
+              <td>{{ item.peak_memory or "-" }}</td>
+              <td><code>{{ item.config | tojson }}</code></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7">No runtime history yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

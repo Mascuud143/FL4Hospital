@@ -314,7 +314,7 @@ def build_rows(
     medication_active_hours: int,
 ) -> tuple[int, int]:
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "state_to_outcome_rows.csv")
+    out_path = os.path.join(out_dir, "event_based_rows.csv")
     fieldnames = [*IDENTIFIER_COLUMNS, *FEATURE_COLUMNS, *TARGET_COLUMNS]
 
     row_count = 0

@@ -18,7 +18,7 @@ _ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
-from ai_state_to_outcome.schema import (
+from event_based.schema import (
     DIAGNOSIS_NAMES as _EVENT_DIAGNOSIS_NAMES,
     DIAGNOSIS_TO_INDEX as _EVENT_DIAGNOSIS_TO_INDEX,
     FEATURE_COLUMNS as _EVENT_FEATURE_COLUMNS,
@@ -265,32 +265,11 @@ def _load_k_hours_lstm_model(weights_path: str):
     return model
 
 
-def _load_k_hours_mlp_lstm_model(weights_path: str):
-    if torch is None:
-        raise ModuleNotFoundError("PyTorch is required for k_hours MLP+LSTM AI mode.")
-    from k_hours_based.fl_lstm_mlp_client import get_input_dim as _k_hours_get_input_dim
-    from k_hours_based.fl_lstm_mlp_client import make_model as _k_hours_make_model
-    from k_hours_based.fl_lstm_mlp_client import set_params as _k_hours_set_params
-
-    model = _k_hours_make_model(_k_hours_get_input_dim())
-    state_dict = model.state_dict()
-    raw = np.load(weights_path)
-    params = [raw[key] for key in sorted(raw.files, key=lambda item: int(item.split("_")[1]))]
-    if len(params) != len(state_dict):
-        raise ValueError(f"Parameter count mismatch: expected {len(state_dict)}, got {len(params)}")
-    new_state = OrderedDict()
-    for (name, tensor), value in zip(state_dict.items(), params):
-        new_state[name] = torch.tensor(value, dtype=tensor.dtype)
-    model.load_state_dict(new_state, strict=True)
-    model.eval()
-    return model
-
-
 def _load_event_model(weights_path: str):
     if torch is None:
-        raise ModuleNotFoundError("PyTorch is required for state_to_outcome AI mode.")
-    from ai_state_to_outcome.fl_client import get_input_dim as _event_get_input_dim
-    from ai_state_to_outcome.fl_client import make_model as _event_make_model
+        raise ModuleNotFoundError("PyTorch is required for event_based AI mode.")
+    from event_based.fl_client import get_input_dim as _event_get_input_dim
+    from event_based.fl_client import make_model as _event_make_model
 
     model = _event_make_model(_event_get_input_dim())
     state_dict = model.state_dict()
@@ -387,25 +366,6 @@ def _predict_k_hours_lstm(weights_path: str, context: dict, sequence_length: int
     }
 
 
-def _predict_k_hours_mlp_lstm(weights_path: str, context: dict, sequence_length: int = 4) -> dict:
-    if torch is None:
-        raise ModuleNotFoundError("PyTorch is required for k_hours MLP+LSTM AI mode.")
-    model = _load_k_hours_mlp_lstm_model(weights_path)
-    frame = _build_k_hours_frame(context)
-    x_row = _k_hours_row_to_input_vector(frame).astype(np.float32)[0]
-    x_seq = np.repeat(x_row[np.newaxis, :], sequence_length, axis=0)[np.newaxis, :, :]
-    with torch.no_grad():
-        y_pred = model.target_lstm(torch.tensor(x_seq, dtype=torch.float32)).cpu().numpy()[0]
-    airflow_score = float(np.clip(y_pred[_K_HOURS_AIRFLOW_INDEX], 0.0, 1.0))
-    return {
-        "temperature_main": float(np.clip(y_pred[0], 16.0, 30.0)),
-        "temperature_toilet": float(np.clip(y_pred[1], 16.0, 32.0)),
-        "light_intensity": float(max(y_pred[2], 0.0)),
-        "sound_level": float(max(y_pred[3], 0.0)),
-        "airflow": airflow_score >= 0.5,
-    }
-
-
 def _build_event_frame(context: dict) -> pd.DataFrame:
     row = {col: 0.0 for col in _EVENT_FEATURE_COLUMNS}
     row["age"] = context["age"]
@@ -448,9 +408,9 @@ def _build_event_frame(context: dict) -> pd.DataFrame:
     return pd.DataFrame([row])
 
 
-def _predict_state_to_outcome(weights_path: str, context: dict) -> dict:
+def _predict_event_based(weights_path: str, context: dict) -> dict:
     if torch is None:
-        raise ModuleNotFoundError("PyTorch is required for state_to_outcome AI mode.")
+        raise ModuleNotFoundError("PyTorch is required for event_based AI mode.")
     model = _load_event_model(weights_path)
     frame = _build_event_frame(context)
     x = _event_row_to_input_vector(frame).astype(np.float32)
@@ -469,8 +429,8 @@ def _predict_state_to_outcome(weights_path: str, context: dict) -> dict:
 def predict_live_comfort(session, room_id: int, patient_id: int | None = None) -> tuple[dict, dict]:
     config = load_ai_config()
     source = config["selected_source"]
-    model_type = config["k_hours_model_type"] if source == "k_hours" else config["state_to_outcome_model_type"]
-    weights_key = "k_hours_weights_path" if source == "k_hours" else "state_to_outcome_weights_path"
+    model_type = config["k_hours_model_type"] if source == "k_hours" else config["event_based_model_type"]
+    weights_key = "k_hours_weights_path" if source == "k_hours" else "event_based_weights_path"
     weights_path = _resolve_weights_path(config[weights_key])
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Missing AI weights file: {weights_path}")
@@ -483,7 +443,7 @@ def predict_live_comfort(session, room_id: int, patient_id: int | None = None) -
         elif model_type == "lstm":
             prediction = _predict_k_hours_lstm(weights_path, context)
         else:
-            prediction = _predict_k_hours_mlp_lstm(weights_path, context)
+            raise ValueError(f"Unsupported k_hours model type: {model_type}")
     else:
-        prediction = _predict_state_to_outcome(weights_path, context)
+        prediction = _predict_event_based(weights_path, context)
     return prediction, {"source": source, "model_type": model_type, "weights_path": weights_path, "patient_id": context["patient_id"]}

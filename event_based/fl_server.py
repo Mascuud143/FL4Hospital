@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraction-evaluate", type=float, default=1.0, help="Fraction of clients sampled for evaluate")
     parser.add_argument("--aggregation-method", choices=["fedavg", "fedprox"], default="fedavg", help="Server aggregation strategy")
     parser.add_argument("--proximal-mu", type=float, default=0.0, help="FedProx proximal coefficient")
-    parser.add_argument("--weights-out-dir", default="ai_state_to_outcome/fl_weights", help="Directory to write global weights and metrics")
+    parser.add_argument("--weights-out-dir", default="event_based/fl_weights", help="Directory to write global weights and metrics")
     parser.add_argument("--hidden-layers", default="128,64,32", help="Comma-separated hidden layer sizes")
     parser.add_argument("--activation", choices=["relu", "tanh", "logistic"], default="relu", help="Activation function for hidden layers")
     return parser.parse_args()

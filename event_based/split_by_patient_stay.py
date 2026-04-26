@@ -113,8 +113,8 @@ def split_room_file(room_path: str, train_ratio: float, min_train_rows: int) -> 
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Split state-to-outcome rows into time-based per-room train/test sets.")
-    parser.add_argument("--input-dir", default=DEFAULT_INPUT_DIR, help="Directory containing state_to_outcome_rows.csv")
+    parser = argparse.ArgumentParser(description="Split event-based rows into time-based per-room train/test sets.")
+    parser.add_argument("--input-dir", default=DEFAULT_INPUT_DIR, help="Directory containing event_based_rows.csv")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to write train/test CSV files")
     parser.add_argument("--train-ratio", type=float, default=0.8, help="Train ratio per room")
     parser.add_argument("--min-train-rows", type=int, default=1, help="Minimum rows kept in train per room")
@@ -127,7 +127,7 @@ def main() -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     input_dir = resolve_dir(args.input_dir, script_dir)
     output_dir = resolve_dir(args.output_dir, script_dir)
-    input_path = os.path.join(input_dir, "state_to_outcome_rows.csv")
+    input_path = os.path.join(input_dir, "event_based_rows.csv")
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Missing input rows file: {input_path}")
 

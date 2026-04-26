@@ -18,7 +18,7 @@
           <label>Active AI Source</label>
           <select name="selected_source">
             <option value="k_hours" {% if ai_config.selected_source == 'k_hours' %}selected{% endif %}>k_hours_based</option>
-            <option value="state_to_outcome" {% if ai_config.selected_source == 'state_to_outcome' %}selected{% endif %}>state_to_outcome</option>
+            <option value="event_based" {% if ai_config.selected_source == 'event_based' %}selected{% endif %}>event_based</option>
           </select>
         </div>
         <div id="kHoursModelTypeField">
@@ -26,7 +26,6 @@
           <select name="k_hours_model_type" id="kHoursModelType">
             <option value="mlp" {% if ai_config.k_hours_model_type == 'mlp' %}selected{% endif %}>MLP</option>
             <option value="lstm" {% if ai_config.k_hours_model_type == 'lstm' %}selected{% endif %}>LSTM</option>
-            <option value="mlp_lstm" {% if ai_config.k_hours_model_type == 'mlp_lstm' %}selected{% endif %}>MLP + LSTM</option>
           </select>
         </div>
       </div>

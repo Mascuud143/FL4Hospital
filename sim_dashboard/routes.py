@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request
 
 from sim_dashboard.csv_store import load_data
 from simulation_batch.config import DAYS, START_DATE
@@ -35,31 +35,16 @@ from k_hours_based.runtime_defaults import (
 sim_bp = Blueprint("sim_bp", __name__)
 _ROOT_DIR = Path(__file__).resolve().parents[1]
 _K_HOURS_DIR = _ROOT_DIR / "k_hours_based"
-_EVENT_DIR = _ROOT_DIR / "ai_state_to_outcome"
+_EVENT_DIR = _ROOT_DIR / "event_based"
 _AI_JOBS: dict[str, dict] = {}
 _AI_JOBS_LOCK = threading.Lock()
 _MAX_LOG_LINES = 2000
 _RUN_METADATA_DIR = _ROOT_DIR / "sim_dashboard" / "run_metadata"
 _LAST_RUNTIME_SUMMARY_PATH = _RUN_METADATA_DIR / "last_run_time_summary.json"
 _PC_SPEC_PATH = _RUN_METADATA_DIR / "pc_specification.json"
-_BENCHMARK_RUNS_PATH = _RUN_METADATA_DIR / "benchmark_runs.csv"
 _RUNTIME_HISTORY_LIMIT = 50
 _DEFAULT_BUILD_WORKERS = default_build_workers()
 _DEFAULT_SPLIT_WORKERS = default_build_workers()
-_BENCHMARK_FIELDNAMES = [
-    "timestamp",
-    "rooms",
-    "patients",
-    "days",
-    "data_generation_time",
-    "data_generation_peak_memory",
-    "training_time",
-    "training_peak_memory",
-    "predictions_choice",
-    "ai_config",
-    "run_status",
-    "stop_stage",
-]
 _TASK_DIRS = {
     "k_hours": _K_HOURS_DIR,
     "event": _EVENT_DIR,
@@ -76,7 +61,6 @@ _MODEL_OUTPUT_DIRS = {
     "k_hours": {
         "mlp": _K_HOURS_DIR / "fl_weights_dashboard_mlp",
         "lstm": _K_HOURS_DIR / "fl_weights_dashboard_lstm",
-        "mlp_lstm": _K_HOURS_DIR / "fl_weights_dashboard_mlp_lstm",
     },
     "event": {
         "mlp": _EVENT_DIR / "fl_weights_dashboard_mlp",
@@ -607,378 +591,6 @@ def _split_command_and_config(payload: dict[str, object], task_type: str) -> tup
     return command, config
 
 
-def _training_command_and_config(payload: dict[str, object], task_type: str) -> tuple[list[str], dict[str, object]]:
-    model_type = str(payload.get("model_type", "mlp"))
-    aggregation_method = str(payload.get("aggregation_method", "fedavg"))
-    proximal_mu = float(payload.get("proximal_mu", 0.0))
-    rounds = int(payload.get("rounds", 5))
-    local_epochs = int(payload.get("local_epochs", 1))
-    lstm_sequence_length = int(payload.get("lstm_sequence_length", 4))
-    lstm_batch_size = int(payload.get("lstm_batch_size", 32))
-    mlp_hidden_layers = str(payload.get("mlp_hidden_layers", "128,64,32"))
-    mlp_batch_size = int(payload.get("mlp_batch_size", 1 if task_type == "event" else 32))
-    mlp_learning_rate = float(payload.get("mlp_learning_rate", 1e-3))
-    mlp_optimizer = str(payload.get("mlp_optimizer", "adam"))
-    mlp_activation = str(payload.get("mlp_activation", "relu"))
-    lstm_hidden_dim = int(payload.get("lstm_hidden_dim", 64))
-    lstm_num_layers = int(payload.get("lstm_num_layers", 1))
-    lstm_head_hidden_dim = int(payload.get("lstm_head_hidden_dim", 64))
-    lstm_learning_rate = float(payload.get("lstm_learning_rate", 1e-3))
-    lstm_optimizer = str(payload.get("lstm_optimizer", "adam"))
-    lstm_activation = str(payload.get("lstm_activation", "relu"))
-    hybrid_change_hidden_layers = str(payload.get("hybrid_change_hidden_layers", "128,64"))
-    hybrid_change_activation = str(payload.get("hybrid_change_activation", "relu"))
-    max_rooms_raw = payload.get("max_rooms")
-    max_rooms = int(max_rooms_raw) if max_rooms_raw not in (None, "") else None
-    fraction_fit = float(payload.get("fraction_fit", 1.0))
-    fraction_evaluate = float(payload.get("fraction_evaluate", 1.0))
-    min_fit_clients = int(payload.get("min_fit_clients", 2))
-    min_evaluate_clients = int(payload.get("min_evaluate_clients", 2))
-    min_available_clients = int(payload.get("min_available_clients", 2))
-    workers_raw = payload.get("workers")
-    if workers_raw not in (None, ""):
-        workers = max(1, int(workers_raw))
-        total_cpus = max(1, int(os.cpu_count() or 1))
-        client_cpu = total_cpus / float(workers)
-    else:
-        workers = _default_federated_workers()
-        client_cpu = float(payload.get("client_cpu", _default_federated_client_cpu()))
-    chunksize = int(payload.get("chunksize", _DEFAULT_FEDERATED_CHUNKSIZE))
-
-    sim_map = {
-        "k_hours": {"mlp": "fl_mlp_simulation.py", "lstm": "fl_lstm_simulation.py", "mlp_lstm": "fl_lstm_mlp_simulation.py"},
-        "event": {"mlp": "fl_simulation.py"},
-    }
-    sim_script = sim_map.get(task_type, {}).get(model_type)
-    if not sim_script:
-        raise ValueError(f"Unsupported model type: {model_type}")
-    weights_out_dir = _weights_dir_for_model(task_type, model_type)
-    summary_dir = weights_out_dir / "summaries"
-    summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_name = (
-        {"mlp": "dashboard_summary.json", "lstm": "dashboard_lstm_summary.json", "mlp_lstm": "dashboard_mlp_lstm_summary.json"}.get(model_type, "dashboard_summary.json")
-        if task_type == "k_hours"
-        else "dashboard_event_summary.json"
-    )
-    command = [
-        sys.executable, "-u", _ai_script(task_type, sim_script),
-        "--split-dir", str(_SPLIT_OUTPUT_DIRS[task_type]),
-        "--rounds", str(rounds),
-    ]
-    if task_type == "k_hours":
-        command.extend([
-            "--aggregation-method", aggregation_method,
-            "--local-epochs", str(local_epochs),
-            "--fraction-fit", str(fraction_fit),
-            "--fraction-evaluate", str(fraction_evaluate),
-            "--min-fit-clients", str(min_fit_clients),
-            "--min-evaluate-clients", str(min_evaluate_clients),
-            "--min-available-clients", str(min_available_clients),
-        ])
-    else:
-        command.extend(["--aggregation-method", aggregation_method, "--local-epochs", str(local_epochs)])
-    command.extend([
-        "--weights-out-dir", str(weights_out_dir),
-        "--summary-out", str(summary_dir / summary_name),
-        "--client-cpu", str(client_cpu),
-        "--chunksize", str(chunksize),
-    ])
-    if max_rooms is not None:
-        command.extend(["--max-rooms", str(max_rooms)])
-    if aggregation_method == "fedprox":
-        command.extend(["--proximal-mu", str(proximal_mu)])
-    if task_type == "k_hours" and model_type != "mlp":
-        command.extend(["--sequence-length", str(lstm_sequence_length), "--batch-size", str(lstm_batch_size)])
-    if task_type == "event" or model_type == "mlp":
-        command.extend([
-            "--hidden-layers", mlp_hidden_layers,
-            "--batch-size", str(mlp_batch_size),
-            "--learning-rate", str(mlp_learning_rate),
-            "--optimizer", mlp_optimizer,
-            "--activation", mlp_activation,
-        ])
-    elif model_type == "lstm":
-        command.extend([
-            "--hidden-dim", str(lstm_hidden_dim),
-            "--num-layers", str(lstm_num_layers),
-            "--head-hidden-dim", str(lstm_head_hidden_dim),
-            "--learning-rate", str(lstm_learning_rate),
-            "--optimizer", lstm_optimizer,
-            "--activation", lstm_activation,
-        ])
-    else:
-        command.extend([
-            "--change-hidden-layers", hybrid_change_hidden_layers,
-            "--lstm-hidden-dim", str(lstm_hidden_dim),
-            "--lstm-num-layers", str(lstm_num_layers),
-            "--lstm-head-hidden-dim", str(lstm_head_hidden_dim),
-            "--learning-rate", str(lstm_learning_rate),
-            "--optimizer", lstm_optimizer,
-            "--change-activation", hybrid_change_activation,
-            "--lstm-activation", lstm_activation,
-        ])
-    config = {
-        "mode": task_type,
-        "model_type": model_type,
-        "aggregation_method": aggregation_method,
-        "rounds": rounds,
-        "local_epochs": local_epochs,
-        "split_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
-        "weights_out_dir": str(weights_out_dir),
-        "summary_out": str(summary_dir / summary_name),
-        "fraction_fit": fraction_fit,
-        "fraction_evaluate": fraction_evaluate,
-        "min_fit_clients": min_fit_clients,
-        "min_evaluate_clients": min_evaluate_clients,
-        "min_available_clients": min_available_clients,
-        "workers": workers,
-        "client_cpu": client_cpu,
-        "chunksize": chunksize,
-    }
-    if max_rooms is not None:
-        config["max_rooms"] = max_rooms
-    if aggregation_method == "fedprox":
-        config["proximal_mu"] = proximal_mu
-    if task_type == "event":
-        config.update({"hidden_layers": mlp_hidden_layers, "batch_size": mlp_batch_size, "learning_rate": mlp_learning_rate, "optimizer": mlp_optimizer, "activation": mlp_activation})
-    elif model_type == "mlp":
-        config.update({"hidden_layers": mlp_hidden_layers, "batch_size": mlp_batch_size, "learning_rate": mlp_learning_rate, "optimizer": mlp_optimizer, "activation": mlp_activation})
-    elif model_type == "lstm":
-        config.update({"sequence_length": lstm_sequence_length, "batch_size": lstm_batch_size, "hidden_dim": lstm_hidden_dim, "num_layers": lstm_num_layers, "head_hidden_dim": lstm_head_hidden_dim, "learning_rate": lstm_learning_rate, "optimizer": lstm_optimizer, "activation": lstm_activation})
-    else:
-        config.update({
-            "sequence_length": lstm_sequence_length,
-            "lstm_batch_size": lstm_batch_size,
-            "lstm_hidden_dim": lstm_hidden_dim,
-            "lstm_num_layers": lstm_num_layers,
-            "lstm_head_hidden_dim": lstm_head_hidden_dim,
-            "lstm_learning_rate": lstm_learning_rate,
-            "lstm_optimizer": lstm_optimizer,
-            "lstm_activation": lstm_activation,
-            "mlp_hidden_layers": mlp_hidden_layers,
-            "mlp_batch_size": mlp_batch_size,
-            "mlp_learning_rate": mlp_learning_rate,
-            "mlp_optimizer": mlp_optimizer,
-            "mlp_activation": mlp_activation,
-            "change_hidden_layers": hybrid_change_hidden_layers,
-            "change_activation": hybrid_change_activation,
-        })
-    return command, config
-
-
-def _summarize_ai_config(config: dict[str, object]) -> str:
-    ordered_keys = [
-        "model_type", "aggregation_method", "rounds", "local_epochs", "hidden_layers", "batch_size",
-        "learning_rate", "optimizer", "activation", "sequence_length", "lstm_batch_size",
-        "lstm_hidden_dim", "lstm_num_layers", "lstm_head_hidden_dim", "lstm_learning_rate",
-        "lstm_optimizer", "lstm_activation", "mlp_hidden_layers", "mlp_batch_size",
-        "mlp_learning_rate", "mlp_optimizer", "mlp_activation", "change_hidden_layers",
-        "change_activation", "max_rooms", "client_cpu", "chunksize", "proximal_mu",
-    ]
-    return " | ".join(f"{key}={config[key]}" for key in ordered_keys if key in config and config[key] not in (None, ""))
-
-
-def _workflow_benchmark_context(sim_config_payload: dict[str, object], training_config: dict[str, object]) -> dict[str, object]:
-    data = load_data()
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "rooms": data.get("total_rooms", 0),
-        "patients": sim_config_payload.get("patient_count", ""),
-        "days": sim_config_payload.get("days", ""),
-        "data_generation_time": "",
-        "data_generation_peak_memory": "",
-        "training_time": "",
-        "training_peak_memory": "",
-        "predictions_choice": "state_to_outcome" if training_config.get("mode") == "event" else "k_hours",
-        "ai_config": _summarize_ai_config(training_config),
-        "run_status": "running",
-        "stop_stage": "",
-    }
-
-
-def _run_workflow_stage(
-    job_id: str,
-    *,
-    stage_key: str,
-    stage_label: str,
-    stage_kind: str,
-    command: list[str],
-    task_type: str,
-    config: dict[str, object],
-    progress_running: int,
-    progress_done: int,
-) -> tuple[bool, str | None, float, int]:
-    started_at = datetime.now(timezone.utc)
-    _append_log(job_id, f"[workflow] {stage_label} starting")
-    _append_log(job_id, f"[workflow] {stage_label} command: {' '.join(command)}")
-    _append_log(job_id, f"[workflow] {stage_label} config: {json.dumps(config, ensure_ascii=True, sort_keys=True)}")
-    _reset_job_peak_memory(job_id)
-    with _AI_JOBS_LOCK:
-        job = _AI_JOBS.get(job_id)
-        if not job:
-            return False, "failed", 0.0, 0
-        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
-        stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
-        stages[stage_key] = "running"
-        metadata["workflow_stages"] = stages
-        job["metadata"] = metadata
-        job["progress"] = max(int(job.get("progress") or 0), progress_running)
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(_ROOT_DIR),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _append_log(job_id, f"[workflow] failed to start {stage_label}: {exc}")
-        return False, "failed", 0.0, 0
-
-    with _AI_JOBS_LOCK:
-        job = _AI_JOBS.get(job_id)
-        if job:
-            job["pid"] = process.pid
-            job["current_process"] = process
-
-    monitor_stop, monitor_thread = _start_memory_monitor(job_id, process.pid)
-    if process.stdout is not None:
-        for line in process.stdout:
-            _append_log(job_id, line)
-    return_code = process.wait()
-    monitor_stop.set()
-    monitor_thread.join(timeout=2.0)
-    ended_at = datetime.now(timezone.utc)
-
-    with _AI_JOBS_LOCK:
-        job = _AI_JOBS.get(job_id)
-        stop_requested = bool(job and job.get("stop_requested"))
-        stage_peak = int(job.get("peak_memory_bytes") or 0) if job else 0
-        if job:
-            job["pid"] = None
-            job["current_process"] = None
-
-    synthetic_job = {
-        "kind": stage_kind,
-        "started_at": started_at.isoformat(),
-        "ended_at": ended_at.isoformat(),
-        "metadata": {"task_type": task_type, "config": config},
-        "status": "stopped" if stop_requested else ("completed" if return_code == 0 else "failed"),
-        "return_code": return_code,
-        "command": command,
-        "peak_memory_bytes": stage_peak,
-    }
-    if return_code == 0:
-        _persist_job_runtime(synthetic_job)
-
-    with _AI_JOBS_LOCK:
-        job = _AI_JOBS.get(job_id)
-        if job:
-            metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
-            stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
-            stages[stage_key] = "stopped" if stop_requested else ("completed" if return_code == 0 else "failed")
-            metadata["workflow_stages"] = stages
-            job["metadata"] = metadata
-            if return_code == 0:
-                job["progress"] = max(int(job.get("progress") or 0), progress_done)
-
-    if stop_requested:
-        if return_code == 0:
-            _append_log(job_id, f"[workflow] {stage_label} stopped peak_memory={_format_memory_bytes(stage_peak)}")
-        _append_log(job_id, f"[workflow] {stage_label} stopped")
-        return False, "stopped", max(0.0, (ended_at - started_at).total_seconds()), stage_peak
-    if return_code != 0:
-        _append_log(job_id, f"[workflow] {stage_label} failed peak_memory={_format_memory_bytes(stage_peak)}")
-        _append_log(job_id, f"[workflow] {stage_label} failed with exit code {return_code}")
-        return False, "failed", max(0.0, (ended_at - started_at).total_seconds()), stage_peak
-    _append_log(job_id, f"[workflow] {stage_label} completed peak_memory={_format_memory_bytes(stage_peak)}")
-    _append_log(job_id, f"[workflow] {stage_label} completed")
-    return True, None, max(0.0, (ended_at - started_at).total_seconds()), stage_peak
-
-
-def _run_workflow_job(job_id: str, simulation_payload: dict[str, object], training_payload: dict[str, object]) -> None:
-    task_type = _normalize_task_type(training_payload.get("task_type", "k_hours"))
-    build_payload: dict[str, object] = {"task_type": task_type}
-    split_payload: dict[str, object] = {"task_type": task_type}
-    if task_type == "k_hours":
-        split_payload["min_train_rows"] = 1
-
-    simulation_command, simulation_config = _simulation_command_and_config(simulation_payload)
-    build_command, build_config = _build_command_and_config(build_payload, task_type)
-    split_command, split_config = _split_command_and_config(split_payload, task_type)
-    training_command, training_config = _training_command_and_config(training_payload, task_type)
-    benchmark = _workflow_benchmark_context(simulation_config, training_config)
-    _update_job_metadata(job_id, task_type=task_type, workflow_stages={"simulation": "queued", "build": "queued", "split": "queued", "training": "queued"}, benchmark=benchmark)
-
-    stage_defs = [
-        ("simulation", "Simulation", "simulation", simulation_command, simulation_config, 5, 35),
-        ("build", "Build Event Rows" if task_type == "event" else "Build Next-Hour Rows", "build", build_command, build_config, 40, 50),
-        ("split", "Split By Room", "split", split_command, split_config, 55, 65),
-        ("training", "Federated Training", "federated", training_command, training_config, 70, 100),
-    ]
-
-    train_peak = 0
-    data_peak = 0
-    try:
-        for stage_key, stage_label, stage_kind, command, config, p_running, p_done in stage_defs:
-            ok, failure, duration_seconds, peak_memory = _run_workflow_stage(
-                job_id,
-                stage_key=stage_key,
-                stage_label=stage_label,
-                stage_kind=stage_kind,
-                command=command,
-                task_type=task_type if stage_kind != "simulation" else "simulation",
-                config=config,
-                progress_running=p_running,
-                progress_done=p_done,
-            )
-            if stage_key == "simulation":
-                benchmark["data_generation_time"] = _format_duration(duration_seconds)
-                benchmark["data_generation_peak_memory"] = _format_memory_bytes(peak_memory)
-                generated_data = load_data()
-                benchmark["rooms"] = generated_data.get("total_rooms", benchmark.get("rooms", 0))
-                data_peak = peak_memory
-            else:
-                train_peak = max(train_peak, peak_memory)
-                benchmark["training_peak_memory"] = _format_memory_bytes(train_peak)
-                runtime_summary = _load_runtime_summary_file()
-                benchmark["training_time"] = runtime_summary.get("total_runtime", "")
-            _update_job_metadata(job_id, benchmark=benchmark)
-            if not ok:
-                benchmark["run_status"] = failure or "failed"
-                benchmark["stop_stage"] = stage_key
-                _append_benchmark_row(benchmark)
-                if failure == "stopped":
-                    _mark_stopped(job_id, return_code=None)
-                else:
-                    _finish_job(job_id, ok=False, return_code=1)
-                return
-
-        benchmark["run_status"] = "completed"
-        benchmark["stop_stage"] = ""
-        _update_job_metadata(job_id, benchmark=benchmark)
-        _append_benchmark_row(benchmark)
-        _finish_job(job_id, ok=True, return_code=0)
-    except Exception as exc:  # noqa: BLE001
-        _append_log(job_id, f"[workflow] failed: {exc}")
-        benchmark["run_status"] = "failed"
-        benchmark["stop_stage"] = benchmark.get("stop_stage") or "workflow"
-        _update_job_metadata(job_id, benchmark=benchmark)
-        _append_benchmark_row(benchmark)
-        _finish_job(job_id, ok=False, return_code=1)
-
-
-def _start_workflow_job(simulation_payload: dict[str, object], training_payload: dict[str, object]) -> str:
-    job_id = _new_job("workflow", [])
-    _update_job_metadata(job_id, simulation_config=simulation_payload, training_config=training_payload)
-    thread = threading.Thread(target=_run_workflow_job, args=(job_id, simulation_payload, training_payload), daemon=True)
-    thread.start()
-    return job_id
-
-
 def _parse_kv_lines(lines: list[str]) -> dict[str, float | int | str]:
     metrics: dict[str, float | int | str] = {}
     for line in lines:
@@ -1254,55 +866,7 @@ def _ensure_run_metadata_files() -> None:
             json.load(f)
     except Exception:
         _PC_SPEC_PATH.write_text(json.dumps(_default_pc_spec(), indent=2), encoding="utf-8")
-    _normalize_benchmark_runs_csv()
     _refresh_pc_spec()
-
-
-def _benchmark_rows_from_file() -> list[dict[str, str]]:
-    if not _BENCHMARK_RUNS_PATH.exists():
-        return []
-    try:
-        with _BENCHMARK_RUNS_PATH.open("r", encoding="utf-8", newline="") as handle:
-            first_line = handle.readline()
-            if not first_line:
-                return []
-            delimiter = ";" if ";" in first_line and "," not in first_line else ","
-            handle.seek(0)
-            reader = csv.DictReader(handle, delimiter=delimiter)
-            rows: list[dict[str, str]] = []
-            for row in reader:
-                normalized = {name: row.get(name, "") for name in _BENCHMARK_FIELDNAMES}
-                if any(str(value).strip() for value in normalized.values()):
-                    rows.append(normalized)
-            return rows
-    except Exception:
-        return []
-
-
-def _write_benchmark_rows(rows: list[dict[str, object]]) -> None:
-    _RUN_METADATA_DIR.mkdir(parents=True, exist_ok=True)
-    with _BENCHMARK_RUNS_PATH.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=_BENCHMARK_FIELDNAMES)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({name: row.get(name, "") for name in _BENCHMARK_FIELDNAMES})
-
-
-def _normalize_benchmark_runs_csv() -> None:
-    if not _BENCHMARK_RUNS_PATH.exists():
-        return
-    try:
-        with _BENCHMARK_RUNS_PATH.open("r", encoding="utf-8", newline="") as handle:
-            first_line = handle.readline()
-    except Exception:
-        return
-    if not first_line:
-        _write_benchmark_rows([])
-        return
-    if ";" not in first_line:
-        return
-    rows = _benchmark_rows_from_file()
-    _write_benchmark_rows(rows)
 
 
 def _load_run_metadata() -> tuple[dict[str, object], dict[str, object]]:
@@ -2035,7 +1599,16 @@ def rooms():
         for room in data["rooms"]
     ]
 
-    simulation_period = _simulation_period_from_admissions()
+    # if there are rooms, make the simulation period from the earliest room creation to the latest room deletion, otherwise use current day
+    if data["rooms"]:
+        created_times = [room["created_at"] for room in data["rooms"] if room.get("created_at")]
+        deleted_times = [room["deleted_at"] for room in data["rooms"] if room.get("deleted_at")]
+        start_time = min(created_times) if created_times else datetime.now(timezone.utc)
+        end_time = max(deleted_times) if deleted_times else datetime.now(timezone.utc)
+        simulation_period = f"{_fmt_dt(start_time)} to {_fmt_dt(end_time)}"
+    else:
+        simulation_period = "-"
+
     simulation_info = {
         "total_rooms": data["total_rooms"],
         "total_patients": data["total_patients"],
@@ -2058,6 +1631,8 @@ def rooms():
     age_svg_male = _build_dist_svg(
         data["male_ages"], title="Age Distribution - Male", x_label="Age (years)"
     )
+
+    print(simulation_info)
 
     return render_template(
         "rooms.html",
@@ -2151,8 +1726,8 @@ def patients():
     return render_template("patients.html", patients=patient_data)
 
 
-@sim_bp.route("/ai-suggestion")
-def ai_suggestion():
+@sim_bp.route("/ai-training")
+def ai_training():
     runtime_summary, pc_spec = _load_run_metadata()
     diagnosis_names = _DIAGNOSIS_NAMES if _PREDICT_IMPORT_ERROR is None else []
     symptom_names = _SYMPTOM_NAMES if _PREDICT_IMPORT_ERROR is None else []
@@ -2170,73 +1745,28 @@ def ai_suggestion():
     )
 
 
+@sim_bp.route("/ai-suggestion")
+def ai_suggestion_redirect():
+    return redirect("/ai-training", code=301)
+
+
+@sim_bp.route("/runtime-stats")
+def runtime_stats():
+    runtime_summary, pc_spec = _load_run_metadata()
+    return render_template(
+        "runtime_stats.html",
+        runtime_summary=runtime_summary,
+        pc_spec=pc_spec,
+        runtime_summary_path=str(_LAST_RUNTIME_SUMMARY_PATH),
+        pc_spec_path=str(_PC_SPEC_PATH),
+    )
+
+
 @sim_bp.route("/api/ai/build/start", methods=["POST"])
 def api_ai_build_start():
     payload = request.get_json(silent=True) or {}
     task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
-    if task_type == "event":
-        medication_effect_minutes = int(payload.get("medication_effect_minutes", 5))
-        medication_active_hours = int(payload.get("medication_active_hours", 24))
-        build_command = [
-            sys.executable,
-            "-u",
-            _ai_script(task_type, "build_event_rows.py"),
-            "--data-dir",
-            "filestorage",
-            "--out-dir",
-            str(_BUILD_OUTPUT_DIRS[task_type]),
-            "--medication-effect-minutes",
-            str(medication_effect_minutes),
-            "--medication-active-hours",
-            str(medication_active_hours),
-        ]
-    else:
-        step_minutes = int(payload.get("step_minutes", 30))
-        horizon_minutes = int(payload.get("horizon_minutes", 60))
-        workers = int(payload.get("workers", _DEFAULT_BUILD_WORKERS))
-        chunk_size = int(payload.get("chunk_size", _DEFAULT_BUILD_CHUNK_SIZE))
-        csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_BUILD_CSV_WRITE_BATCH_SIZE))
-        build_command = [
-            sys.executable,
-            "-u",
-            _ai_script(task_type, "build_next_hour_rows.py"),
-            "--data-dir",
-            "filestorage",
-            "--out-dir",
-            str(_BUILD_OUTPUT_DIRS[task_type]),
-            "--step-minutes",
-            str(step_minutes),
-            "--horizon-minutes",
-            str(horizon_minutes),
-            "--workers",
-            str(workers),
-            "--chunk-size",
-            str(chunk_size),
-            "--csv-write-batch-size",
-            str(csv_write_batch_size),
-        ]
-    build_config = {
-        "mode": task_type,
-        "data_dir": "filestorage",
-        "out_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
-    }
-    if task_type == "event":
-        build_config.update(
-            {
-                "medication_effect_minutes": medication_effect_minutes,
-                "medication_active_hours": medication_active_hours,
-            }
-        )
-    else:
-        build_config.update(
-            {
-                "step_minutes": step_minutes,
-                "horizon_minutes": horizon_minutes,
-                "workers": workers,
-                "chunk_size": chunk_size,
-                "csv_write_batch_size": csv_write_batch_size,
-            }
-        )
+    build_command, build_config = _build_command_and_config(payload, task_type)
     job_id = _start_ai_job("build", [build_command], metadata={"task_type": task_type, "config": build_config})
     return jsonify({"job_id": job_id, "status": "running"})
 
@@ -2245,59 +1775,14 @@ def api_ai_build_start():
 def api_ai_split_start():
     payload = request.get_json(silent=True) or {}
     task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
-    chunk_size = int(payload.get("chunk_size", _DEFAULT_SPLIT_CHUNK_SIZE))
-    workers = int(payload.get("workers", _DEFAULT_SPLIT_WORKERS))
-    csv_write_batch_size = int(payload.get("csv_write_batch_size", _DEFAULT_SPLIT_CSV_WRITE_BATCH_SIZE))
-    train_ratio = float(payload.get("train_ratio", 0.8))
-    min_train_rows = int(payload.get("min_train_rows", 1))
-    split_command = [
-        sys.executable,
-        "-u",
-        _ai_script(task_type, "split_by_patient_stay.py" if task_type == "event" else "split_next_hour_by_room.py"),
-        "--input-dir",
-        str(_BUILD_OUTPUT_DIRS[task_type]),
-        "--output-dir",
-        str(_SPLIT_OUTPUT_DIRS[task_type]),
-        "--train-ratio",
-        str(train_ratio),
-        "--min-train-rows",
-        str(min_train_rows),
-        "--chunk-size",
-        str(chunk_size),
-    ]
-    if task_type != "event":
-        split_command.extend(
-            [
-                "--workers",
-                str(workers),
-                "--csv-write-batch-size",
-                str(csv_write_batch_size),
-            ]
-        )
-    split_config = {
+    build_command, build_config = _build_command_and_config(payload, task_type)
+    split_command, split_config = _split_command_and_config(payload, task_type)
+    combined_config = {
         "mode": task_type,
-        "input_dir": str(_BUILD_OUTPUT_DIRS[task_type]),
-        "output_dir": str(_SPLIT_OUTPUT_DIRS[task_type]),
-        "chunk_size": chunk_size,
+        "build": build_config,
+        "split": split_config,
     }
-    if task_type != "event":
-        split_config.update(
-            {
-                "chunk_size": chunk_size,
-                "workers": workers,
-                "csv_write_batch_size": csv_write_batch_size,
-                "train_ratio": train_ratio,
-                "min_train_rows": min_train_rows,
-            }
-        )
-    else:
-        split_config.update(
-            {
-                "train_ratio": train_ratio,
-                "min_train_rows": min_train_rows,
-            }
-        )
-    job_id = _start_ai_job("split", [split_command], metadata={"task_type": task_type, "config": split_config})
+    job_id = _start_ai_job("split", [build_command, split_command], metadata={"task_type": task_type, "config": combined_config})
     return jsonify({"job_id": job_id, "status": "running"})
 
 
@@ -2323,8 +1808,6 @@ def api_ai_federated_start():
     lstm_learning_rate = float(payload.get("lstm_learning_rate", 1e-3))
     lstm_optimizer = str(payload.get("lstm_optimizer", "adam"))
     lstm_activation = str(payload.get("lstm_activation", "relu"))
-    hybrid_change_hidden_layers = str(payload.get("hybrid_change_hidden_layers", "128,64"))
-    hybrid_change_activation = str(payload.get("hybrid_change_activation", "relu"))
     max_rooms_raw = payload.get("max_rooms")
     max_rooms = int(max_rooms_raw) if max_rooms_raw not in (None, "") else None
     fraction_fit = float(payload.get("fraction_fit", 1.0))
@@ -2346,7 +1829,6 @@ def api_ai_federated_start():
         "k_hours": {
             "mlp": "fl_mlp_simulation.py",
             "lstm": "fl_lstm_simulation.py",
-            "mlp_lstm": "fl_lstm_mlp_simulation.py",
         },
         "event": {
             "mlp": "fl_simulation.py",
@@ -2363,7 +1845,6 @@ def api_ai_federated_start():
         {
             "mlp": "dashboard_summary.json",
             "lstm": "dashboard_lstm_summary.json",
-            "mlp_lstm": "dashboard_mlp_lstm_summary.json",
         }.get(model_type, "dashboard_summary.json")
         if task_type == "k_hours"
         else "dashboard_event_summary.json"
@@ -2472,27 +1953,6 @@ def api_ai_federated_start():
                 lstm_activation,
             ]
         )
-    elif model_type == "mlp_lstm":
-        command.extend(
-            [
-                "--change-hidden-layers",
-                hybrid_change_hidden_layers,
-                "--lstm-hidden-dim",
-                str(lstm_hidden_dim),
-                "--lstm-num-layers",
-                str(lstm_num_layers),
-                "--lstm-head-hidden-dim",
-                str(lstm_head_hidden_dim),
-                "--learning-rate",
-                str(lstm_learning_rate),
-                "--optimizer",
-                lstm_optimizer,
-                "--change-activation",
-                hybrid_change_activation,
-                "--lstm-activation",
-                lstm_activation,
-            ]
-        )
     training_config = {
         "mode": task_type,
         "model_type": model_type,
@@ -2548,26 +2008,6 @@ def api_ai_federated_start():
                 "activation": lstm_activation,
             }
         )
-    else:
-        training_config.update(
-            {
-                "sequence_length": lstm_sequence_length,
-                "lstm_batch_size": lstm_batch_size,
-                "lstm_hidden_dim": lstm_hidden_dim,
-                "lstm_num_layers": lstm_num_layers,
-                "lstm_head_hidden_dim": lstm_head_hidden_dim,
-                "lstm_learning_rate": lstm_learning_rate,
-                "lstm_optimizer": lstm_optimizer,
-                "lstm_activation": lstm_activation,
-                "mlp_hidden_layers": mlp_hidden_layers,
-                "mlp_batch_size": mlp_batch_size,
-                "mlp_learning_rate": mlp_learning_rate,
-                "mlp_optimizer": mlp_optimizer,
-                "mlp_activation": mlp_activation,
-                "change_hidden_layers": hybrid_change_hidden_layers,
-                "change_activation": hybrid_change_activation,
-            }
-        )
     job_id = _start_ai_job("federated", [command], metadata={"task_type": task_type, "config": training_config})
     return jsonify({"job_id": job_id, "status": "running"})
 
@@ -2609,21 +2049,6 @@ def new_simulation():
     )
 
 
-@sim_bp.route("/new-simulation-ai")
-def new_simulation_ai():
-    runtime_summary, pc_spec = _load_run_metadata()
-    config_defaults = _simulation_config_defaults()
-    return render_template(
-        "new_simulation_ai.html",
-        config_defaults=config_defaults,
-        runtime_summary=runtime_summary,
-        pc_spec=pc_spec,
-        runtime_summary_path=str(_LAST_RUNTIME_SUMMARY_PATH),
-        pc_spec_path=str(_PC_SPEC_PATH),
-        benchmark_csv_path=str(_BENCHMARK_RUNS_PATH),
-    )
-
-
 @sim_bp.route("/api/simulation/start", methods=["POST"])
 def api_simulation_start():
     active_job_id = _active_job_id("simulation")
@@ -2636,33 +2061,11 @@ def api_simulation_start():
     return jsonify({"job_id": job_id, "status": "running"})
 
 
-@sim_bp.route("/api/workflow/start", methods=["POST"])
-def api_workflow_start():
-    active_job_id = _active_job_id("workflow")
-    if active_job_id:
-        return jsonify({"error": "A workflow is already running.", "job_id": active_job_id}), 409
-    for kind in ("simulation", "build", "split", "federated"):
-        active_stage_job = _active_job_id(kind)
-        if active_stage_job:
-            return jsonify({"error": f"A {kind} job is already running.", "job_id": active_stage_job}), 409
-
-    payload = request.get_json(silent=True) or {}
-    simulation_payload = payload.get("simulation") if isinstance(payload.get("simulation"), dict) else {}
-    training_payload = payload.get("training") if isinstance(payload.get("training"), dict) else {}
-    try:
-        _training_command_and_config(training_payload, _normalize_task_type(training_payload.get("task_type", "k_hours")))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    job_id = _start_workflow_job(simulation_payload, training_payload)
-    return jsonify({"job_id": job_id, "status": "running"})
-
-
 @sim_bp.route("/api/ai/results", methods=["GET"])
 def api_ai_results():
     task_type = _normalize_task_type(request.args.get("task_type", "k_hours"))
     model_type = str(request.args.get("model_type", "mlp") or "mlp")
     scope = str(request.args.get("scope", "global") or "global")
-    view = str(request.args.get("view", "aggregated") or "aggregated")
     dataset = str(request.args.get("dataset", "test") or "test")
     figure_detail = str(request.args.get("figure_detail", "summary") or "summary")
     requested_room_id = str(request.args.get("room_id", "") or "").strip()
@@ -2735,7 +2138,6 @@ def api_ai_results():
                     "task_type": task_type,
                     "model_type": model_type,
                     "scope": scope,
-                    "view": view,
                     "dataset": dataset,
                     "figure_detail": figure_detail,
                     "room_id": active_room_id or None,
@@ -2770,14 +2172,13 @@ def api_ai_results():
 
     room_ids = sorted(room_frame["room_id"].dropna().astype(str).unique().tolist()) if not room_frame.empty else []
     active_room_id = requested_room_id
-    requires_room = scope == "local" or view == "by_room"
-    if requires_room:
+    if scope == "local":
         if not active_room_id and room_ids:
             active_room_id = room_ids[0]
         if active_room_id:
             room_frame = room_frame[room_frame["room_id"] == active_room_id].copy()
 
-    source_frame = room_frame if requires_room else total_frame
+    source_frame = room_frame if scope == "local" else total_frame
     if source_frame.empty:
         return jsonify({"error": f"No metrics available for scope '{scope}'"}), 404
 
@@ -2800,7 +2201,6 @@ def api_ai_results():
             {
                 "model_type": model_type,
                 "scope": scope,
-                "view": view,
                 "dataset": dataset,
                 "figure_detail": figure_detail,
                 "room_id": active_room_id or None,
@@ -2808,22 +2208,9 @@ def api_ai_results():
                 "weights_dir": str(weights_dir),
                 "latest_cards": cards,
                 "line_charts": _error_analysis_line_charts(source_frame) if figure_detail == "detailed" else _summary_line_charts(source_frame),
-                "pie_charts": _local_pies(source_frame) if requires_room else _global_pies(source_frame),
+                "pie_charts": _local_pies(source_frame) if scope == "local" else _global_pies(source_frame),
             }
         )
-    )
-
-
-@sim_bp.route("/api/ai/benchmark/context", methods=["GET"])
-def api_ai_benchmark_context():
-    data = load_data()
-    return jsonify(
-        {
-            "rooms": data.get("total_rooms", 0),
-            "patients": data.get("total_patients", 0),
-            "admissions": data.get("total_admissions", 0),
-            "data_dir": data.get("data_dir"),
-        }
     )
 
 
@@ -2886,37 +2273,6 @@ def _build_single_input_row(payload: dict) -> pd.DataFrame:
             row[col] = float(value)
 
     return pd.DataFrame([row])
-
-
-def _append_benchmark_row(payload: dict[str, object]) -> None:
-    _normalize_benchmark_runs_csv()
-    write_header = not _BENCHMARK_RUNS_PATH.exists()
-    with _BENCHMARK_RUNS_PATH.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=_BENCHMARK_FIELDNAMES)
-        if write_header:
-            writer.writeheader()
-        writer.writerow({name: payload.get(name, "") for name in _BENCHMARK_FIELDNAMES})
-
-
-@sim_bp.route("/api/ai/benchmark/append", methods=["POST"])
-def api_ai_benchmark_append():
-    payload = request.get_json(silent=True) or {}
-    row = {
-        "timestamp": str(payload.get("timestamp") or datetime.now(timezone.utc).isoformat()),
-        "rooms": payload.get("rooms", ""),
-        "patients": payload.get("patients", ""),
-        "days": payload.get("days", ""),
-        "data_generation_time": payload.get("data_generation_time", ""),
-        "data_generation_peak_memory": payload.get("data_generation_peak_memory", ""),
-        "training_time": payload.get("training_time", ""),
-        "training_peak_memory": payload.get("training_peak_memory", ""),
-        "predictions_choice": payload.get("predictions_choice", ""),
-        "ai_config": payload.get("ai_config", ""),
-        "run_status": payload.get("run_status", ""),
-        "stop_stage": payload.get("stop_stage", ""),
-    }
-    _append_benchmark_row(row)
-    return jsonify({"status": "appended", "path": str(_BENCHMARK_RUNS_PATH), "row": row})
 
 
 @sim_bp.route("/api/ai/predict/mlp", methods=["POST"])

@@ -118,4 +118,11 @@ ai_state_to_outcome/splits_dashboard/
 ai_state_to_outcome/fl_weights/
 ai_state_to_outcome/fl_weights_dashboard_mlp/
 ai_state_to_outcome/fl_predictions/
+event_based/rows/
+event_based/rows_dashboard/
+event_based/splits/
+event_based/splits_dashboard/
+event_based/fl_weights/
+event_based/fl_weights_dashboard_mlp/
+event_based/fl_predictions/
 k_hours_based/fl_weights_dashboard_mlp/

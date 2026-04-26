@@ -9,7 +9,7 @@ try:
     import torch
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
-        "PyTorch is required for ai_state_to_outcome inference from FL weights. Install torch before running this mode."
+        "PyTorch is required for event_based inference from FL weights. Install torch before running this mode."
     ) from exc
 
 from fl_client import get_input_dim, make_model, sanitize_rows
@@ -78,7 +78,7 @@ def main() -> None:
     pred_df["y_target_airflow_score"] = airflow_prob
 
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "state_to_outcome_predictions.csv")
+    out_path = os.path.join(out_dir, "event_based_predictions.csv")
     pred_df.to_csv(out_path, index=False)
 
     print("predict_from_weights.py complete")

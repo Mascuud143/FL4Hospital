@@ -358,17 +358,17 @@ def admin_update_ai_config():
     current_config = load_ai_config()
     selected_source = str(request.form.get("selected_source") or "k_hours").strip()
     k_hours_model_type = str(request.form.get("k_hours_model_type") or "mlp").strip()
-    state_to_outcome_model_type = "mlp"
+    event_based_model_type = "mlp"
     k_hours_weights_path = str(request.form.get("k_hours_weights_path") or "").strip() or current_config["k_hours_weights_path"]
-    state_to_outcome_weights_path = (
-        str(request.form.get("state_to_outcome_weights_path") or "").strip() or current_config["state_to_outcome_weights_path"]
+    event_based_weights_path = (
+        str(request.form.get("event_based_weights_path") or "").strip() or current_config["event_based_weights_path"]
     )
     update_ai_config(
         selected_source=selected_source,
         k_hours_model_type=k_hours_model_type,
-        state_to_outcome_model_type=state_to_outcome_model_type,
+        event_based_model_type=event_based_model_type,
         k_hours_weights_path=k_hours_weights_path,
-        state_to_outcome_weights_path=state_to_outcome_weights_path,
+        event_based_weights_path=event_based_weights_path,
     )
     flash(f"AI configuration updated. Active source: {selected_source} ({k_hours_model_type if selected_source == 'k_hours' else 'mlp'}).")
     return redirect(url_for("hybrid_bp.admin_home"))
