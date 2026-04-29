@@ -17,15 +17,15 @@ def chunk_sensor_specs(items: list[tuple[int, int, str]], size: int) -> list[lis
 def sample_value(rng: random.Random, sensor_type: str, room_state: tuple[float, float, float, float, float]) -> float:
     temperature, humidity, co2, light, sound = room_state
     if sensor_type == "temperature":
-        return temperature + rng.gauss(0, 0.05)
+        return round(temperature + rng.gauss(0, 0.05), 1)
     if sensor_type == "humidity":
         return humidity + rng.gauss(0, 0.2)
     if sensor_type == "co2":
         return max(400.0, co2 + rng.gauss(0, 20))
     if sensor_type == "light":
-        return max(0.0, light + rng.gauss(0, 2))
+        return round(max(0.0, light + rng.gauss(0, 2)))
     if sensor_type == "sound":
-        return max(0.0, sound + rng.gauss(0, 1))
+        return round(max(0.0, sound + rng.gauss(0, 1)))
     return 0.0
 
 

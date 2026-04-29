@@ -78,7 +78,7 @@
                     <tr><th>Value</th><th>Time</th><th>Unit</th></tr>
                     {% for r in s.before_rows %}
                     <tr>
-                      <td>{% if r.value is not none %}{{ r.value }}{% else %}--{% endif %}</td>
+                      <td>{% if r.value is not none %}{{ '%.1f'|format(r.value) }}{% else %}--{% endif %}</td>
                       <td>{% if r.timestamp %}{{ r.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
                       <td>{% if s.unit %}{{ s.unit }}{% else %}--{% endif %}</td>
                     </tr>
@@ -96,7 +96,7 @@
                     <tr><th>Value</th><th>Time</th><th>Unit</th></tr>
                     {% for r in s.after_rows %}
                     <tr>
-                      <td>{% if r.value is not none %}{{ r.value }}{% else %}--{% endif %}</td>
+                      <td>{% if r.value is not none %}{{ '%.1f'|format(r.value) }}{% else %}--{% endif %}</td>
                       <td>{% if r.timestamp %}{{ r.timestamp.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
                       <td>{% if s.unit %}{{ s.unit }}{% else %}--{% endif %}</td>
                     </tr>
@@ -134,7 +134,7 @@
         {% for u in utility_usages %}
         <tr>
           <td>{{ u.category }}</td>
-          <td>{% if u.power_consumption is not none %}{{ u.power_consumption }}{% else %}--{% endif %}</td>
+          <td>{% if u.power_consumption is not none %}{{ '%.3f'|format(u.power_consumption) }}{% else %}--{% endif %}</td>
           <td>{% if u.water_consumption is not none %}{{ u.water_consumption }}{% else %}--{% endif %}</td>
           <td>{% if u.start_time %}{{ u.start_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>
           <td>{% if u.end_time %}{{ u.end_time.strftime("%Y-%m-%d %H:%M") }}{% else %}--{% endif %}</td>

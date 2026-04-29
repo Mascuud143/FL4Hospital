@@ -168,7 +168,7 @@ def insert_utility_usage(
             str(category),
             start_time_utc,
             end_time_utc,
-            power_kwh,
+            round(float(power_kwh), 3) if power_kwh is not None else None,
             water_liters,
             int(device_id) if device_id is not None else None,
         )

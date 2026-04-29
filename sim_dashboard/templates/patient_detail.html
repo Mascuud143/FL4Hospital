@@ -241,7 +241,7 @@
         <div class="meta-box"><div class="k">Height</div><div class="v">{{ patient.height if patient.height is not none else '--' }} cm</div></div>
         <div class="meta-box"><div class="k">Ethnicity</div><div class="v">{{ patient.ethnicity if patient.ethnicity else '--' }}</div></div>
         <div class="meta-box"><div class="k">Latest Age</div><div class="v">{{ patient.age if patient.age is not none else '--' }}</div></div>
-        <div class="meta-box"><div class="k">Latest Weight</div><div class="v">{{ patient.weight if patient.weight is not none else '--' }} kg</div></div>
+        <div class="meta-box"><div class="k">Latest Weight</div><div class="v">{% if patient.weight is not none %}{{ '%.1f'|format(patient.weight) }}{% else %}--{% endif %} kg</div></div>
       </div>
     </div>
 
@@ -415,7 +415,7 @@
                       <td>{{ s.room_id }}</td>
                       <td>{{ s.sensor_type }}</td>
                       <td>
-                        {% if s.value is not none %}{{ s.value }}{% else %}--{% endif %}
+                        {% if s.value is not none %}{{ '%.1f'|format(s.value) }}{% else %}--{% endif %}
                         {% if s.unit %} {{ s.unit }}{% endif %}
                       </td>
                     </tr>

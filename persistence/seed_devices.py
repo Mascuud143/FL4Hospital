@@ -110,4 +110,6 @@ def seed_devices_and_sensors(devices: Iterable, *, room_id_default=None) -> None
                     if uuid is not None and hasattr(SensorModel, "uuid"):
                         skwargs["uuid"] = str(uuid)
 
-                    session.add(SensorModel(**skwargs))
+                    db_sensor = SensorModel(**skwargs)
+                    write_model_row(db_sensor)
+                    session.add(db_sensor)

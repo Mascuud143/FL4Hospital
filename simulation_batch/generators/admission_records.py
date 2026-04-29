@@ -39,7 +39,7 @@ def create_admission(
         admitted_at=admitted_at,
         discharged_at=discharged_at,
         age=age,
-        weight=round(weight, 2),
+        weight=round(weight, 1),
         current_diagnosis=diagnosis,
     )
     write_model_row(admission)

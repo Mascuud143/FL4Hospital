@@ -11,12 +11,14 @@ from typing import Any
 FILES = (
     "rooms.csv",
     "devices.csv",
+    "sensors.csv",
     "patients.csv",
     "admissions.csv",
     "room_assignments.csv",
     "medications.csv",
     "visits.csv",
     "comfort_preferences.csv",
+    "data.csv",
     "utility_usages.csv",
     "ventilations.csv",
     "toilet_heaters.csv",
@@ -113,12 +115,14 @@ def load_data() -> dict[str, Any]:
 
     rooms_raw = _read_csv(data_dir, "rooms.csv")
     devices_raw = _read_csv(data_dir, "devices.csv")
+    sensors_raw = _read_csv(data_dir, "sensors.csv")
     patients_raw = _read_csv(data_dir, "patients.csv")
     admissions_raw = _read_csv(data_dir, "admissions.csv")
     assignments_raw = _read_csv(data_dir, "room_assignments.csv")
     medications_raw = _read_csv(data_dir, "medications.csv")
     visits_raw = _read_csv(data_dir, "visits.csv")
     comfort_raw = _read_csv(data_dir, "comfort_preferences.csv")
+    data_raw = _read_csv(data_dir, "data.csv")
     utility_raw = _read_csv(data_dir, "utility_usages.csv")
     ventilations_raw = _read_csv(data_dir, "ventilations.csv")
     toilet_heaters_raw = _read_csv(data_dir, "toilet_heaters.csv")
@@ -272,12 +276,68 @@ def load_data() -> dict[str, Any]:
         group.sort(key=lambda c: (c["timestamp"] is None, c["timestamp"]), reverse=True)
 
     device_to_room: dict[int, int] = {}
+    device_to_location: dict[int, str] = {}
     for row in devices_raw:
         device_id = _to_int(row.get("device_id"))
         room_id = _to_int(row.get("room_id"))
-        if device_id is None or room_id is None:
+        if device_id is None:
             continue
-        device_to_room[device_id] = room_id
+        if room_id is not None:
+            device_to_room[device_id] = room_id
+        device_to_location[device_id] = (row.get("location") or "").strip()
+
+    sensors: list[dict[str, Any]] = []
+    sensors_by_id: dict[int, dict[str, Any]] = {}
+    sensors_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in sensors_raw:
+        sensor_id = _to_int(row.get("sensor_id"))
+        device_id = _to_int(row.get("device_id"))
+        if sensor_id is None or device_id is None:
+            continue
+        room_id = device_to_room.get(device_id)
+        item = {
+            "sensor_id": sensor_id,
+            "device_id": device_id,
+            "room_id": room_id,
+            "location": device_to_location.get(device_id, ""),
+            "sensor_type": (row.get("sensor_type") or "").strip(),
+            "uuid": (row.get("uuid") or "").strip(),
+            "unit": (row.get("unit") or "").strip(),
+        }
+        sensors.append(item)
+        sensors_by_id[sensor_id] = item
+        if room_id is not None:
+            sensors_by_room[room_id].append(item)
+    for group in sensors_by_room.values():
+        group.sort(key=lambda sensor: (sensor["sensor_type"], sensor["sensor_id"]))
+
+    data_points: list[dict[str, Any]] = []
+    data_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in data_raw:
+        data_id = _to_int(row.get("data_id"))
+        sensor_id = _to_int(row.get("sensor_id"))
+        if data_id is None or sensor_id is None:
+            continue
+        sensor = sensors_by_id.get(sensor_id)
+        if sensor is None:
+            continue
+        item = {
+            "data_id": data_id,
+            "sensor_id": sensor_id,
+            "device_id": sensor["device_id"],
+            "room_id": sensor["room_id"],
+            "location": sensor["location"],
+            "sensor_type": sensor["sensor_type"],
+            "unit": sensor["unit"],
+            "value": _to_float(row.get("value")),
+            "timestamp": _parse_ts(row.get("timestamp")),
+        }
+        data_points.append(item)
+        room_id = sensor["room_id"]
+        if room_id is not None:
+            data_by_room[room_id].append(item)
+    for group in data_by_room.values():
+        group.sort(key=lambda d: (d["timestamp"] is None, d["timestamp"]))
 
     utility_by_room: dict[int, list[dict[str, Any]]] = defaultdict(list)
     devices_by_room: dict[int, set[int]] = defaultdict(set)
@@ -389,6 +449,11 @@ def load_data() -> dict[str, Any]:
         "data_dir": str(data_dir),
         "rooms": rooms,
         "room_by_id": room_by_id,
+        "sensors": sensors,
+        "sensors_by_id": sensors_by_id,
+        "sensors_by_room": sensors_by_room,
+        "data_points": data_points,
+        "data_by_room": data_by_room,
         "patients": patients,
         "patients_by_id": patients_by_id,
         "admissions": admissions,

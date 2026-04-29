@@ -1523,6 +1523,33 @@ def _assignment_for_time(assignments: list[dict], ts: datetime | None) -> dict |
     return None
 
 
+def _sensor_rows_in_window(
+    room_sensor_rows: list[dict],
+    *,
+    start: datetime | None,
+    end: datetime | None,
+) -> list[dict]:
+    rows: list[dict] = []
+    for row in room_sensor_rows:
+        ts = row.get("timestamp")
+        if ts is None:
+            continue
+        if start is not None and ts < start:
+            continue
+        if end is not None and ts > end:
+            continue
+        rows.append(row)
+    return rows
+
+
+def _sensor_label(sensor_type: str | None, location: str | None) -> str:
+    sensor_name = str(sensor_type or "sensor").strip() or "sensor"
+    sensor_location = str(location or "").strip()
+    if sensor_location:
+        return f"{sensor_name} ({sensor_location})"
+    return sensor_name
+
+
 def _build_dist_svg(values: list[int | float], *, title: str, x_label: str) -> str | None:
     if not values:
         return None
@@ -1654,6 +1681,8 @@ def room_detail(room_id: int):
 
     known_device_ids = data["devices_by_room"].get(room_id, [])
     device_data = [{"device_id": device_id, "device_type": "Device"} for device_id in known_device_ids]
+    room_sensor_rows = data["data_by_room"].get(room_id, [])
+    room_sensors = data["sensors_by_room"].get(room_id, [])
 
     assignments = []
     for assignment in data["assignments_by_room"].get(room_id, []):
@@ -1673,6 +1702,31 @@ def room_detail(room_id: int):
     comfort_preferences = []
     for pref in data["comfort_by_room"].get(room_id, []):
         patient = data["patients_by_id"].get(pref["patient_id"])
+        pref_ts = pref["timestamp"]
+        sensor_windows = []
+        for sensor in room_sensors:
+            before_rows = _sensor_rows_in_window(
+                room_sensor_rows,
+                start=pref_ts - timedelta(hours=1) if pref_ts else None,
+                end=pref_ts,
+            )
+            before_rows = [row for row in before_rows if row["sensor_id"] == sensor["sensor_id"]][-10:]
+            after_rows = _sensor_rows_in_window(
+                room_sensor_rows,
+                start=pref_ts,
+                end=pref_ts + timedelta(hours=1) if pref_ts else None,
+            )
+            after_rows = [row for row in after_rows if row["sensor_id"] == sensor["sensor_id"]][:10]
+            sensor_windows.append(
+                {
+                    "sensor_id": sensor["sensor_id"],
+                    "device_id": sensor["device_id"],
+                    "sensor_type": _sensor_label(sensor["sensor_type"], sensor.get("location")),
+                    "unit": sensor["unit"],
+                    "before_rows": before_rows,
+                    "after_rows": after_rows,
+                }
+            )
         comfort_preferences.append(
             {
                 "comfort_pref_id": pref["comfort_pref_id"],
@@ -1684,7 +1738,7 @@ def room_detail(room_id: int):
                 "airflow": pref["airflow"],
                 "source": pref["source"],
                 "patient_name": patient["name"] if patient else None,
-                "sensor_windows": [],
+                "sensor_windows": sensor_windows,
             }
         )
 
@@ -2464,6 +2518,7 @@ def patient_detail(patient_id: int):
     visits = data["visits_by_patient"].get(patient_id, [])
     comforts = data["comfort_by_patient"].get(patient_id, [])
     room_assignments = data["assignments_by_patient"].get(patient_id, [])
+    room_sensor_rows_map = data["data_by_room"]
 
     admission_views = []
     for admission in admissions_sorted:
@@ -2610,8 +2665,9 @@ def patient_detail(patient_id: int):
 
         for usage in utility_events:
             room_number = room_lookup.get(usage["room_id"], f"Room {usage['room_id']}")
+            power_text = "--" if usage["power_consumption"] is None else f"{float(usage['power_consumption']):.3f}"
             env_text = (
-                f"{room_number} | Power {usage['power_consumption'] if usage['power_consumption'] is not None else '--'} kWh | "
+                f"{room_number} | Power {power_text} kWh | "
                 f"Water {usage['water_consumption'] if usage['water_consumption'] is not None else '--'} L"
             )
             add_event(
@@ -2628,11 +2684,40 @@ def patient_detail(patient_id: int):
                 current_day["events"],
                 key=lambda event: (event["timestamp"] is None, event["timestamp"]),
             )
-            # CSV exports do not contain a direct sensor_id -> room_id mapping.
-            current_day["sensor_rows"] = []
-            current_day["sensor_count"] = 0
-            current_day["sensor_types"] = []
-            current_day["sensor_rooms"] = []
+            day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
+            sensor_rows: list[dict[str, object]] = []
+            for assignment in admission_assignments:
+                room_id = assignment["room_id"]
+                assign_start = assignment.get("start_time")
+                assign_end = assignment.get("end_time")
+                window_start = max(
+                    [value for value in [day_start, admission_start, assign_start] if value is not None],
+                    default=day_start,
+                )
+                end_candidates = [value for value in [day_end, admission_end, assign_end] if value is not None]
+                window_end = min(end_candidates) if end_candidates else day_end
+                if window_start >= window_end:
+                    continue
+                for row in _sensor_rows_in_window(
+                    room_sensor_rows_map.get(room_id, []),
+                    start=window_start,
+                    end=window_end,
+                ):
+                    sensor_rows.append(
+                        {
+                            "timestamp": _fmt_dt(row["timestamp"]),
+                            "room_id": room_id,
+                            "sensor_type": _sensor_label(row["sensor_type"], row.get("location")),
+                            "value": row["value"],
+                            "unit": row["unit"],
+                        }
+                    )
+            sensor_rows.sort(key=lambda row: str(row["timestamp"]))
+            current_day["sensor_rows"] = sensor_rows
+            current_day["sensor_count"] = len(sensor_rows)
+            current_day["sensor_types"] = sorted({str(row["sensor_type"]) for row in sensor_rows})
+            current_day["sensor_rooms"] = sorted({int(row["room_id"]) for row in sensor_rows})
             days.append(current_day)
 
         admission_views.append(
