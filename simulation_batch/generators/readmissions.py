@@ -20,7 +20,7 @@ def generate_readmission_plan(*, patient_count: int, rng) -> dict[int, int]:
     recurrent_indices = set(patient_indices[:recurrent_count])
     recurrent_list = list(recurrent_indices)
     rng.shuffle(recurrent_list)
-    r3_count = int(round(0.40 * recurrent_count))
+    r3_count = int(round(0.20 * recurrent_count))
     r5_count = int(round(0.05 * recurrent_count))
     r3_set = set(recurrent_list[:r3_count])
     r5_set = set(recurrent_list[r3_count:r3_count + r5_count])
@@ -31,7 +31,7 @@ def generate_readmission_plan(*, patient_count: int, rng) -> dict[int, int]:
         elif index in r3_set:
             totals[index] = 3
         elif index in r5_set:
-            totals[index] = 5
+            totals[index] = 4
         else:
             totals[index] = 2
     return totals
