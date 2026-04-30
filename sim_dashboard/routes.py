@@ -2666,12 +2666,21 @@ def patient_detail(patient_id: int):
         for usage in utility_events:
             room_number = room_lookup.get(usage["room_id"], f"Room {usage['room_id']}")
             power_text = "--" if usage["power_consumption"] is None else f"{float(usage['power_consumption']):.3f}"
-            env_text = (
-                f"{room_number} | Power {power_text} kWh | "
-                f"Water {usage['water_consumption'] if usage['water_consumption'] is not None else '--'} L"
-            )
+            if usage["category"] == "hvac":
+                short_start = _fmt_time(usage["start_time"])
+                short_end = _fmt_time(usage["end_time"])
+                env_text = (
+                    f"{room_number} | {short_start}-{short_end} | Power {power_text} kWh | "
+                    f"Water {usage['water_consumption'] if usage['water_consumption'] is not None else '--'} L"
+                )
+            else:
+                env_text = (
+                    f"{room_number} | Power {power_text} kWh | "
+                    f"Water {usage['water_consumption'] if usage['water_consumption'] is not None else '--'} L"
+                )
+            event_ts = usage["end_time"] if usage["category"] == "water" and usage["end_time"] is not None else usage["start_time"]
             add_event(
-                usage["start_time"],
+                event_ts,
                 "environment",
                 f"Environment usage: {usage['category']}",
                 env_text,

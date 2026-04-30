@@ -17,7 +17,7 @@ def chunk_sensor_specs(items: list[tuple[int, int, str]], size: int) -> list[lis
 def sample_value(rng: random.Random, sensor_type: str, room_state: tuple[float, float, float, float, float]) -> float:
     temperature, humidity, co2, light, sound = room_state
     if sensor_type == "temperature":
-        return round(temperature + rng.gauss(0, 0.05), 1)
+        return round(temperature + rng.uniform(-0.5, 0.5), 1)
     if sensor_type == "humidity":
         return humidity + rng.gauss(0, 0.2)
     if sensor_type == "co2":
