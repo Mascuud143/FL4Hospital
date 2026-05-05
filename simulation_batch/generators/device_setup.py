@@ -33,7 +33,7 @@ def _unit_for(sensor_type: str) -> str:
 
 
 def create_room_devices(*, rooms: list[Room], rng: random.Random, include_speaker: bool = True) -> List[BLEDevice]:
-    main_sensor_types = ("temperature", "humidity", "co2", "light", "sound")
+    main_sensor_types = ("temperature",)
     toilet_sensor_types = ("temperature",)
     devices: List[BLEDevice] = []
     for room in rooms:
