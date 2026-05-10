@@ -21,7 +21,7 @@ class SensorSampler:
         self._sensor_specs = [(sensor.sensor_id, sensor.room_id, sensor.sensor_type) for sensor in self.sensors]
         self.room_ids = sorted({sensor.room_id for sensor in self.sensors if sensor.room_id is not None})
         self._emit_counter = 0
-        self.workers = max(1, min((os.cpu_count() or 2) - 1, 8))
+        self.workers = max(1, min((os.cpu_count() or 2) - 1, 14))
         self.parallel_threshold = 5000
         self._executor: ProcessPoolExecutor | None = None
         print(f"[SensorSampler] Loaded {len(self.sensors)} sensors")

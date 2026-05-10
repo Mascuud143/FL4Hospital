@@ -240,8 +240,9 @@
         <div class="meta-box"><div class="k">Gender</div><div class="v">{{ patient.gender if patient.gender else '--' }}</div></div>
         <div class="meta-box"><div class="k">Height</div><div class="v">{{ patient.height if patient.height is not none else '--' }} cm</div></div>
         <div class="meta-box"><div class="k">Ethnicity</div><div class="v">{{ patient.ethnicity if patient.ethnicity else '--' }}</div></div>
-        <div class="meta-box"><div class="k">Latest Age</div><div class="v">{{ patient.age if patient.age is not none else '--' }}</div></div>
-        <div class="meta-box"><div class="k">Latest Weight</div><div class="v">{% if patient.weight is not none %}{{ '%.1f'|format(patient.weight) }}{% else %}--{% endif %} kg</div></div>
+        {% set active_admission = admission_views | selectattr('admission_id', 'equalto', active_admission_id) | first %}
+        <div class="meta-box"><div class="k">Age</div><div class="v" id="patientAgeValue">{{ active_admission.age if active_admission and active_admission.age is not none else '--' }}</div></div>
+        <div class="meta-box"><div class="k">Weight</div><div class="v" id="patientWeightValue">{% if active_admission and active_admission.weight is not none %}{{ '%.1f'|format(active_admission.weight) }}{% else %}--{% endif %} kg</div></div>
       </div>
     </div>
 
@@ -275,7 +276,13 @@
     {% if admission_views and admission_views|length > 1 %}
     <div class="admission-toggle">
       {% for a in admission_views %}
-      <button class="adm-btn {% if a.admission_id == active_admission_id %}active{% endif %}" type="button" data-adm-btn="{{ a.admission_id }}">
+      <button
+        class="adm-btn {% if a.admission_id == active_admission_id %}active{% endif %}"
+        type="button"
+        data-adm-btn="{{ a.admission_id }}"
+        data-age="{{ a.age if a.age is not none else '' }}"
+        data-weight="{% if a.weight is not none %}{{ '%.1f'|format(a.weight) }}{% endif %}"
+      >
         Admission #{{ a.admission_id }}
       </button>
       {% endfor %}
@@ -442,16 +449,31 @@
   (() => {
     const buttons = document.querySelectorAll("[data-adm-btn]");
     const panels = document.querySelectorAll("[data-adm-panel]");
+    const ageValue = document.getElementById("patientAgeValue");
+    const weightValue = document.getElementById("patientWeightValue");
 
     if (buttons.length && panels.length) {
+      const syncAdmissionMeta = (button) => {
+        if (!button) return;
+        if (ageValue) ageValue.textContent = button.dataset.age || "--";
+        if (weightValue) weightValue.textContent = button.dataset.weight ? `${button.dataset.weight} kg` : "-- kg";
+      };
+
       const activate = (id) => {
-        buttons.forEach((btn) => btn.classList.toggle("active", btn.dataset.admBtn === id));
+        let activeButton = null;
+        buttons.forEach((btn) => {
+          const isActive = btn.dataset.admBtn === id;
+          btn.classList.toggle("active", isActive);
+          if (isActive) activeButton = btn;
+        });
         panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.admPanel === id));
+        syncAdmissionMeta(activeButton);
       };
 
       buttons.forEach((btn) => {
         btn.addEventListener("click", () => activate(btn.dataset.admBtn));
       });
+      syncAdmissionMeta(document.querySelector(".adm-btn.active"));
     }
 
     const applySensorFilter = (dayUid) => {

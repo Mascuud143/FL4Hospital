@@ -1,6 +1,6 @@
 {
-  "cpu": "13th Gen Intel(R) Core(TM) i7-13650HX (20 logical cores)",
-  "ram": "31.7 GB",
-  "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU, Intel(R) UHD Graphics",
+  "cpu": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel (16 logical cores)",
+  "ram": "7.6 GB",
+  "gpu": "Pending",
   "os": "Windows 11"
 }

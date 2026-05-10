@@ -55,7 +55,7 @@ class SimulationOrchestrator:
         self.sampler = SensorSampler(seed)
         self.rooms = {room_id: RoomState(room_id) for room_id in self.sampler.room_ids}
         self.engine = RoomEngine(self.rooms, config=EngineConfig(enable_utility_usage=self.config.enable_utility_usage))
-        self._write_batch_size = 50000
+        self._write_batch_size = 500000
         self._data_rows: list[tuple[int, float, datetime]] = []
         self._stop_requested = False
 

@@ -70,9 +70,8 @@ class RoomEngine:
                 room.airflow_requested = False
                 room.toilet_heater_requested = False
                 room.toilet_light_requested = False
-                self._utility_sessions.update_onoff_utilities(room, when=now, airflow=False, toilet_heater=False, toilet_light=False)
+                self._utility_sessions.update_onoff_utilities(room, when=now, airflow=False, toilet_heater=False, toilet_light=room.toilet_light_requested)
                 self._utility_sessions.log_toilet_heater_if_changed(room, when=now, state=False)
-                self._utility_sessions.log_toilet_light_if_changed(room, when=now, state=False)
                 continue
 
             pref_ts = pref.timestamp
@@ -86,10 +85,8 @@ class RoomEngine:
 
             airflow_req = pref.airflow
             toilet_heater_req = pref.toilet_heater_requested
-            toilet_light_req = toilet_heater_req
             room.airflow_requested = airflow_req
             room.toilet_heater_requested = toilet_heater_req
-            room.toilet_light_requested = toilet_light_req
             transition_time = pref_ts if is_new_pref else now
 
             if is_new_pref:
@@ -109,22 +106,16 @@ class RoomEngine:
                     room._toilet_heater_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
                     if room._toilet_heater_session_start is None:
                         room._toilet_heater_session_start = pref_ts
-                if toilet_light_req and room._last_toilet_light_pref_ts != pref_ts:
-                    room._last_toilet_light_pref_ts = pref_ts
-                    room._toilet_light_active_until = pref_ts + timedelta(seconds=self.cfg.toilet_heater_run_s)
-                    if room._toilet_light_session_start is None:
-                        room._toilet_light_session_start = pref_ts
 
             self._utility_sessions.update_onoff_utilities(
                 room,
                 when=transition_time,
                 airflow=airflow_req,
                 toilet_heater=toilet_heater_req,
-                toilet_light=toilet_light_req,
+                toilet_light=room.toilet_light_requested,
             )
             self._utility_sessions.log_ventilation_if_changed(room, when=transition_time)
             self._utility_sessions.log_toilet_heater_if_changed(room, when=transition_time, state=toilet_heater_req)
-            self._utility_sessions.log_toilet_light_if_changed(room, when=transition_time, state=toilet_light_req)
 
         for room in self.rooms.values():
             if not room._occupied_this_tick and room._occupied_until is not None:
@@ -134,7 +125,6 @@ class RoomEngine:
                 room.toilet_heater_requested = False
                 room.toilet_light_requested = False
                 self._utility_sessions.log_toilet_heater_if_changed(room, when=departure, state=False)
-                self._utility_sessions.log_toilet_light_if_changed(room, when=departure, state=False)
                 room._occupied_until = None
 
     def step(self, now, *, step_s: int) -> None:
@@ -144,8 +134,6 @@ class RoomEngine:
             self._utility_sessions.check_hvac_stabilization(room, now=now)
             if room._toilet_heater_session_start is not None and room._toilet_heater_active_until is not None and now >= room._toilet_heater_active_until:
                 self._utility_sessions.close_toilet_heater_session(room, end_time=room._toilet_heater_active_until)
-            if room._toilet_light_session_start is not None and room._toilet_light_active_until is not None and now >= room._toilet_light_active_until:
-                self._utility_sessions.close_toilet_light_session(room, end_time=room._toilet_light_active_until)
 
     def close_all_sessions(self, end_time) -> None:
         self._utility_sessions.close_all_sessions(self.rooms, end_time=end_time)

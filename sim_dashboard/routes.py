@@ -1626,15 +1626,7 @@ def rooms():
         for room in data["rooms"]
     ]
 
-    # if there are rooms, make the simulation period from the earliest room creation to the latest room deletion, otherwise use current day
-    if data["rooms"]:
-        created_times = [room["created_at"] for room in data["rooms"] if room.get("created_at")]
-        deleted_times = [room["deleted_at"] for room in data["rooms"] if room.get("deleted_at")]
-        start_time = min(created_times) if created_times else datetime.now(timezone.utc)
-        end_time = max(deleted_times) if deleted_times else datetime.now(timezone.utc)
-        simulation_period = f"{_fmt_dt(start_time)} to {_fmt_dt(end_time)}"
-    else:
-        simulation_period = "-"
+    simulation_period = _simulation_period_from_admissions()
 
     simulation_info = {
         "total_rooms": data["total_rooms"],

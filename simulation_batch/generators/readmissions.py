@@ -29,9 +29,9 @@ def generate_readmission_plan(*, patient_count: int, rng) -> dict[int, int]:
         if index not in recurrent_indices:
             totals[index] = 1
         elif index in r3_set:
-            totals[index] = 3
+            totals[index] = 2
         elif index in r5_set:
-            totals[index] = 4
+            totals[index] = 3
         else:
             totals[index] = 2
     return totals
