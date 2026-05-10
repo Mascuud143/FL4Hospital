@@ -434,16 +434,23 @@ def load_data() -> dict[str, Any]:
 
     female_ages: list[int] = []
     male_ages: list[int] = []
+    admission_lengths_days: list[float] = []
     for admission in admissions:
         age = admission["age"]
         patient = patients_by_id.get(admission["patient_id"])
         if age is None or patient is None:
-            continue
-        gender = (patient["gender"] or "").lower()
-        if gender == "female":
-            female_ages.append(age)
-        elif gender == "male":
-            male_ages.append(age)
+            pass
+        else:
+            gender = (patient["gender"] or "").lower()
+            if gender == "female":
+                female_ages.append(age)
+            elif gender == "male":
+                male_ages.append(age)
+
+        admitted_at = admission["admitted_at"]
+        discharged_at = admission["discharged_at"]
+        if admitted_at is not None and discharged_at is not None and discharged_at >= admitted_at:
+            admission_lengths_days.append((discharged_at - admitted_at).total_seconds() / 86400)
 
     result = {
         "data_dir": str(data_dir),
@@ -477,6 +484,7 @@ def load_data() -> dict[str, Any]:
         "male_heights": male_heights,
         "female_ages": female_ages,
         "male_ages": male_ages,
+        "admission_lengths_days": admission_lengths_days,
         "total_rooms": len(rooms),
         "total_patients": len(patients),
         "total_admissions": len(admissions),

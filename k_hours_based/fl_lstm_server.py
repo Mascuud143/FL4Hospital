@@ -65,9 +65,9 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         self.latest_eval_summary: dict[str, float] | None = None
         self.latest_fit_summary: dict[str, float] | None = None
 
-    def aggregate_fit(self, server_round, results, failures):
+    def _aggregate_fit_impl(self, aggregate_fit_fn, server_round, results, failures):
         # FedAvg combines the locally trained LSTM weights into the next global model.
-        aggregated_parameters, aggregated_metrics = super().aggregate_fit(server_round, results, failures)
+        aggregated_parameters, aggregated_metrics = aggregate_fit_fn(self, server_round, results, failures)
         fit_examples = 0.0
         train_loss_sum = 0.0
         train_summary = empty_eval_metric_totals()
@@ -122,9 +122,12 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         )
         return aggregated_parameters, aggregated_metrics
 
-    def aggregate_evaluate(self, server_round, results, failures):
+    def aggregate_fit(self, server_round, results, failures):
+        return self._aggregate_fit_impl(fl.server.strategy.FedAvg.aggregate_fit, server_round, results, failures)
+
+    def _aggregate_evaluate_impl(self, aggregate_evaluate_fn, server_round, results, failures):
         # Clients report metric sums; the server converts them into overall averages.
-        aggregated_loss, aggregated_metrics = super().aggregate_evaluate(server_round, results, failures)
+        aggregated_loss, aggregated_metrics = aggregate_evaluate_fn(self, server_round, results, failures)
         summary = empty_eval_metric_totals()
         room_rows: list[dict[str, Any]] = []
         for _, eval_res in results:
@@ -152,6 +155,14 @@ class TrackingFedAvg(fl.server.strategy.FedAvg):
         )
         return aggregated_loss, aggregated_metrics
 
+    def aggregate_evaluate(self, server_round, results, failures):
+        return self._aggregate_evaluate_impl(
+            fl.server.strategy.FedAvg.aggregate_evaluate,
+            server_round,
+            results,
+            failures,
+        )
+
 
 class TrackingFedProx(fl.server.strategy.FedProx):
     def __init__(self, weights_out_dir: str, *args: Any, **kwargs: Any):
@@ -161,8 +172,23 @@ class TrackingFedProx(fl.server.strategy.FedProx):
         self.latest_eval_summary: dict[str, float] | None = None
         self.latest_fit_summary: dict[str, float] | None = None
 
-    aggregate_fit = TrackingFedAvg.aggregate_fit
-    aggregate_evaluate = TrackingFedAvg.aggregate_evaluate
+    def aggregate_fit(self, server_round, results, failures):
+        return TrackingFedAvg._aggregate_fit_impl(
+            self,
+            fl.server.strategy.FedProx.aggregate_fit,
+            server_round,
+            results,
+            failures,
+        )
+
+    def aggregate_evaluate(self, server_round, results, failures):
+        return TrackingFedAvg._aggregate_evaluate_impl(
+            self,
+            fl.server.strategy.FedProx.aggregate_evaluate,
+            server_round,
+            results,
+            failures,
+        )
 
 
 def make_strategy(aggregation_method: str, weights_out_dir: str, proximal_mu: float, **kwargs: Any):

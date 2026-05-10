@@ -295,6 +295,14 @@
         <h3 style="margin-top: 0;">
           Admission #{{ adm.admission_id }} timeline
           <span class="chip">{{ adm.days|length }} day{% if adm.days|length != 1 %}s{% endif %}</span>
+          <span class="muted">
+            |
+            Weight {% if adm.weight is not none %}{{ '%.1f'|format(adm.weight) }} kg{% else %}--{% endif %}
+            |
+            Age {{ adm.age if adm.age is not none else '--' }}
+            |
+            Height {{ patient.height if patient.height is not none else '--' }} cm
+          </span>
         </h3>
         <p class="muted">
           {% if adm.admitted_at %}Start: {{ adm.admitted_at.strftime("%Y-%m-%d %H:%M") }}{% else %}Start: --{% endif %}

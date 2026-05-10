@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import flwr as fl
 import numpy as np
 import pandas as pd
+from flwr.common import Context
 from per_room_data import list_room_ids
 
 _PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -331,7 +332,8 @@ def main() -> None:
     print(f"weights_out_dir={os.path.abspath(args.weights_out_dir)}")
     print("[start] simulation running...")
 
-    def client_fn(cid: str):
+    def client_fn(context: Context):
+        cid = str(context.node_config.get("partition-id", context.node_id))
         rid = room_ids[int(cid)]
         x_train, y_train, x_test, y_test = load_room_dataset(split_dir, rid, args.chunksize)
         client = RoomClient(

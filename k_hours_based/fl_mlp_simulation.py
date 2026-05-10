@@ -4,6 +4,7 @@ import os
 
 import flwr as fl
 import numpy as np
+from flwr.common import Context
 from per_room_data import list_room_ids
 from fl_shared import available_client_workers, room_ids_from_stats, room_sort_key
 
@@ -21,6 +22,7 @@ try:
         row_to_input_vector,
         sanitize_targets,
     )
+    from k_hours_based.fl_local_simulation import start_local_simulation
     from k_hours_based.fl_mlp_server import make_initial_parameters, make_strategy
 except ModuleNotFoundError:
     from fl_mlp_client import (
@@ -32,6 +34,7 @@ except ModuleNotFoundError:
         row_to_input_vector,
         sanitize_targets,
     )
+    from fl_local_simulation import start_local_simulation
     from fl_mlp_server import make_initial_parameters, make_strategy
 
 def parse_args() -> argparse.Namespace:
@@ -145,7 +148,7 @@ def main() -> None:
         ),
     )
 
-    def client_fn(cid: str):
+    def build_client(cid: str) -> RoomClient:
         # Flower identifies clients as "0", "1", ...; we map those ids back to room ids.
         rid = room_ids[int(cid)]
         x_train, y_train, current_train, change_train, x_test, y_test, current_test, change_true = load_room_dataset(split_dir, rid, args.chunksize)
@@ -166,7 +169,11 @@ def main() -> None:
             learning_rate=args.learning_rate,
             optimizer=args.optimizer,
             activation=args.activation,
-        ).to_client()
+        )
+
+    def client_fn(context: Context):
+        cid = str(context.node_config.get("partition-id", context.node_id))
+        return build_client(cid).to_client()
 
     print("fl_simulation.py starting")
     print(f"split_dir={split_dir}")
@@ -187,13 +194,25 @@ def main() -> None:
     print(f"min_available_clients={effective_min_available_clients}")
     print(f"weights_out_dir={weights_out_dir}")
     print("[start] simulation running...")
-    history = fl.simulation.start_simulation(
-        client_fn=client_fn,
-        num_clients=len(room_ids),
-        config=fl.server.ServerConfig(num_rounds=args.rounds),
-        strategy=strategy,
-        client_resources={"num_cpus": args.client_cpu},
-    )
+    try:
+        history = fl.simulation.start_simulation(
+            client_fn=client_fn,
+            num_clients=len(room_ids),
+            config=fl.server.ServerConfig(num_rounds=args.rounds),
+            strategy=strategy,
+            client_resources={"num_cpus": args.client_cpu},
+        )
+    except ImportError as exc:
+        if "Unable to import module `ray`" not in str(exc):
+            raise
+        print("[fallback] ray not installed; using local in-process simulation")
+        history = start_local_simulation(
+            client_factory=build_client,
+            num_clients=len(room_ids),
+            num_rounds=args.rounds,
+            strategy=strategy,
+            max_workers=client_worker_count,
+        )
 
     print("[done] simulation finished")
     if history.losses_distributed:

@@ -129,6 +129,13 @@
 </div>
 {% endif %}
 
+{% if admission_length_svg %}
+<h3>Admission Length Distribution</h3>
+<div class="chart-grid">
+  <div class="chart-box">{{ admission_length_svg | safe }}</div>
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Rooms</h3>
   <div class="room-list">

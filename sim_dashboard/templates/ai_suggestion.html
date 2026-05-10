@@ -554,7 +554,21 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {})
       });
-      if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+      if (!response.ok) {
+        const raw = await response.text();
+        let message = raw || `HTTP ${response.status}`;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.error === "string" && parsed.error) {
+            message = parsed.error;
+            if (parsed.install_hint) {
+              message += ` Install hint: ${parsed.install_hint}`;
+            }
+          }
+        } catch (_) {
+        }
+        throw new Error(message);
+      }
       return response.json();
     }
 

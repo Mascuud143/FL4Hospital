@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime, time, timedelta, timezone
 from statistics import mean, pstdev
+import importlib.util
 import math
 import json
 import os
@@ -101,6 +102,10 @@ def _default_federated_client_cpu() -> float:
 
 def _default_federated_workers() -> int:
     return default_federated_workers()
+
+
+def _python_has_module(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
 
 try:
     if str(_K_HOURS_DIR) not in sys.path:
@@ -1550,7 +1555,7 @@ def _sensor_label(sensor_type: str | None, location: str | None) -> str:
     return sensor_name
 
 
-def _build_dist_svg(values: list[int | float], *, title: str, x_label: str) -> str | None:
+def _build_dist_svg(values: list[int | float], *, title: str, x_label: str, y_label: str = "count") -> str | None:
     if not values:
         return None
 
@@ -1613,6 +1618,7 @@ def _build_dist_svg(values: list[int | float], *, title: str, x_label: str) -> s
   <polyline fill="none" stroke="#cc2f2f" stroke-width="2" points="{polyline}" />
   <text x="{pad}" y="18" font-size="12" fill="#333">{title}</text>
   <text x="{pad}" y="{height - 6}" font-size="12" fill="#333">{x_label}</text>
+  <text x="14" y="{pad + plot_height / 2:.1f}" font-size="12" fill="#333" transform="rotate(-90 14 {pad + plot_height / 2:.1f})">{y_label}</text>
   <text x="{width - pad - 140}" y="{pad - 8}" font-size="12" fill="#333">Mean={mu:.1f}, SD={sigma:.1f}</text>
 </svg>
 """.strip()
@@ -1650,6 +1656,12 @@ def rooms():
     age_svg_male = _build_dist_svg(
         data["male_ages"], title="Age Distribution - Male", x_label="Age (years)"
     )
+    admission_length_svg = _build_dist_svg(
+        data["admission_lengths_days"],
+        title="Admission Length Distribution",
+        x_label="days",
+        y_label="count",
+    )
 
     print(simulation_info)
 
@@ -1661,6 +1673,7 @@ def rooms():
         height_svg_male=height_svg_male,
         age_svg_female=age_svg_female,
         age_svg_male=age_svg_male,
+        admission_length_svg=admission_length_svg,
     )
 
 
@@ -1837,6 +1850,22 @@ def api_ai_federated_start():
     payload = request.get_json(silent=True) or {}
     task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
     model_type = str(payload.get("model_type", "mlp"))
+    if task_type == "k_hours" and model_type == "lstm" and not _python_has_module("torch"):
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "LSTM training requires PyTorch, but `torch` is not installed in the dashboard Python "
+                        f"environment: {sys.executable}. Install the project dependencies in that environment "
+                        "before starting LSTM federated training."
+                    ),
+                    "missing_dependency": "torch",
+                    "python_executable": sys.executable,
+                    "install_hint": f'"{sys.executable}" -m pip install -r requirements.txt',
+                }
+            ),
+            400,
+        )
     aggregation_method = str(payload.get("aggregation_method", "fedavg"))
     proximal_mu = float(payload.get("proximal_mu", 0.0))
     rounds = int(payload.get("rounds", 5))
