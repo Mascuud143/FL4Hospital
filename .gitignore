@@ -106,9 +106,6 @@ ai_forecast/outputs_next_hour_parallel/
 ai_forecast/splits_next_hour_3/
 
 # Generated dashboard/model datasets
-.build-temp/
-fedavg_results/
-filestorage/
 k_hours_based/outputs_next_hour/
 k_hours_based/outputs_next_hour_dashboard/
 k_hours_based/outputs_next_hour_parallel/
@@ -129,5 +126,3 @@ event_based/fl_weights/
 event_based/fl_weights_dashboard_mlp/
 event_based/fl_predictions/
 k_hours_based/fl_weights_dashboard_mlp/
-k_hours_based/fl_weights_dashboard_lstm/
-k_hours_based/fl_weights_dashboard_lstm_test/
