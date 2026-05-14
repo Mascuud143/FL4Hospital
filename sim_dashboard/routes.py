@@ -1821,6 +1821,10 @@ def runtime_stats():
     )
 
 
+
+
+
+
 @sim_bp.route("/api/ai/build/start", methods=["POST"])
 def api_ai_build_start():
     payload = request.get_json(silent=True) or {}
@@ -1830,7 +1834,9 @@ def api_ai_build_start():
     return jsonify({"job_id": job_id, "status": "running"})
 
 
+
 @sim_bp.route("/api/ai/split/start", methods=["POST"])
+
 def api_ai_split_start():
     payload = request.get_json(silent=True) or {}
     task_type = _normalize_task_type(payload.get("task_type", "k_hours"))
@@ -1841,7 +1847,9 @@ def api_ai_split_start():
         "build": build_config,
         "split": split_config,
     }
+
     job_id = _start_ai_job("split", [build_command, split_command], metadata={"task_type": task_type, "config": combined_config})
+
     return jsonify({"job_id": job_id, "status": "running"})
 
 
@@ -1856,9 +1864,10 @@ def api_ai_federated_start():
                 {
                     "error": (
                         "LSTM training requires PyTorch, but `torch` is not installed in the dashboard Python "
-                        f"environment: {sys.executable}. Install the project dependencies in that environment "
-                        "before starting LSTM federated training."
+                        f"environment: {sys.executable}. Install the project  dependencies in that environment "
+                        "before  starting LSTM federated training."
                     ),
+
                     "missing_dependency": "torch",
                     "python_executable": sys.executable,
                     "install_hint": f'"{sys.executable}" -m pip install -r requirements.txt',
@@ -2087,6 +2096,7 @@ def api_ai_federated_start():
     return jsonify({"job_id": job_id, "status": "running"})
 
 
+# sim confog defaults
 def _simulation_config_defaults() -> dict[str, object]:
     return {
         "start_date": getattr(sim_config, "START_DATE", None),
@@ -2289,6 +2299,7 @@ def api_ai_results():
     )
 
 
+
 def _safe_int(value: object, default: int) -> int:
     try:
         return int(value)  # type: ignore[arg-type]
@@ -2302,7 +2313,7 @@ def _safe_float(value: object, default: float) -> float:
     except Exception:  # noqa: BLE001
         return default
 
-
+# builds a single input row for predcuiition
 def _build_single_input_row(payload: dict) -> pd.DataFrame:
     hour = max(0, min(23, _safe_int(payload.get("hour", 12), 12)))
     minute = max(0, min(59, _safe_int(payload.get("minute", 0), 0)))

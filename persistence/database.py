@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 from typing import Generator, Optional
 
 from sqlalchemy import create_engine
@@ -13,6 +15,37 @@ Base = declarative_base()
 # Module-level singletons (created lazily)
 _ENGINE: Optional[Engine] = None
 _SessionLocal: Optional[sessionmaker] = None
+
+
+def sqlite_path_from_url(db_url: str) -> Path | None:
+    prefix = "sqlite:///"
+    if not db_url.startswith(prefix):
+        return None
+    raw_path = db_url[len(prefix):]
+    if not raw_path:
+        return None
+    return Path(raw_path)
+
+
+def sqlite_url_from_path(path: Path) -> str:
+    return f"sqlite:///{path.as_posix()}"
+
+
+def reset_sqlite_db(db_url: str, *, fallback_label: str) -> tuple[str, bool]:
+    path = sqlite_path_from_url(db_url)
+    if path is None:
+        return db_url, False
+
+    try:
+        if path.exists():
+            path.unlink()
+        return db_url, False
+    except PermissionError:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback_path = path.with_name(f"{path.stem}.{fallback_label}.{stamp}{path.suffix}")
+        if fallback_path.exists():
+            fallback_path.unlink()
+        return sqlite_url_from_path(fallback_path), True
 
 
 def get_engine(db_url: str = "sqlite:///fl4hospital.db", echo: bool = False) -> Engine:

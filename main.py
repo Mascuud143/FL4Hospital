@@ -8,10 +8,11 @@ from pathlib import Path
 from ble import BLEManager, Device, Sensor
 from ble.characteristics import LIGHT_CHAR_UUID, TEMP_CHAR_UUID
 from ble.sensor import parse_light_thingy, parse_temp_thingy
-from hybrid_prototype.comfort_service import run_cli
-from hybrid_prototype.event_adapter import event_worker, handle_ble_event
-from hybrid_prototype.hybrid_context import ensure_room_and_patient
+from hybrid.comfort_service import run_cli
+from hybrid.event_adapter import event_worker, handle_ble_event
+from hybrid.hybrid_context import ensure_room_and_patient
 from persistence import init_db
+from persistence.database import reset_sqlite_db, sqlite_path_from_url
 from persistence.seed_devices import seed_devices_and_sensors
 from simulation_batch.config import DAYS, PATIENT_COUNT, START_DATE
 from simulation_batch.orchestrator import OrchestratorConfig, SimulationOrchestrator
@@ -48,14 +49,18 @@ def _env_path(name: str, fallback: Path) -> Path:
     return Path(os.getenv(name, str(fallback)))
 
 
-def _remove_file_if_exists(path: Path) -> None:
-    if path.exists():
-        path.unlink()
+def _prepare_db_url(db_url: str, *, fallback_label: str, reset_db: bool) -> str:
+    if not reset_db:
+        return db_url
 
-
-def _reset_database_file(path: Path, enabled: bool = True) -> None:
-    if enabled:
-        _remove_file_if_exists(path)
+    effective_db_url, used_fallback = reset_sqlite_db(db_url, fallback_label=fallback_label)
+    if used_fallback:
+        fallback_path = sqlite_path_from_url(effective_db_url)
+        if fallback_path is not None:
+            print(
+                f"Database file is locked; using fallback SQLite file: {fallback_path}"
+            )
+    return effective_db_url
 
 
 def _reset_filestorage() -> None:
@@ -100,8 +105,19 @@ def _build_real_ble_manager(devices: list[Device], on_event) -> BLEManager:
 
 
 def run_sim(args: argparse.Namespace) -> None:
-    _reset_database_file(_env_path("FL4HOSPITAL_DB_PATH", DEFAULT_DB_PATH))
-    init_db(args.db, echo=args.echo)
+    configured_db_url = args.db
+    env_db_path = os.getenv("FL4HOSPITAL_DB_PATH")
+    if env_db_path:
+        configured_db_url = f"sqlite:///{Path(env_db_path).as_posix()}"
+    effective_db_url = _prepare_db_url(
+        configured_db_url,
+        fallback_label="simulation",
+        reset_db=True,
+    )
+    effective_db_path = sqlite_path_from_url(effective_db_url)
+    if effective_db_path is not None:
+        os.environ["FL4HOSPITAL_DB_PATH"] = str(effective_db_path)
+    init_db(effective_db_url, echo=args.echo)
 
     devices = seed_simulated_world(
         patient_count=args.patient_count,
@@ -134,8 +150,15 @@ def run_sim(args: argparse.Namespace) -> None:
 
 
 async def run_real_hybrid(db_url: str, echo: bool, reset_db: bool) -> None:
-    _reset_database_file(DEFAULT_DB_PATH, enabled=reset_db)
-    init_db(db_url, echo=echo)
+    effective_db_url = _prepare_db_url(
+        db_url,
+        fallback_label="hybrid",
+        reset_db=reset_db,
+    )
+    effective_db_path = sqlite_path_from_url(effective_db_url)
+    if effective_db_path is not None:
+        os.environ["FL4HOSPITAL_DB_PATH"] = str(effective_db_path)
+    init_db(effective_db_url, echo=echo)
     devices = build_real_devices()
     seed_devices_and_sensors(devices, room_id_default=REAL_ROOM_ID)
     ensure_room_and_patient(devices)
@@ -155,8 +178,15 @@ async def run_real_hybrid(db_url: str, echo: bool, reset_db: bool) -> None:
 
 
 async def run_real_real(db_url: str, echo: bool, reset_db: bool) -> None:
-    _reset_database_file(DEFAULT_REAL_DB_PATH, enabled=reset_db)
-    init_db(db_url, echo=echo)
+    effective_db_url = _prepare_db_url(
+        db_url,
+        fallback_label="real-sensor",
+        reset_db=reset_db,
+    )
+    effective_db_path = sqlite_path_from_url(effective_db_url)
+    if effective_db_path is not None:
+        os.environ["FL4HOSPITAL_DB_PATH"] = str(effective_db_path)
+    init_db(effective_db_url, echo=echo)
     devices = build_real_devices()
     seed_devices_and_sensors(devices, room_id_default=REAL_ROOM_ID)
     manager = _build_real_ble_manager(devices, lambda event: None)
