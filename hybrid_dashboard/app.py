@@ -9,10 +9,11 @@ from persistence.database import reset_sqlite_db, sqlite_path_from_url
 
 
 def _should_reset_database() -> bool:
-    # Flask's debug reloader starts the app twice. Reset only in the parent process.
+    # Flask's deb reloader starts the app twice. Reset only in the parent process.
     return os.environ.get("WERKZEUG_RUN_MAIN") != "true"
 
 
+# create and configure the Flask app
 def create_app() -> Flask:
     db_url = f"sqlite:///{os.getenv('FL4HOSPITAL_DB_PATH', 'fl4hospital.db').replace(os.sep, '/')}"
     if _should_reset_database():

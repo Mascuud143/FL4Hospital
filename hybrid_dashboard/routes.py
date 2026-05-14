@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+# This module contains the flask soutes, for the dahboard, admin and patient views. The routes are defined in a blueprint that is registered in the app factory in app.py.
 from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for

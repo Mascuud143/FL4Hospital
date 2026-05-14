@@ -11,6 +11,7 @@ def create_app():
     return app
 
 
+# main code to run the app
 if __name__ == "__main__":
     app = create_app()
     # enable debug mode
