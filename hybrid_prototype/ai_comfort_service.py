@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from hybrid.ai_config import load_ai_config
+from .ai_config import load_ai_config
 from persistence.models import Admission, ComfortPreference, Data, Device, Medication, Patient, RoomAssignment, Sensor, Visit
 
 

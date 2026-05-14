@@ -1,9 +1,9 @@
 from datetime import datetime
 
-from hybrid.physics_model import step_temperature
-from hybrid.session_tracker import start_hvac, stop_hvac
-from hybrid.state_store import get_zone_state
-from hybrid.ventilation_logic import DEADBAND, HYSTERESIS, decide_mode
+from .physics_model import step_temperature
+from .session_tracker import start_hvac, stop_hvac
+from .state_store import get_zone_state
+from .ventilation_logic import DEADBAND, HYSTERESIS, decide_mode
 from persistence.database import session_scope
 from persistence.models import ComfortPreference, Data, Device, HybridZoneState, Sensor, Ventilation
 

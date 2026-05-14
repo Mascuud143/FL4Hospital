@@ -13,8 +13,8 @@ from ble.sensor import (
     parse_sound_thingy,
     parse_temp_thingy,
 )
-from hybrid.controller import process_ble_event
-from hybrid.db_ingest import db_sink
+from hybrid_prototype.controller import process_ble_event
+from hybrid_prototype.db_ingest import db_sink
 from persistence.database import session_scope
 from persistence.models import Device as DeviceModel
 

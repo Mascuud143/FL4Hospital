@@ -5,11 +5,11 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import func
 
-from hybrid.ai_comfort_service import predict_live_comfort
-from hybrid.ai_config import is_room_ai_enabled, load_ai_config, set_room_ai_enabled, update_ai_config
-from hybrid.controller import evaluate_room_control
+from hybrid_prototype.ai_comfort_service import predict_live_comfort
+from hybrid_prototype.ai_config import is_room_ai_enabled, load_ai_config, set_room_ai_enabled, update_ai_config
+from hybrid_prototype.controller import evaluate_room_control
 from hybrid_dashboard.ble_runtime import get_runtime_status, start_runtime, stop_runtime
-from hybrid.hospital_initializer import (
+from hybrid_prototype.hospital_initializer import (
     DEFAULT_ROOM_MAP,
     add_sensor_to_nordic_device,
     ensure_simulated_devices,
@@ -18,7 +18,7 @@ from hybrid.hospital_initializer import (
     update_nordic_sensor,
     update_nordic_device_mac,
 )
-from hybrid.state_store import get_room_state, get_zone_state
+from hybrid_prototype.state_store import get_room_state, get_zone_state
 from persistence.database import session_scope
 from persistence.models import ComfortPreference, Data, Device, HybridZoneState, Medication, Room, RoomAssignment, Visit
 

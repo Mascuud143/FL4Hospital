@@ -1,0 +1,14 @@
+{
+  "patients": 5,
+  "rooms": 5,
+  "admissions": 5,
+  "room_assignments": 5,
+  "medications": 32,
+  "visits": 30,
+  "comfort_preferences": 19,
+  "utility_usages": 0,
+  "toilet_lights": 0,
+  "toilet_heaters": 0,
+  "data": 0,
+  "ventilations": 0
+}

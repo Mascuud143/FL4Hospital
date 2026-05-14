@@ -2,7 +2,7 @@ import os
 
 from flask import Flask
 
-from hybrid.hospital_initializer import initialize_hybrid_hospital
+from hybrid_prototype.hospital_initializer import initialize_hybrid_hospital
 from hybrid_dashboard.routes import hybrid_bp
 from persistence import init_db
 
